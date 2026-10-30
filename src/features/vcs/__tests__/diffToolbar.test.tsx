@@ -11,6 +11,7 @@ const openFile = vi.fn();
 const openInput = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
+let readOnly = false;
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -36,7 +37,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => working,
-      readOnly: false,
+      readOnly,
       extension: [],
       save: () => Promise.resolve(),
       release: () => {},
@@ -63,6 +64,7 @@ const input = {
 const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
 beforeEach(() => {
+  readOnly = false;
   probe.mockReset();
   openFile.mockReset();
   openInput.mockReset();
@@ -252,6 +254,55 @@ it.each([
   fireEvent.click(screen.getByRole("button", { name: button }));
   await waitFor(() => expect(openInput).toHaveBeenCalledOnce());
   expect(openInput.mock.calls[0]![0].data).toMatchObject({ path, reveal });
+});
+
+it("renders jj snapshot sides read-only without hunk mutation controls", async () => {
+  const { diffInput, jjFileDiffData } = await import("../diffInput");
+  const input = diffInput(
+    jjFileDiffData("/p/a.ts", {
+      before: "old\n",
+      after: "new\n",
+      beforeLabel: "Parent 1234",
+      afterLabel: "@ 5678",
+    }),
+  );
+  render(<DiffEditor input={input} />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  for (const content of document.querySelectorAll(".cm-content"))
+    expect(content).toHaveAttribute("contenteditable", "false");
+  expect(screen.queryByRole("button", { name: /Revert|Stage|Unstage|Apply/ })).toBeNull();
+  expect(document.querySelector(".cm-changeGutter")).toBeNull();
+});
+
+it.each([false, true])("uses the live jj working document and respects read-only=%s", async (locked) => {
+  const { diffInput, jjWorkingDiffData } = await import("../diffInput");
+  readOnly = locked;
+  working = "unsaved\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother unsaved\n";
+  render(
+    <DiffEditor
+      input={diffInput(
+        jjWorkingDiffData("/p/a.ts", {
+          before: "parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother parent\n",
+          after: "disk\n",
+          beforeLabel: "Parent 1234",
+          afterLabel: "@ 5678",
+        }),
+      )}
+    />,
+  );
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  const panes = [...document.querySelectorAll<HTMLElement>(".cm-mergeViewEditor .cm-editor")].map((dom) =>
+    EditorView.findFromDOM(dom)!,
+  );
+  expect(panes[0]!.state.doc.toString()).toBe("parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother parent\n");
+  expect(panes[1]!.state.doc.toString()).toBe(working);
+  expect(panes[0]!.state.readOnly).toBe(true);
+  expect(panes[1]!.state.readOnly).toBe(locked);
+  if (!locked) {
+    await waitFor(() => expect(screen.getByRole("button", { name: "Revert Change" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Revert Change" }));
+    expect(panes[1]!.state.doc.toString()).toBe("parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother unsaved\n");
+  } else expect(screen.queryByRole("button", { name: "Revert Change" })).toBeNull();
 });
 
 const doc = (s: string) => Text.of(s.split("\n"));

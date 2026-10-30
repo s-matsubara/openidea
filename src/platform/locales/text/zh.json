@@ -669,6 +669,7 @@
   "Deleted": "已删除",
   "Delete…": "删除…",
   "Description": "描述",
+  "Description changed externally. Your draft is preserved.": "描述已被外部修改。你的草稿已保留。",
   "Details": "详细信息",
   "Detect again": "重新检测",
   "Detect and use existing file indents for editing": "检测并使用现有文件的缩进进行编辑",
@@ -1700,6 +1701,7 @@
   "Regular expression": "正则表达式",
   "Relative paths resolve against the project root. “Open in Terminal” still opens the chosen folder.": "相对路径相对于项目根目录解析。“在终端中打开”仍会打开所选文件夹。",
   "Reload": "重新加载",
+  "Reload description": "重新加载描述",
   "Reload All Gradle Projects": "重新加载所有 Gradle 项目",
   "Reload All Maven Projects": "重新加载所有 Maven 项目",
   "Reload Changed Classes": "重新加载已更改的类",
@@ -6077,5 +6079,9 @@
   "Plugin update available": "有插件可更新",
   "{length} plugin updates available": "{length} 个插件可更新",
   "Updated {updated} plugins": "已更新 {updated} 个插件",
-  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。"
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "此版本的签名密钥与已安装的版本不同，且发布者之前的密钥没有为它背书。只有在确认发布者更换了密钥时才继续。",
+  "Searching history…": "正在搜索历史…",
+  "Local bookmarks": "本地书签",
+  "Remote bookmarks": "远程书签",
+  "Current working copy": "当前工作副本"
 }

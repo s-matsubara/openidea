@@ -475,7 +475,7 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
-pub use jj::{detected_jj_executable, jj_version, set_jj_executable};
+pub use jj::{JjDescriptionEdit, JjFileDiff, JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -609,6 +609,46 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
     }
+    pub(crate) fn require_execution_allowed(&self) -> IdeResult<()> {
+        if self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(ide_core::IdeError::unavailable(
+                "Project is in Restricted Mode. Trust the project to enable execution.",
+            ))
+        }
+    }
+    /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
+    pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::working_copy(self)
+    }
+
+    pub fn jj_describe(&self, edit: &jj::JjDescriptionEdit) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::describe(self, edit)
+    }
+
+    pub fn jj_restore_files(&self, commit: &str, paths: &[PathBuf]) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::restore_files(self, commit, paths)
+    }
+
+    /// Read-only editor changes against the single parent of @, including unsaved text.
+    pub fn jj_line_hunks(&self, path: &Path, text: &str) -> IdeResult<Vec<LineHunk>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::line_hunks(self, path, text)
+    }
+
+    /// Read-only immutable content pair for a file in the selected @ snapshot.
+    pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::file_diff(self, path, commit)
+    }
+
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
