@@ -29,7 +29,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         } else {
             custom.to_owned()
         },
-        is_git: !project.repos.read().is_empty(),
+        is_git: project.repos.read().all().iter().any(|r| r.kind() == ide_vcs::VcsKind::Git),
         settings,
         root: project.root.clone().into(),
         workspace: ide_workspace::workspace::Workspace::load(&project.root).ok().flatten(),

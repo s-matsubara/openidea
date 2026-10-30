@@ -64,3 +64,37 @@ async fn patches_read_and_write_the_requested_repository() {
     assert!(vcs::vcs_apply_patch(&host, "main", Some(base.join("outside")), String::new()).await.is_err());
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_roots_reject_git_operations_before_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    std::fs::create_dir(root.join(".jj")).unwrap();
+    let file = root.join("keep.txt");
+    std::fs::write(&file, "keep\n").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    let project = host.open_project("main", &root).unwrap();
+    let roots = vcs::vcs_roots(&host, "main").unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].kind, ide_vcs::VcsKind::Jj);
+    assert!(roots[0].unavailable_reason.is_some());
+    assert!(!ide_host::ops::project::info(&project).is_git);
+    assert!(project.with_repo_at(Some(&root), |r| r.stage(std::slice::from_ref(&file))).is_err());
+    let patch = "diff --git a/keep.txt b/keep.txt\n--- a/keep.txt\n+++ b/keep.txt\n@@ -1 +1 @@\n-keep\n+changed\n";
+    assert!(vcs::vcs_apply_patch(&host, "main", Some(root.clone()), patch.into()).await.is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep\n");
+    assert!(!root.join(".git/index").exists());
+    host.close_project("main");
+}
