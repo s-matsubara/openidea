@@ -259,6 +259,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_init,
         vcs::vcs_git_version,
         vcs::vcs_detected_git,
+        vcs::vcs_jj_version,
+        vcs::vcs_detected_jj,
         vcs::vcs_config_get,
         vcs::vcs_operation,
         vcs::vcs_create_tag,
