@@ -53,6 +53,8 @@ import { tx } from "@/platform/i18n";
 import { addToIgnore } from "./ignore";
 
 const VCS = "vcsAvailable";
+// Project-tree selections have their own path gate; the last editor may belong to jj.
+const FILE_VCS = "vcsAvailable && (!vcsJjPath || activeToolWindow == project)";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
 
 function argPath(arg: unknown): string | undefined {
@@ -282,7 +284,7 @@ export function registerVcsActions(): () => void {
       title: "Rollback…",
       category: "Git",
       icon: "undo",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["revert", "discard"],
       run: ({ arg }) => {
         const explicit = argPaths(arg);
@@ -313,7 +315,7 @@ export function registerVcsActions(): () => void {
       title: "Show Diff",
       category: "Git",
       icon: "diff",
-      when: VCS,
+      when: FILE_VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       keyWhen: "!editorTextFocus",
       run: async ({ arg, ctx }) => {
@@ -351,7 +353,7 @@ export function registerVcsActions(): () => void {
       title: "Compare with Branch or Revision…",
       category: "Git",
       icon: "diff",
-      when: VCS,
+      when: FILE_VCS,
       run: async ({ arg }) => {
         const selection = arg === undefined ? projectViewSelection() : [];
         const paths = selection.length ? selection : contextPaths(arg);
@@ -393,7 +395,7 @@ export function registerVcsActions(): () => void {
       title: "Annotate with Git Blame",
       category: "Git",
       icon: "history",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["blame", "annotations"],
       toggled: () => {
         const ed = activeEditor();
@@ -464,7 +466,7 @@ export function registerVcsActions(): () => void {
       title: "Show History for File",
       category: "Git",
       icon: "history",
-      when: VCS,
+      when: FILE_VCS,
       run: ({ arg }) => {
         const path = contextPaths(arg)[0];
         if (!path) return;
@@ -490,7 +492,7 @@ export function registerVcsActions(): () => void {
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",
       title: destination === "gitignore" ? "Add to .gitignore" : "Add to .git/info/exclude",
       category: "Git",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["ignore", "unversioned", "exclude"],
       run: ({ arg }) => addToIgnore(contextPaths(arg), destination),
     })),
@@ -499,7 +501,7 @@ export function registerVcsActions(): () => void {
       title: "Add to VCS",
       category: "Git",
       icon: "plus",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["git add", "stage"],
       run: ({ arg }) => {
         return addToVcs(contextPaths(arg));

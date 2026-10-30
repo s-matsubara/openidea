@@ -748,6 +748,7 @@ impl Project {
     }
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        repo.require_git()?;
         let settings = self.settings.effective();
         if self.is_trusted() {
             apply_git_executable(&settings);
@@ -1297,6 +1298,8 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
 
 /// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
 pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
+    let jj = settings.vcs.jj.executable.trim();
+    ide_vcs::set_jj_executable((!jj.is_empty()).then(|| Path::new(jj)));
     let exe = settings.vcs.git.executable.trim();
     ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
 }

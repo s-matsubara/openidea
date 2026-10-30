@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isJjPath } from "../store";
+import { registerVcsActions } from "../actions";
+import { getAction } from "@/platform/actions";
+import { evaluateWhen } from "@/platform/context";
 import type { Branch, BranchInfo, Commit, FileStatus } from "@/bindings";
 
 const vcsStatus = vi.fn();
+const vcsRoots = vi.fn();
+const vcsBranchInfo = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -10,8 +16,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsStatus: () => vcsStatus(),
-      vcsBranchInfo: async () => ({ status: "ok", data: info() }),
-      vcsRoots: async () => ({ status: "ok", data: [{ root: "/p", operation: null }] }),
+      vcsBranchInfo: (repo: string | null) => vcsBranchInfo(repo),
+      vcsRoots: () => vcsRoots(),
     },
   };
 });
@@ -237,7 +243,50 @@ describe("log ordering and staleness", () => {
 describe("status refresh", () => {
   beforeEach(() => {
     vcsStatus.mockReset();
+    vcsRoots.mockReset().mockResolvedValue({ status: "ok", data: [{ root: "/p", kind: "git", operation: null }] });
+    vcsBranchInfo.mockReset().mockResolvedValue({ status: "ok", data: info() });
     useVcs.setState({ available: true, branchesLoaded: false, stashesLoaded: false, status: [] });
+  });
+
+  it("disables jj file actions while keeping selected Git root operations available", () => {
+    const dispose = registerVcsActions();
+    try {
+      const context = { vcsAvailable: true, vcsJjPath: true };
+      for (const id of ["vcs.addToVcs", "vcs.rollback", "vcs.showDiff", "vcs.showHistory", "vcs.annotate"]) {
+        expect(evaluateWhen(getAction(id)?.when, context), id).toBe(false);
+      }
+      expect(evaluateWhen(getAction("vcs.push")?.when, context)).toBe(true);
+      expect(evaluateWhen(getAction("vcs.addToVcs")?.when, { ...context, activeToolWindow: "project" })).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps Git operations scoped to a Git root when the primary root uses jj", async () => {
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [
+        { root: "/jj", kind: "jj", operation: null },
+        { root: "/git", kind: "git", operation: null },
+      ],
+    });
+    vcsStatus.mockResolvedValue({ status: "ok", data: [] });
+    useVcs.setState({ repo: null });
+    await refreshNow();
+    expect(vcsBranchInfo).toHaveBeenCalledWith("/git");
+    expect(useVcs.getState().roots).toEqual(["/git"]);
+    expect(useVcs.getState().repo).toBe("/git");
+    expect(useVcs.getState().available).toBe(true);
+    expect(isJjPath("/jj/file.txt")).toBe(true);
+    expect(isJjPath("/git/file.txt")).toBe(false);
+  });
+
+  it("disables unsupported Git actions when all roots use jj", async () => {
+    vcsRoots.mockResolvedValue({ status: "ok", data: [{ root: "/jj", kind: "jj", operation: null }] });
+    await refreshNow();
+    expect(vcsBranchInfo).not.toHaveBeenCalled();
+    expect(vcsStatus).not.toHaveBeenCalled();
+    expect(useVcs.getState().available).toBe(false);
   });
 
   it("a refresh requested while one is running resolves only after a newer refresh", async () => {
@@ -246,6 +295,7 @@ describe("status refresh", () => {
       .mockImplementationOnce(() => new Promise((r) => (release = r)))
       .mockImplementationOnce(async () => ({ status: "ok", data: [fs("after.ts", { unstaged: "modified" })] }));
     const first = refreshNow();
+    await Promise.resolve();
     await Promise.resolve();
     // An operation finished while the first refresh was in flight.
     const second = refreshNow();

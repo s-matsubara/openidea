@@ -383,6 +383,18 @@ pub fn vcs_detected_git(state: State<'_, AppState>) -> Option<String> {
     ide_host::ops::vcs::vcs_detected_git(&state.host, "")
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_version(state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
+    ide_host::ops::vcs::vcs_jj_version(&state.host, "", path).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn vcs_detected_jj(state: State<'_, AppState>) -> Option<String> {
+    ide_host::ops::vcs::vcs_detected_jj(&state.host, "")
+}
+
 /// `git config --get <key>` in the project repository; `None` when unset.
 #[tauri::command]
 #[specta::specta]

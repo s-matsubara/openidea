@@ -18,6 +18,8 @@ use crate::apply_git_executable;
 pub struct VcsRoot {
     /// Worktree root.
     pub root: ide_core::IpcPath,
+    pub kind: VcsKind,
+    pub unavailable_reason: Option<String>,
     /// Merge / rebase / cherry-pick / revert in progress.
     pub operation: Option<String>,
     /// Current branch; `None` when HEAD is detached (or unreadable).
@@ -117,6 +119,10 @@ fn per_repo(
     if groups.is_empty() {
         return project.with_repo_recorded(None, recorded, |r| f(r, paths));
     }
+    // Reject mixed Git/jj selections before changing any repository.
+    for (repo, _) in &groups {
+        repo.require_git()?;
+    }
     for (repo, paths) in groups {
         project.with_repo_recorded(Some(repo.root()), recorded, |r| f(r, &paths))?;
     }
@@ -168,7 +174,9 @@ fn keep_private(root: &Path) {
 
 /// The project's repositories, the primary one first.
 pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
-    let repos = host.project(window)?.repos();
+    let project = host.project(window)?;
+    apply_git_executable(&project.settings.effective());
+    let repos = project.repos();
     let primary = repos.primary().map(|r| r.root().to_path_buf());
     let mut all: Vec<&std::sync::Arc<Repo>> = repos.all().iter().collect();
     all.sort_by_key(|r| Some(r.root()) != primary.as_deref());
@@ -176,7 +184,19 @@ pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
         .into_iter()
         .map(|r| {
             let (head, head_commit) = r.head().unwrap_or_default();
-            VcsRoot { root: r.root().to_path_buf().into(), operation: r.operation().ok().flatten(), head, head_commit }
+            let unavailable_reason = if r.kind() == VcsKind::Jj {
+                Some("Jujutsu repository detected. Working-copy status and operations are not supported yet.".into())
+            } else {
+                None
+            };
+            VcsRoot {
+                root: r.root().to_path_buf().into(),
+                kind: r.kind(),
+                unavailable_reason,
+                operation: r.operation().ok().flatten(),
+                head,
+                head_commit,
+            }
         })
         .collect())
 }
@@ -596,6 +616,28 @@ pub async fn vcs_git_version(host: &Host, window: &str, path: String) -> IdeResu
 /// The auto-detected git executable (shown as the field's placeholder).
 pub fn vcs_detected_git(_host: &Host, _window: &str) -> Option<String> {
     ide_vcs::detected_git_executable().map(|p| p.to_string_lossy().into_owned())
+}
+
+pub async fn vcs_jj_version(host: &Host, window: &str, path: String) -> IdeResult<GitExecutableInfo> {
+    host.require_trust(window)?;
+    blocking(move || {
+        let exe = if path.trim().is_empty() {
+            ide_vcs::detected_jj_executable().ok_or_else(|| {
+                ide_core::IdeError::unavailable(
+                    "jj executable not found; install Jujutsu or configure Settings > Version Control > Jujutsu",
+                )
+            })?
+        } else {
+            PathBuf::from(path.trim())
+        };
+        let version = ide_vcs::jj_version(Some(&exe))?;
+        Ok(GitExecutableInfo { version, path: exe.to_string_lossy().into_owned() })
+    })
+    .await
+}
+
+pub fn vcs_detected_jj(_host: &Host, _window: &str) -> Option<String> {
+    ide_vcs::detected_jj_executable().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// `git config --get <key>` in the project repository; `None` when unset.
@@ -1085,6 +1127,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_init", |c| async move { vcs_init(&c.host, &c.window, c.arg("dir")?).await });
     d.add("vcs_git_version", |c| async move { vcs_git_version(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_detected_git", |c| async move { Ok(vcs_detected_git(&c.host, &c.window)) });
+    d.add("vcs_jj_version", |c| async move { vcs_jj_version(&c.host, &c.window, c.arg("path")?).await });
+    d.add("vcs_detected_jj", |c| async move { Ok(vcs_detected_jj(&c.host, &c.window)) });
     d.add("vcs_config_get", |c| async move { vcs_config_get(&c.host, &c.window, c.arg("repo")?, c.arg("key")?).await });
     d.add("vcs_operation", |c| async move {
         vcs_operation(&c.host, &c.window, c.arg("repo")?, c.arg("request")?, c.arg("op")?, c.sender("onOutput")?).await

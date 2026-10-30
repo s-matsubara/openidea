@@ -474,6 +474,8 @@ export const commands = {
 	vcsGitVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_git_version", { path })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
+	vcsJjVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_jj_version", { path })),
+	vcsDetectedJj: () => __TAURI_INVOKE<string | null>("vcs_detected_jj"),
 	/**  `git config --get <key>` in the project repository; `None` when unset. */
 	vcsConfigGet: (repo: string | null, key: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_config_get", { repo, key })),
 	/**
@@ -4246,6 +4248,10 @@ export type JvmPresentation = {
 
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
+export type JjSettings = {
+	/**  Path to jj; empty = auto-detect. */
+	executable?: string,
+};
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = {
 	/**  Java formatter: `default` | `intellij` | `custom` (other languages ignore it). */
@@ -6657,10 +6663,15 @@ export type VcsConfirmationSettings = {
 	onPatchCreated?: string,
 };
 
+/**  The VCS that owns a worktree. This determines operation capabilities. */
+export type VcsKind = "git" | "jj";
+
 /**  A repository of the project (IDEA's VCS root). */
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	kind: VcsKind,
+	unavailableReason: string | null,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
@@ -6677,6 +6688,7 @@ export type VcsSettings = {
 	limitHistory?: boolean,
 	historyLimit?: number,
 	git?: GitSettings,
+	jj?: JjSettings,
 	commit?: CommitSettings,
 	confirmation?: VcsConfirmationSettings,
 	shelf?: ShelfSettings,

@@ -57,6 +57,7 @@ export interface VcsSettingsValid {
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
+  jj: { executable: string };
   commit: CommitSettingsValid;
   confirmation: {
     onCreate: VcsConfirm;
@@ -183,6 +184,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     showDirtyDirectories: false,
     limitHistory: true,
     historyLimit: 1000,
+    jj: { executable: "" },
     git: {
       inlineBlame: false,
       executable: "",
@@ -310,6 +312,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
+    jj: { executable: text(obj(v.jj).executable, d.jj.executable).trim() },
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
       executable: text(g.executable, d.git.executable).trim(),
