@@ -465,7 +465,7 @@ mod refs;
 mod remotes;
 mod repo;
 mod roots;
-pub use jj::{detected_jj_executable, jj_version, set_jj_executable};
+pub use jj::{JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -555,6 +555,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
     }
+    /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
+    pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(ide_core::IdeError::unavailable(
+                "Project is in Restricted Mode. Trust the project to enable execution.",
+            ));
+        }
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::working_copy(self)
+    }
+
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {

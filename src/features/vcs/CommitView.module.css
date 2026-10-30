@@ -327,3 +327,39 @@
 .checkProblemLink:hover {
   text-decoration: underline;
 }
+
+/* Each jj root keeps a bounded file viewport; metadata and roots scroll together. */
+.jjCopies {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.jjFiles {
+  min-height: 22px;
+}
+.jjList {
+  height: 100%;
+}
+
+.jjDetails {
+  padding: 0 6px 4px;
+}
+.jjDetails summary {
+  cursor: pointer;
+  color: var(--fg-subtle);
+}
+.jjDescription {
+  white-space: pre-wrap;
+}
+.jjPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jjKind {
+  flex: none;
+  color: var(--fg-subtle);
+}
