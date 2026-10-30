@@ -3822,6 +3822,15 @@ export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
 	executable?: string,
 };
+
+/**  A display snapshot of @. Files reuse the shared status model, without staging semantics. */
+export type JjWorkingCopy = {
+	changeId: string,
+	commitId: string,
+	description: string,
+	files: FileStatus[],
+};
+
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;
 
@@ -6218,6 +6227,7 @@ export type VcsRoot = {
 	root: IpcPath,
 	kind: VcsKind,
 	unavailableReason: string | null,
+	workingCopy: JjWorkingCopy | null,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */

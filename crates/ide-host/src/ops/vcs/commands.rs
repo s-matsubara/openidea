@@ -20,6 +20,7 @@ pub struct VcsRoot {
     pub root: ide_core::IpcPath,
     pub kind: VcsKind,
     pub unavailable_reason: Option<String>,
+    pub working_copy: Option<JjWorkingCopy>,
     /// Merge / rebase / cherry-pick / revert in progress.
     pub operation: Option<String>,
     /// Current branch; `None` when HEAD is detached (or unreadable).
@@ -184,15 +185,23 @@ pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
         .into_iter()
         .map(|r| {
             let (head, head_commit) = r.head().unwrap_or_default();
-            let unavailable_reason = if r.kind() == VcsKind::Jj {
-                Some("Jujutsu repository detected. Working-copy status and operations are not supported yet.".into())
+            let (working_copy, unavailable_reason) = if r.kind() == VcsKind::Jj {
+                r.set_ignored_names(project.settings.effective().ignored_names());
+                match r.jj_working_copy() {
+                    Ok(mut copy) => {
+                        copy.files.retain(|f| repos.for_path(&f.path).is_some_and(|owner| owner.root() == r.root()));
+                        (Some(copy), None)
+                    }
+                    Err(e) => (None, Some(e.to_string())),
+                }
             } else {
-                None
+                (None, None)
             };
             VcsRoot {
                 root: r.root().to_path_buf().into(),
                 kind: r.kind(),
                 unavailable_reason,
+                working_copy,
                 operation: r.operation().ok().flatten(),
                 head,
                 head_commit,

@@ -51,7 +51,7 @@ import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } fr
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { openDiff, withChain, workingDiffData } from "./diffInput";
-import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
@@ -105,6 +105,7 @@ export function CommitTabs() {
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = useCommit((s) => s.tab);
+  const jj = useVcs((s) => s.jjRoots.length > 0);
   const counts = useStashTabCounts(available);
   return (
     <Tabs
@@ -114,7 +115,7 @@ export function CommitTabs() {
       onSelect={(id) => useCommit.setState({ tab: id as CommitTab })}
       aria-label="Commit"
       items={tabItems([
-        { id: "changes", label: "Commit" },
+        { id: "changes", label: jj && !available ? "Working Copy" : "Commit" },
         ...(available ? stashTabs({ combine, tab, ...counts }) : []),
       ])}
     />
@@ -122,19 +123,103 @@ export function CommitTabs() {
 }
 
 export function CommitToolWindow() {
+  const jj = useVcs((s) => s.jjRoots.length > 0);
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = stashTabOf(
     useCommit((s) => s.tab),
     combine,
   );
-  if (!available)
+  if (!available && !jj)
     return (
       <EmptyState icon="commit" title="Version control is not configured">
         <T>Open a Git repository to commit changes.</T>
       </EmptyState>
     );
-  return <div className={styles.root}>{tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}</div>;
+  return (
+    <div className={styles.root}>
+      {jj && available ? (
+        <SplitGroup orientation="vertical" className={styles.split}>
+          <SplitPanel defaultSize="40%" minSize="80px">
+            <JjWorkingCopies />
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel defaultSize="60%" minSize="120px">
+            {tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}
+          </SplitPanel>
+        </SplitGroup>
+      ) : jj ? (
+        <JjWorkingCopies />
+      ) : tab === "changes" ? (
+        <ChangesPanel />
+      ) : (
+        <StashContent tab={tab} />
+      )}
+    </div>
+  );
+}
+
+/** Read-only @ display: deliberately has no Git action menus or inclusion controls. */
+export function JjWorkingCopies() {
+  const roots = useVcs((s) => s.jjRoots);
+  const gitRootCount = useVcs((s) => s.roots.length);
+  const error = useVcs((s) => s.error);
+  return (
+    <div className={styles.jjCopies} aria-label="Jujutsu working copies">
+      <div className={styles.toolbar}>
+        <span>Working Copy @</span>
+        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
+      </div>
+      {error && <div role="alert">{error}</div>}
+      {roots.map((root) => (
+        <section key={root.root} aria-label={root.root}>
+          {roots.length + gitRootCount > 1 && <div className={styles.toolbar}>{repoName(root.root)}</div>}
+          {root.unavailableReason ? (
+            <div role="alert">{root.unavailableReason}</div>
+          ) : root.workingCopy ? (
+            <>
+              <details className={styles.jjDetails}>
+                <summary>Working-copy details</summary>
+                <div>Change ID: {root.workingCopy.changeId}</div>
+                <div>Commit ID: {root.workingCopy.commitId}</div>
+                <div className={styles.jjDescription}>{root.workingCopy.description || "(no description set)"}</div>
+              </details>
+              <div
+                className={styles.jjFiles}
+                style={{ height: Math.min(220, Math.max(22, root.workingCopy.files.length * 22)) }}
+              >
+                <List
+                  className={styles.jjList}
+                  items={root.workingCopy.files}
+                  getKey={(f) => f.path}
+                  rowHeight={22}
+                  aria-label="Working-copy changes"
+                  empty={<span className={styles.empty}>No working-copy changes</span>}
+                  onActivate={(f) => {
+                    if (effectiveKind(f) !== "deleted") void editorService().openFile(f.path, { focus: true });
+                  }}
+                  renderItem={(f) => {
+                    const kind = effectiveKind(f) ?? "modified";
+                    return (
+                      <>
+                        <Icon className={styles.icon} name={fileIconName(f.relPath)} size={16} />
+                        <span className={styles.jjPath} style={{ color: KIND_COLOR[kind] }} title={f.relPath}>
+                          {f.relPath}
+                        </span>
+                        <span className={styles.jjKind}>{KIND_LABEL[kind]}</span>
+                      </>
+                    );
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <div role="alert">Working-copy status unavailable</div>
+          )}
+        </section>
+      ))}
+    </div>
+  );
 }
 
 /** The Shelf, Stash or combined "Stashes and Shelves" tab. */
