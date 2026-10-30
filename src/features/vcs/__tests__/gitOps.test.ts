@@ -245,7 +245,7 @@ describe("status refresh", () => {
     vcsStatus.mockReset();
     vcsRoots.mockReset().mockResolvedValue({ status: "ok", data: [{ root: "/p", kind: "git", operation: null }] });
     vcsBranchInfo.mockReset().mockResolvedValue({ status: "ok", data: info() });
-    useVcs.setState({ available: true, branchesLoaded: false, stashesLoaded: false, status: [] });
+    useVcs.setState({ available: true, jjRoots: [], branchesLoaded: false, stashesLoaded: false, status: [] });
   });
 
   it("disables jj file actions while keeping selected Git root operations available", () => {
@@ -287,6 +287,33 @@ describe("status refresh", () => {
     expect(vcsBranchInfo).not.toHaveBeenCalled();
     expect(vcsStatus).not.toHaveBeenCalled();
     expect(useVcs.getState().available).toBe(false);
+  });
+
+  it("refreshes jj-only readable state without enabling Git commands", async () => {
+    const copy = {
+      changeId: "change",
+      commitId: "commit",
+      description: "subject\nbody\n",
+      files: [fs("日本語\tfile", { unstaged: "added" })],
+    };
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: copy, unavailableReason: null }],
+    });
+    useVcs.setState({ available: false, jjRoots: [{ root: "/jj", kind: "jj" }] as never });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toEqual(copy);
+    expect(useVcs.getState().status).toEqual([]);
+    expect(useVcs.getState().available).toBe(false);
+    expect(vcsStatus).not.toHaveBeenCalled();
+    expect(vcsBranchInfo).not.toHaveBeenCalled();
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: null, unavailableReason: "CLI failed" }],
+    });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.unavailableReason).toBe("CLI failed");
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toBeNull();
   });
 
   it("a refresh requested while one is running resolves only after a newer refresh", async () => {

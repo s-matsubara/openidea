@@ -10,11 +10,11 @@
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { create } from "zustand";
-import type { Branch, BranchInfo, FileStatus, Stash } from "@/bindings";
+import type { Branch, BranchInfo, FileStatus, Stash, VcsRoot } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { setContext, useContextKeys } from "@/platform/context";
 import { useProject } from "@/platform/project";
-import { notifications, setFileDecorations } from "@/workbench/contributions";
+import { setFileDecorations } from "@/workbench/contributions";
 import { effectiveKind, repoLabel, rootOf, statusDecorations, stripSlash } from "./model";
 
 export interface RepoHead {
@@ -25,6 +25,8 @@ export interface RepoHead {
 export interface VcsState {
   /** The open project is a git repository. */
   available: boolean;
+  /** Readable jj roots; independent of Git operation availability. */
+  jjRoots: VcsRoot[];
   root: string | null;
   /** Repository roots, the project's own repository first. */
   roots: string[];
@@ -55,6 +57,7 @@ export interface VcsState {
 
 const initial: VcsState = {
   available: false,
+  jjRoots: [],
   root: null,
   roots: [],
   kinds: {},
@@ -155,7 +158,7 @@ export function onConflictsCleared(fn: () => void) {
 }
 
 export function scheduleRefresh(delay = 200) {
-  if (!useVcs.getState().available) return;
+  if (!useVcs.getState().available && !useVcs.getState().jjRoots.length) return;
   clearTimeout(timer);
   timer = setTimeout(() => void refreshNow(), delay);
 }
@@ -166,7 +169,7 @@ export function scheduleRefresh(delay = 200) {
  * that await it read the state their operation produced.
  */
 export function refreshNow(): Promise<void> {
-  if (!useVcs.getState().available) return Promise.resolve();
+  if (!useVcs.getState().available && !useVcs.getState().jjRoots.length) return Promise.resolve();
   if (inflight) {
     followUp ??= inflight.then(() => {
       followUp = null;
@@ -179,7 +182,8 @@ export function refreshNow(): Promise<void> {
     try {
       const s = useVcs.getState();
       const vcsRoots = await call(commands.vcsRoots());
-      useVcs.setState({ kinds: Object.fromEntries(vcsRoots.map((r) => [r.root, r.kind ?? "git"])) });
+      const jjRoots = vcsRoots.filter((r) => r.kind === "jj");
+      useVcs.setState({ jjRoots, kinds: Object.fromEntries(vcsRoots.map((r) => [r.root, r.kind ?? "git"])) });
       const roots = vcsRoots.filter((r) => r.kind !== "jj").map((r) => r.root);
       const selectedRepo = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
       if (!selectedRepo) {
@@ -199,6 +203,7 @@ export function refreshNow(): Promise<void> {
           error: null,
         });
         setContext("vcsAvailable", false);
+        applyStatus([], null);
         return;
       }
       const scoped = Promise.all([
@@ -227,7 +232,8 @@ export function refreshNow(): Promise<void> {
       const heads = Object.fromEntries(
         vcsRoots.filter((r) => r.kind !== "jj").map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]),
       );
-      useVcs.setState({ operations, heads });
+      useVcs.setState({ available: true, operations, heads });
+      setContext("vcsAvailable", true);
       if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
@@ -251,7 +257,13 @@ export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
   const before = conflictedFiles().length;
   const byPath = new Map(status.map((f) => [stripSlash(f.path), f]));
   useVcs.setState({ status, byPath, branch, statusLoaded: true });
-  setFileDecorations("vcs", statusDecorations(status, workflowSettings().vcs.showDirtyDirectories));
+  setFileDecorations(
+    "vcs",
+    statusDecorations(
+      [...status, ...useVcs.getState().jjRoots.flatMap((r) => r.workingCopy?.files ?? [])],
+      workflowSettings().vcs.showDirtyDirectories,
+    ),
+  );
   const conflicts = conflictedFiles(status);
   if (before === 0 && conflicts.length > 0) conflictListener?.(conflicts);
   else if (before > 0 && conflicts.length === 0) conflictsClearedListener?.();
@@ -282,17 +294,11 @@ async function discoverRoots() {
   const roots = await call(commands.vcsRoots()).catch(() => []);
   if (useVcs.getState().root !== root || useVcs.getState().available) return;
   useVcs.setState({ kinds: Object.fromEntries(roots.map((r) => [r.root, r.kind ?? "git"])) });
-  for (const repo of roots.filter((r) => r.kind === "jj")) {
-    notifications().notify({
-      group: "vcs",
-      level: "info",
-      title: "Jujutsu repository detected",
-      body: `${repo.root}: ${repo.unavailableReason ?? "Working-copy status and operations are not supported yet."}`,
-    });
-  }
-  if (!roots.some((r) => r.kind !== "jj")) return;
-  useVcs.setState({ available: true });
-  setContext("vcsAvailable", true);
+  useVcs.setState({ jjRoots: roots.filter((r) => r.kind === "jj") });
+  if (!roots.length) return;
+  const available = roots.some((r) => r.kind !== "jj");
+  useVcs.setState({ available });
+  setContext("vcsAvailable", available);
   void refreshNow();
 }
 
@@ -326,7 +332,7 @@ export function installVcsStore(): () => void {
     if (s.project !== prev.project) onProject();
   });
   const offVcs = onIdeEvent("vcsChanged", () => {
-    if (useVcs.getState().available) scheduleRefresh(200);
+    if (useVcs.getState().available || useVcs.getState().jjRoots.length) scheduleRefresh(200);
     else void discoverRoots();
   });
   // `.git/**` internals show up through other watchers too; refreshing status
@@ -338,7 +344,14 @@ export function installVcsStore(): () => void {
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,
     (show) => {
-      if (useVcs.getState().available) setFileDecorations("vcs", statusDecorations(useVcs.getState().status, show));
+      if (useVcs.getState().available || useVcs.getState().jjRoots.length)
+        setFileDecorations(
+          "vcs",
+          statusDecorations(
+            [...useVcs.getState().status, ...useVcs.getState().jjRoots.flatMap((r) => r.workingCopy?.files ?? [])],
+            show,
+          ),
+        );
     },
   );
   return () => {
