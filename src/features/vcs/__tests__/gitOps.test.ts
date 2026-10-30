@@ -1,7 +1,21 @@
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { hunkField, setHunksEffect } from "../gutter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isJjPath } from "../store";
+import { registerVcsActions } from "../actions";
+import { getAction } from "@/platform/actions";
+import { evaluateWhen } from "@/platform/context";
 import type { Branch, BranchInfo, Commit, FileStatus } from "@/bindings";
 
+const activeEditorMock = vi.hoisted(() => vi.fn());
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  activeEditor: activeEditorMock,
+}));
 const vcsStatus = vi.fn();
+const vcsRoots = vi.fn();
+const vcsBranchInfo = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -10,8 +24,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsStatus: () => vcsStatus(),
-      vcsBranchInfo: async () => ({ status: "ok", data: info() }),
-      vcsRoots: async () => ({ status: "ok", data: [{ root: "/p", operation: null }] }),
+      vcsBranchInfo: (repo: string | null) => vcsBranchInfo(repo),
+      vcsRoots: () => vcsRoots(),
     },
   };
 });
@@ -237,7 +251,110 @@ describe("log ordering and staleness", () => {
 describe("status refresh", () => {
   beforeEach(() => {
     vcsStatus.mockReset();
-    useVcs.setState({ available: true, branchesLoaded: false, stashesLoaded: false, status: [] });
+    vcsRoots.mockReset().mockResolvedValue({ status: "ok", data: [{ root: "/p", kind: "git", operation: null }] });
+    vcsBranchInfo.mockReset().mockResolvedValue({ status: "ok", data: info() });
+    useVcs.setState({ available: true, jjRoots: [], branchesLoaded: false, stashesLoaded: false, status: [] });
+  });
+
+  it("routes annotation separately from Git file actions in a jj editor", () => {
+    const dispose = registerVcsActions();
+    try {
+      const context = { vcsAvailable: true, vcsJjPath: true };
+      for (const id of ["vcs.addToVcs", "vcs.rollback", "vcs.showDiff", "vcs.showHistory", "vcs.annotate"]) {
+        expect(evaluateWhen(getAction(id)?.when, context), id).toBe(false);
+      }
+      expect(evaluateWhen(getAction("vcs.jjAnnotate")?.when, { vcsAvailable: false, vcsJjPath: true })).toBe(true);
+      expect(evaluateWhen(getAction("vcs.jjAnnotate")?.when, { vcsAvailable: true, vcsJjPath: false })).toBe(false);
+      expect(evaluateWhen(getAction("vcs.push")?.when, context)).toBe(true);
+      expect(evaluateWhen(getAction("vcs.addToVcs")?.when, { ...context, activeToolWindow: "project" })).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("rolls back selected jj lines without falling through to Git operations", () => {
+    const dispose = registerVcsActions();
+    const view = new EditorView({ state: EditorState.create({ doc: "new\nkeep\n", extensions: [hunkField] }) });
+    view.dispatch({
+      effects: setHunksEffect.of([
+        { kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "old\n" },
+      ]),
+    });
+    activeEditorMock.mockReturnValue({
+      ctx: { path: "/jj/file" },
+      view: {
+        get state() {
+          return view.state;
+        },
+        hasFocus: true,
+        dispatch: view.dispatch.bind(view),
+      },
+    });
+    useVcs.setState({ kinds: { "/jj": "jj" } });
+    try {
+      const action = getAction("vcs.rollback")!;
+      expect(() => action.run({} as Parameters<typeof action.run>[0])).not.toThrow();
+      expect(view.state.doc.toString()).toBe("old\nkeep\n");
+      expect(evaluateWhen(action.when, { vcsAvailable: false, vcsJjPath: true, editorTextFocus: true })).toBe(true);
+    } finally {
+      view.destroy();
+      activeEditorMock.mockReset();
+      dispose();
+    }
+  });
+
+  it("keeps Git operations scoped to a Git root when the primary root uses jj", async () => {
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [
+        { root: "/jj", kind: "jj", operation: null },
+        { root: "/git", kind: "git", operation: null },
+      ],
+    });
+    vcsStatus.mockResolvedValue({ status: "ok", data: [] });
+    useVcs.setState({ repo: null });
+    await refreshNow();
+    expect(vcsBranchInfo).toHaveBeenCalledWith("/git");
+    expect(useVcs.getState().roots).toEqual(["/git"]);
+    expect(useVcs.getState().repo).toBe("/git");
+    expect(useVcs.getState().available).toBe(true);
+    expect(isJjPath("/jj/file.txt")).toBe(true);
+    expect(isJjPath("/git/file.txt")).toBe(false);
+  });
+
+  it("disables unsupported Git actions when all roots use jj", async () => {
+    vcsRoots.mockResolvedValue({ status: "ok", data: [{ root: "/jj", kind: "jj", operation: null }] });
+    await refreshNow();
+    expect(vcsBranchInfo).not.toHaveBeenCalled();
+    expect(vcsStatus).not.toHaveBeenCalled();
+    expect(useVcs.getState().available).toBe(false);
+  });
+
+  it("refreshes jj-only readable state without enabling Git commands", async () => {
+    const copy = {
+      changeId: "change",
+      commitId: "commit",
+      description: "subject\nbody\n",
+      files: [fs("日本語\tfile", { unstaged: "added" })],
+    };
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: copy, unavailableReason: null }],
+    });
+    useVcs.setState({ available: false, jjRoots: [{ root: "/jj", kind: "jj" }] as never });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toEqual(copy);
+    expect(useVcs.getState().status).toEqual([]);
+    expect(useVcs.getState().available).toBe(false);
+    expect(vcsStatus).not.toHaveBeenCalled();
+    expect(vcsBranchInfo).not.toHaveBeenCalled();
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: null, unavailableReason: "CLI failed" }],
+    });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.unavailableReason).toBe("CLI failed");
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toBeNull();
   });
 
   it("a refresh requested while one is running resolves only after a newer refresh", async () => {
@@ -246,6 +363,7 @@ describe("status refresh", () => {
       .mockImplementationOnce(() => new Promise((r) => (release = r)))
       .mockImplementationOnce(async () => ({ status: "ok", data: [fs("after.ts", { unstaged: "modified" })] }));
     const first = refreshNow();
+    await Promise.resolve();
     await Promise.resolve();
     // An operation finished while the first refresh was in flight.
     const second = refreshNow();

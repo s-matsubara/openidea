@@ -432,3 +432,10 @@
     min-height: 90px;
   }
 }
+
+.pushRefSummary {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

@@ -292,7 +292,11 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
-        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(&settings.effective(), &root, &build_cache))?));
+        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(
+            &settings.effective(),
+            &root,
+            &build_cache,
+        ))?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -834,6 +838,7 @@ impl Project {
     }
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
+        repo.require_git()?;
         let settings = self.settings.effective();
         if self.is_trusted() {
             apply_git_executable(&settings);
@@ -1473,6 +1478,8 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
 
 /// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
 pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
+    let jj = settings.vcs.jj.executable.trim();
+    ide_vcs::set_jj_executable((!jj.is_empty()).then(|| Path::new(jj)));
     let exe = settings.vcs.git.executable.trim();
     ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
 }
@@ -1723,5 +1730,30 @@ mod composer_tests {
         assert!(changed(&["src/a.php", "composer.json"]));
         assert!(!changed(&["composer.lock", "vendor/acme/lib/composer.json", "packages/b/composer.json"]));
         assert!(!changed(&[]));
+    }
+}
+
+#[cfg(test)]
+mod repository_scan_tests {
+    use super::*;
+    #[test]
+    fn a_scan_started_before_detach_cannot_restore_removed_members() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let kept = base.join("kept");
+        let detached = base.join("detached");
+        for path in [&kept, &detached] {
+            std::fs::create_dir_all(path.join(".jj")).unwrap();
+        }
+        let container = base.join("workspace");
+        let before = vec![kept.clone(), detached.clone()];
+        ide_workspace::workspace::Workspace::save(&container, "Test", before.clone(), true).unwrap();
+        let old_scan = Repos::discover_roots(&before, &|_| false).unwrap();
+        ide_workspace::workspace::Workspace::save(&container, "Test", vec![kept.clone()], false).unwrap();
+        let current = RwLock::new(Repos::enclosing_roots(&[kept.clone()]).unwrap());
+        let settings = SettingsStore::load(&base.join("config"), Some(&container));
+        let sink: SharedSink = Arc::new(ide_core::NullSink);
+        apply_repository_scan(&container, &current, &settings, &sink, &base, &before, old_scan);
+        assert_eq!(current.read().roots(), vec![kept]);
     }
 }

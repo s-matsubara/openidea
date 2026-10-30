@@ -60,6 +60,7 @@ import { errorMessage, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
+import { JjMergeEditor } from "./JjMergeEditor";
 import type { MergeData } from "./mergeKind";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
@@ -90,7 +91,7 @@ const writeAutoApply = (on: boolean) => {
   }
 };
 
-export function MergeEditor({ input }: { input: EditorInput }) {
+function GitMergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
   const [state, setState] = useState<{
     ours: string;
@@ -613,4 +614,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       <MergeFooter />
     </div>
   );
+}
+
+export function MergeEditor({ input }: { input: EditorInput }) {
+  return (input.data as MergeData).vcs === "jj" ? <JjMergeEditor input={input} /> : <GitMergeEditor input={input} />;
 }

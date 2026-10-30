@@ -207,6 +207,9 @@ pub(crate) fn run_paths(root: &Path, args: &[&str], paths: &[String]) -> IdeResu
 
 /// Builds a `git` command with the environment every invocation needs.
 pub(crate) fn command(root: &Path) -> IdeResult<Command> {
+    if crate::repo::jj_root(root).is_some() {
+        return Err(IdeError::unavailable("Git commands are disabled inside Jujutsu repositories"));
+    }
     let restricted = !crate::execution_allowed();
     let binary = if restricted {
         detected_git().ok_or_else(|| IdeError::unavailable("git executable not found"))?.to_path_buf()

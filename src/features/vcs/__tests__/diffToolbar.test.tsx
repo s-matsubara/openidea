@@ -7,10 +7,12 @@ import { EditorView } from "@codemirror/view";
 import { ContextMenuHost, iconMarkup } from "@/ui";
 
 const probe = vi.fn();
+const jjAnnotate = vi.fn();
 const openFile = vi.fn();
 const openInput = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
+let readOnly = false;
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -18,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      vcsJjAnnotate: (...args: unknown[]) => jjAnnotate(...args),
       fsProbe: (path: string) => probe(path),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] }),
       fsReadText: () => Promise.resolve({ status: "ok", data: working }),
@@ -36,7 +39,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => working,
-      readOnly: false,
+      readOnly,
       extension: [],
       save: () => Promise.resolve(),
       release: () => {},
@@ -63,7 +66,9 @@ const input = {
 const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
 beforeEach(() => {
+  readOnly = false;
   probe.mockReset();
+  jjAnnotate.mockReset();
   openFile.mockReset();
   openInput.mockReset();
   texts.HEAD = texts.abc123 = working = "a\n";
@@ -252,6 +257,96 @@ it.each([
   fireEvent.click(screen.getByRole("button", { name: button }));
   await waitFor(() => expect(openInput).toHaveBeenCalledOnce());
   expect(openInput.mock.calls[0]![0].data).toMatchObject({ path, reveal });
+});
+
+it("renders jj snapshot sides read-only without hunk mutation controls", async () => {
+  const { diffInput } = await import("../diffInput");
+  const { jjFileDiffData } = await import("../jjDiffInput");
+  const input = diffInput(
+    jjFileDiffData("/p/a.ts", {
+      before: "old\n",
+      after: "new\n",
+      beforeLabel: "Parent 1234",
+      afterLabel: "@ 5678",
+    }),
+  );
+  render(<DiffEditor input={input} />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  for (const content of document.querySelectorAll(".cm-content"))
+    expect(content).toHaveAttribute("contenteditable", "false");
+  expect(screen.queryByRole("button", { name: /Revert|Stage|Unstage|Apply/ })).toBeNull();
+  expect(document.querySelector(".cm-changeGutter")).toBeNull();
+});
+
+it("annotates the two jj diff sides at their own revisions and rename paths", async () => {
+  const { jjFileDiffData } = await import("../jjDiffInput");
+  const root = "/p";
+  const beforeBlame = { root, path: "/p/old.ts", commit: "1".repeat(40) };
+  const afterBlame = { root, path: "/p/new.ts", commit: "2".repeat(40) };
+  jjAnnotate.mockResolvedValue({
+    status: "ok",
+    data: [{ author: "Author", commit: beforeBlame.commit, timeMs: 0, summary: "Change" }],
+  });
+  render(
+    <>
+      <DiffEditor
+        input={diffInput(
+          jjFileDiffData(afterBlame.path, {
+            before: "old",
+            after: "new",
+            beforeLabel: "Parent",
+            afterLabel: "Commit",
+            beforeBlame,
+            afterBlame,
+          }),
+        )}
+      />
+      <ContextMenuHost />
+    </>,
+  );
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  const panes = document.querySelectorAll(".cm-mergeViewEditor .cm-editor");
+  for (const [index, target, content] of [
+    [0, beforeBlame, "old"],
+    [1, afterBlame, "new"],
+  ] as const) {
+    fireEvent.contextMenu(panes[index]!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Annotate with Jujutsu Blame" }));
+    expect(jjAnnotate).toHaveBeenNthCalledWith(index + 1, target.root, target.path, target.commit, content);
+    await waitFor(() => expect(panes[index]!.querySelector(".cm-vcs-blame")).not.toBeNull());
+  }
+});
+
+it.each([false, true])("uses the live jj working document and respects read-only=%s", async (locked) => {
+  const { diffInput } = await import("../diffInput");
+  const { jjWorkingDiffData } = await import("../jjDiffInput");
+  readOnly = locked;
+  working = "unsaved\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother unsaved\n";
+  render(
+    <DiffEditor
+      input={diffInput(
+        jjWorkingDiffData("/p/a.ts", {
+          before: "parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother parent\n",
+          after: "disk\n",
+          beforeLabel: "Parent 1234",
+          afterLabel: "@ 5678",
+        }),
+      )}
+    />,
+  );
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  const panes = [...document.querySelectorAll<HTMLElement>(".cm-mergeViewEditor .cm-editor")].map((dom) =>
+    EditorView.findFromDOM(dom)!,
+  );
+  expect(panes[0]!.state.doc.toString()).toBe("parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother parent\n");
+  expect(panes[1]!.state.doc.toString()).toBe(working);
+  expect(panes[0]!.state.readOnly).toBe(true);
+  expect(panes[1]!.state.readOnly).toBe(locked);
+  if (!locked) {
+    await waitFor(() => expect(screen.getByRole("button", { name: "Revert Change" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Revert Change" }));
+    expect(panes[1]!.state.doc.toString()).toBe("parent\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nother unsaved\n");
+  } else expect(screen.queryByRole("button", { name: "Revert Change" })).toBeNull();
 });
 
 const doc = (s: string) => Text.of(s.split("\n"));

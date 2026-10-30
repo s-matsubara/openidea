@@ -559,6 +559,7 @@ mod diff;
 mod history;
 mod ignore;
 mod index_writes;
+mod jj;
 mod log_index;
 mod manage;
 mod ops;
@@ -568,6 +569,14 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
+pub use jj::remote::{
+    JjFetchOptions, JjPullOptions, JjRebaseOptions, JjRebaseRevision, JjRebaseRevisionKind, JjRemoteBookmark,
+    JjRemoteTag,
+};
+pub use jj::{
+    JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjPushOptions,
+    JjPushPreview, JjPushRequest, JjWorkingCopy, JjWorkspace, detected_jj_executable, jj_version, set_jj_executable,
+};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -655,20 +664,41 @@ pub fn diff_hunks(old_text: &str, new_text: &str) -> Vec<LineHunk> {
     diff::line_hunks(old_text, new_text)
 }
 
-/// An open git repository (worktree). Cheap to keep around; all reads re-check the
-/// on-disk state, so it never needs to be reopened after external changes.
+/// The VCS that owns a worktree. This determines operation capabilities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum VcsKind {
+    Git,
+    Jj,
+}
+
+/// A discovered worktree. Git handles are retained only for Git repositories.
 pub struct Repo {
     execution_allowed: std::sync::atomic::AtomicBool,
+    kind: VcsKind,
     root: PathBuf,
     git_dir: PathBuf,
-    inner: std::sync::Mutex<repo::Cache>,
+    inner: std::sync::Mutex<Option<repo::Cache>>,
     ignored: std::sync::RwLock<IgnoredNames>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
     log_signatures: std::sync::Mutex<std::collections::HashMap<String, LogDetails>>,
 }
 
 impl Repo {
-    /// Discovers the repository containing `path`; `Ok(None)` when not under git.
+    pub fn kind(&self) -> VcsKind {
+        self.kind
+    }
+
+    /// Git operations must never run on a colocated Jujutsu working copy.
+    pub fn require_git(&self) -> IdeResult<()> {
+        if self.kind == VcsKind::Jj || repo::jj_root(&self.root).is_some() {
+            return Err(ide_core::IdeError::unavailable(
+                "Git operations are disabled for Jujutsu repositories; jj operations are not supported yet",
+            ));
+        }
+        Ok(())
+    }
+    /// Discovers the nearest Git or Jujutsu repository containing `path`.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
     }
@@ -682,6 +712,129 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
     }
+    pub(crate) fn require_execution_allowed(&self) -> IdeResult<()> {
+        if self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(ide_core::IdeError::unavailable(
+                "Project is in Restricted Mode. Trust the project to enable execution.",
+            ))
+        }
+    }
+    pub fn jj_log_action(&self, commit: &str, change: &str, action: &JjLogAction) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::log_action(self, commit, change, action)
+    }
+
+    /// Read-only Jujutsu history pinned to one operation across pages.
+    pub fn jj_history(&self, cursor: Option<jj::JjHistoryCursor>, limit: usize) -> IdeResult<jj::JjHistoryPage> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history(self, cursor, limit)
+    }
+    /// Local references and remotes available for explicit Jujutsu Push.
+    pub fn jj_pull_options(&self) -> IdeResult<JjPullOptions> {
+        jj::remote::pull_options(self)
+    }
+
+    pub fn jj_fetch_options(&self) -> IdeResult<JjFetchOptions> {
+        jj::remote::fetch_options(self)
+    }
+
+    pub fn jj_fetch_selected(&self, remote: &str, tag: Option<&str>) -> IdeResult<String> {
+        jj::remote::fetch_selected(self, remote, tag)
+    }
+
+    pub fn jj_rebase_options(&self) -> IdeResult<JjRebaseOptions> {
+        jj::remote::rebase_options(self)
+    }
+
+    pub fn jj_rebase(
+        &self,
+        source: Option<&str>,
+        destination: &str,
+        skip_emptied: bool,
+        ignore_immutable: bool,
+    ) -> IdeResult<String> {
+        jj::remote::rebase(self, source, destination, skip_emptied, ignore_immutable)
+    }
+
+    pub fn jj_fetch(&self) -> IdeResult<String> {
+        jj::remote::fetch(self)
+    }
+
+    pub fn jj_pull(&self, remote: &str, bookmark: &str) -> IdeResult<String> {
+        jj::remote::pull(self, remote, bookmark)
+    }
+
+    pub fn jj_push_options(&self) -> IdeResult<JjPushOptions> {
+        jj::push_options(self)
+    }
+    /// Preview a push, or execute after validating the accepted review.
+    pub fn jj_push(&self, request: &JjPushRequest) -> IdeResult<JjPushPreview> {
+        jj::push(self, request)
+    }
+    /// Registered Jujutsu workspaces with recorded roots.
+    pub fn jj_workspaces(&self) -> IdeResult<Vec<JjWorkspace>> {
+        jj::workspaces(self)
+    }
+    pub fn jj_add_workspace(&self, name: &str, path: &Path, revision: &str) -> IdeResult<()> {
+        jj::add_workspace(self, name, path, revision)
+    }
+    pub fn jj_update_workspace(&self, expected: &JjWorkspace) -> IdeResult<()> {
+        jj::update_workspace(self, expected)
+    }
+    pub fn jj_remove_workspace(&self, expected: &JjWorkspace) -> IdeResult<()> {
+        jj::remove_workspace(self, expected)
+    }
+
+    /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
+    pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::working_copy(self)
+    }
+
+    pub fn jj_describe(&self, edit: &jj::JjDescriptionEdit) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::describe(self, edit)
+    }
+
+    pub fn jj_restore_files(&self, commit: &str, paths: &[PathBuf]) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::restore_files(self, commit, paths)
+    }
+
+    /// Read-only editor changes against the single parent of @, including unsaved text.
+    pub fn jj_line_hunks(&self, path: &Path, text: &str) -> IdeResult<Vec<LineHunk>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::line_hunks(self, path, text)
+    }
+
+    /// Read-only immutable content pair for a file in the selected @ snapshot.
+    pub fn jj_history_files(&self, commit: &str) -> IdeResult<Vec<FileStatus>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_files(self, commit)
+    }
+
+    pub fn jj_annotate(&self, path: &Path, commit: &str, text: &str) -> IdeResult<Vec<BlameLine>> {
+        jj::annotate(self, path, commit, text)
+    }
+    pub fn jj_history_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_file_diff(self, path, commit)
+    }
+
+    pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::file_diff(self, path, commit)
+    }
+
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
@@ -1303,6 +1456,9 @@ impl Repo {
     pub fn merge_versions(&self, path: &Path, encoding: impl Into<TextEncoding>) -> IdeResult<MergeVersions> {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if self.kind() == VcsKind::Jj {
+            return jj::merge_versions(self, path);
+        }
         let (base, ours, theirs) = self.conflict_versions(path, encoding)?;
         let sides = self.merge_sides()?;
         let (ours, theirs) = if sides.reversed { (theirs, ours) } else { (ours, theirs) };
