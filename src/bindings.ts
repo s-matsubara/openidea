@@ -442,6 +442,9 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
+	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
+	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -3900,10 +3903,34 @@ export type JvmPresentation = {
 
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
+/**  Draft identity: an immutable anchor plus the description the user started editing. */
+export type JjDescriptionEdit = {
+	commit: string,
+	change: string,
+	original: string,
+	description: string,
+};
+
+/**  Immutable text pair for the shared diff viewer. Missing sides are explicit empty text. */
+export type JjFileDiff = {
+	before: string,
+	after: string,
+	beforeLabel: string,
+	afterLabel: string,
+};
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
 	executable?: string,
 };
+
+/**  A display snapshot of @. Files reuse the shared status model, without staging semantics. */
+export type JjWorkingCopy = {
+	changeId: string,
+	commitId: string,
+	description: string,
+	files: FileStatus[],
+};
+
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;
 
@@ -6334,6 +6361,7 @@ export type VcsRoot = {
 	root: IpcPath,
 	kind: VcsKind,
 	unavailableReason: string | null,
+	workingCopy: JjWorkingCopy | null,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */

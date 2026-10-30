@@ -1,5 +1,5 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile, RevisionChange } from "@/bindings";
+import type { ChangedFile, JjFileDiff, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
@@ -126,6 +126,21 @@ export function diffTitle(data: DiffData): string {
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
   await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/** Immutable jj snapshot sides keep the shared editor read-only, including its hunk controls. */
+export function jjFileDiffData(path: string, pair: JjFileDiff): DiffData {
+  return {
+    path,
+    left: { type: "text", text: pair.before, label: pair.beforeLabel },
+    right: { type: "text", text: pair.after, label: pair.afterLabel },
+  };
+}
+
+/** Parent snapshot vs the live document; deleted files have no editable document. */
+export function jjWorkingDiffData(path: string, pair: JjFileDiff, deleted = false): DiffData {
+  const data = jjFileDiffData(path, pair);
+  return deleted ? data : { ...data, right: { type: "worktree", label: "Working copy @" } };
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
