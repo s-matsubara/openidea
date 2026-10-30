@@ -77,7 +77,8 @@ function trackTitleItem(): () => void {
 function trackCommitWindow(): () => void {
   let dispose: (() => void) | null = null;
   const sync = (nonModal: boolean) => {
-    if (nonModal && !dispose) {
+    const visible = nonModal || useVcs.getState().jjRoots.length > 0;
+    if (visible && !dispose) {
       dispose = registerToolWindow({
         id: "commit",
         title: "Commit",
@@ -88,21 +89,27 @@ function trackCommitWindow(): () => void {
         headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
         tabsReplaceTitle: true,
         useBadge: () => {
-          const n = useVcs((s) => s.status.length);
+          const n = useVcs(
+            (s) => s.status.length + s.jjRoots.reduce((n, r) => n + (r.workingCopy?.files.length ?? 0), 0),
+          );
           return n || null;
         },
       });
       // The Git window's Local Changes / Shelf / Stash tabs are gone: back to its Log.
       if (["changes", "shelf", "stashes"].includes(useGitLog.getState().tab)) selectGitTab("log");
-    } else if (!nonModal && dispose) {
+    } else if (!visible && dispose) {
       dispose();
       dispose = null;
     }
   };
   sync(workflowSettings().vcs.commit.nonModal);
   const unsub = onWorkflowSettingsChange((w) => w.vcs.commit.nonModal, sync);
+  const offVcs = useVcs.subscribe((s, p) => {
+    if (s.jjRoots.length !== p.jjRoots.length) sync(workflowSettings().vcs.commit.nonModal);
+  });
   return () => {
     unsub();
+    offVcs();
     dispose?.();
   };
 }

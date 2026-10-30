@@ -1,3 +1,6 @@
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { hunkField, setHunksEffect } from "../gutter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isJjPath } from "../store";
 import { registerVcsActions } from "../actions";
@@ -5,6 +8,11 @@ import { getAction } from "@/platform/actions";
 import { evaluateWhen } from "@/platform/context";
 import type { Branch, BranchInfo, Commit, FileStatus } from "@/bindings";
 
+const activeEditorMock = vi.hoisted(() => vi.fn());
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  activeEditor: activeEditorMock,
+}));
 const vcsStatus = vi.fn();
 const vcsRoots = vi.fn();
 const vcsBranchInfo = vi.fn();
@@ -245,7 +253,7 @@ describe("status refresh", () => {
     vcsStatus.mockReset();
     vcsRoots.mockReset().mockResolvedValue({ status: "ok", data: [{ root: "/p", kind: "git", operation: null }] });
     vcsBranchInfo.mockReset().mockResolvedValue({ status: "ok", data: info() });
-    useVcs.setState({ available: true, branchesLoaded: false, stashesLoaded: false, status: [] });
+    useVcs.setState({ available: true, jjRoots: [], branchesLoaded: false, stashesLoaded: false, status: [] });
   });
 
   it("disables jj file actions while keeping selected Git root operations available", () => {
@@ -258,6 +266,37 @@ describe("status refresh", () => {
       expect(evaluateWhen(getAction("vcs.push")?.when, context)).toBe(true);
       expect(evaluateWhen(getAction("vcs.addToVcs")?.when, { ...context, activeToolWindow: "project" })).toBe(true);
     } finally {
+      dispose();
+    }
+  });
+
+  it("rolls back selected jj lines without falling through to Git operations", () => {
+    const dispose = registerVcsActions();
+    const view = new EditorView({ state: EditorState.create({ doc: "new\nkeep\n", extensions: [hunkField] }) });
+    view.dispatch({
+      effects: setHunksEffect.of([
+        { kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "old\n" },
+      ]),
+    });
+    activeEditorMock.mockReturnValue({
+      ctx: { path: "/jj/file" },
+      view: {
+        get state() {
+          return view.state;
+        },
+        hasFocus: true,
+        dispatch: view.dispatch.bind(view),
+      },
+    });
+    useVcs.setState({ kinds: { "/jj": "jj" } });
+    try {
+      const action = getAction("vcs.rollback")!;
+      expect(() => action.run({} as Parameters<typeof action.run>[0])).not.toThrow();
+      expect(view.state.doc.toString()).toBe("old\nkeep\n");
+      expect(evaluateWhen(action.when, { vcsAvailable: false, vcsJjPath: true, editorTextFocus: true })).toBe(true);
+    } finally {
+      view.destroy();
+      activeEditorMock.mockReset();
       dispose();
     }
   });
@@ -287,6 +326,33 @@ describe("status refresh", () => {
     expect(vcsBranchInfo).not.toHaveBeenCalled();
     expect(vcsStatus).not.toHaveBeenCalled();
     expect(useVcs.getState().available).toBe(false);
+  });
+
+  it("refreshes jj-only readable state without enabling Git commands", async () => {
+    const copy = {
+      changeId: "change",
+      commitId: "commit",
+      description: "subject\nbody\n",
+      files: [fs("日本語\tfile", { unstaged: "added" })],
+    };
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: copy, unavailableReason: null }],
+    });
+    useVcs.setState({ available: false, jjRoots: [{ root: "/jj", kind: "jj" }] as never });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toEqual(copy);
+    expect(useVcs.getState().status).toEqual([]);
+    expect(useVcs.getState().available).toBe(false);
+    expect(vcsStatus).not.toHaveBeenCalled();
+    expect(vcsBranchInfo).not.toHaveBeenCalled();
+    vcsRoots.mockResolvedValue({
+      status: "ok",
+      data: [{ root: "/jj", kind: "jj", workingCopy: null, unavailableReason: "CLI failed" }],
+    });
+    await refreshNow();
+    expect(useVcs.getState().jjRoots[0]?.unavailableReason).toBe("CLI failed");
+    expect(useVcs.getState().jjRoots[0]?.workingCopy).toBeNull();
   });
 
   it("a refresh requested while one is running resolves only after a newer refresh", async () => {
