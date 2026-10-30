@@ -30,6 +30,7 @@ import {
 } from "./operations";
 import { isSameOrInside } from "./paths";
 import { tx } from "@/platform/i18n";
+import { isJjPath, useVcs } from "@/features/vcs/store";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -315,7 +316,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git ›
-  if (inProject && project?.isGit) {
+  if (inProject && (project?.isGit || useVcs.getState().available) && nodes.every((node) => !isJjPath(node.path))) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
