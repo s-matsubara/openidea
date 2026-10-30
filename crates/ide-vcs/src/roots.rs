@@ -56,7 +56,7 @@ impl Repos {
                 if name.starts_with('.') || SKIPPED.contains(&name.as_ref()) || skip(&path) {
                     continue;
                 }
-                if path.join(".git").exists()
+                if (path.join(".git").exists() || path.join(".jj").is_dir())
                     && let Ok(Some(r)) = Repo::discover(&path)
                     && r.root() == path
                     && !repos.iter().any(|x| x.root() == r.root())
@@ -118,7 +118,11 @@ impl Repos {
     /// The innermost repository containing `path` (a file or folder). A nested repository's
     /// root is an entry of the enclosing repository (a submodule or untracked folder there), so
     /// it belongs to that one; to the repository itself only when nothing encloses it.
+    /// Jujutsu roots always belong to themselves, preventing Git operations on their entry.
     pub fn for_path(&self, path: &Path) -> Option<&Arc<Repo>> {
+        if let Some(repo) = self.at_root(path).filter(|r| r.kind() == crate::VcsKind::Jj) {
+            return Some(repo);
+        }
         let roots: Vec<&Path> = self.repos.iter().map(|r| r.root()).collect();
         let found = innermost(&roots, path, true).or_else(|| {
             // Another spelling of the same location (symlinks, /var vs /private/var).
@@ -160,6 +164,9 @@ impl Repos {
         let mut first_error = None;
         let mut read = 0;
         for repo in &self.repos {
+            if repo.kind() == crate::VcsKind::Jj {
+                continue;
+            }
             let nested: Vec<&Path> = self
                 .repos
                 .iter()
@@ -178,6 +185,9 @@ impl Repos {
                 }
             };
             out.extend(status.into_iter().filter(|f| {
+                if self.for_path(&f.path).is_some_and(|owner| owner.kind() == crate::VcsKind::Jj) {
+                    return false;
+                }
                 let untracked_root =
                     f.unstaged == Some(crate::ChangeKind::Untracked) && nested.iter().any(|n| f.path.0 == *n);
                 !untracked_root
@@ -267,5 +277,51 @@ mod tests {
         assert_eq!(repos.all().len(), 2);
         assert_eq!(repos.primary().unwrap().root(), root.join("a"), "the first when none contains the project root");
         assert!(repos.for_path(&root.join("c.txt")).is_none());
+    }
+
+    #[test]
+    fn jj_detection_precedence_nested_roots_and_git_guards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        git_init(&root);
+        std::fs::create_dir(root.join(".jj")).unwrap();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        let jj = Repo::discover(&root.join("src/deep")).unwrap().unwrap();
+        assert_eq!(jj.kind(), crate::VcsKind::Jj);
+        assert_eq!(jj.root(), root);
+        let file = root.join("keep.txt");
+        std::fs::write(&file, "keep").unwrap();
+        assert!(jj.stage(std::slice::from_ref(&file)).is_err());
+        assert!(jj.discard(std::slice::from_ref(&file)).is_err());
+        assert!(jj.commit("unsupported", false, false).is_err());
+        assert!(jj.checkout("main", false).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+        git_init(&root.join("nested"));
+        assert_eq!(Repo::discover(&root.join("nested")).unwrap().unwrap().kind(), crate::VcsKind::Git);
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        assert_eq!(repos.all().len(), 2);
+        assert_eq!(repos.at_root(&root).unwrap().kind(), crate::VcsKind::Jj);
+        assert!(repos.status().is_ok());
+        let workspace = Repos::discover_roots(&[root.join("src"), root.join("nested")], &|_| false).unwrap();
+        assert_eq!(workspace.all().len(), 2);
+        let nested_jj = root.join("nested/jj");
+        std::fs::create_dir_all(nested_jj.join(".jj")).unwrap();
+        let nested_file = nested_jj.join("keep.txt");
+        std::fs::write(&nested_file, "keep").unwrap();
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        assert_eq!(repos.for_path(&nested_jj).unwrap().kind(), crate::VcsKind::Jj);
+        assert_eq!(repos.for_path(&nested_file).unwrap().kind(), crate::VcsKind::Jj);
+        assert!(!repos.status().unwrap().iter().any(|file| file.path.0.starts_with(&nested_jj)));
+    }
+
+    #[test]
+    fn standalone_jj_and_non_directory_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join(".jj"), "not a directory").unwrap();
+        assert!(Repo::discover(root).unwrap().is_none());
+        std::fs::remove_file(root.join(".jj")).unwrap();
+        std::fs::create_dir(root.join(".jj")).unwrap();
+        assert_eq!(Repo::discover(root).unwrap().unwrap().kind(), crate::VcsKind::Jj);
     }
 }

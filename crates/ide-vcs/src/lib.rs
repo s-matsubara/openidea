@@ -461,6 +461,7 @@ mod diff;
 mod history;
 mod ignore;
 mod index_writes;
+mod jj;
 mod manage;
 mod ops;
 mod patch;
@@ -469,6 +470,7 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
+pub use jj::{detected_jj_executable, jj_version, set_jj_executable};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -512,18 +514,39 @@ pub fn diff_hunks(old_text: &str, new_text: &str) -> Vec<LineHunk> {
     diff::line_hunks(old_text, new_text)
 }
 
-/// An open git repository (worktree). Cheap to keep around; all reads re-check the
-/// on-disk state, so it never needs to be reopened after external changes.
+/// The VCS that owns a worktree. This determines operation capabilities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum VcsKind {
+    Git,
+    Jj,
+}
+
+/// A discovered worktree. Git handles are retained only for Git repositories.
 pub struct Repo {
     execution_allowed: std::sync::atomic::AtomicBool,
+    kind: VcsKind,
     root: PathBuf,
     git_dir: PathBuf,
-    inner: std::sync::Mutex<repo::Cache>,
+    inner: std::sync::Mutex<Option<repo::Cache>>,
     ignored: std::sync::RwLock<IgnoredNames>,
 }
 
 impl Repo {
-    /// Discovers the repository containing `path`; `Ok(None)` when not under git.
+    pub fn kind(&self) -> VcsKind {
+        self.kind
+    }
+
+    /// Git operations must never run on a colocated Jujutsu working copy.
+    pub fn require_git(&self) -> IdeResult<()> {
+        if self.kind == VcsKind::Jj || repo::jj_root(&self.root).is_some() {
+            return Err(ide_core::IdeError::unavailable(
+                "Git operations are disabled for Jujutsu repositories; jj operations are not supported yet",
+            ));
+        }
+        Ok(())
+    }
+    /// Discovers the nearest Git or Jujutsu repository containing `path`.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
     }
