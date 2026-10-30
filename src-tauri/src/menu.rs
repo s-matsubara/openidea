@@ -617,7 +617,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         "Git",
         vec![
             act("vcs.commit", "Commit…"),
-            act("vcs.push", "Push…"),
+            act("vcs.gitPush", "Push…"),
             act("vcs.update", "Update Project…"),
             act("vcs.pull", "Pull…"),
             act("vcs.fetch", "Fetch"),
@@ -696,6 +696,19 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.revert.abort", "Abort Revert"),
             act("vcs.cherryPick.continue", "Continue Cherry-Pick"),
             act("vcs.cherryPick.abort", "Abort Cherry-Pick"),
+        ],
+    ));
+
+    menus.push(sub(
+        "jujutsu",
+        "Jujutsu",
+        vec![
+            act("vcs.jjPush", "Push…"),
+            act("vcs.jjPull", "Pull…"),
+            act("vcs.jjFetch", "Fetch…"),
+            act("vcs.jjRebase", "Rebase…"),
+            SEP,
+            act("vcs.showJjHistory", "Show Jujutsu History"),
         ],
     ));
 
@@ -1316,8 +1329,10 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let common =
-            ["file", "edit", "view", "navigate", "code", "refactor", "build", "run", "git", "tools", "window", "help"];
+        let common = [
+            "file", "edit", "view", "navigate", "code", "refactor", "build", "run", "git", "jujutsu", "tools",
+            "window", "help",
+        ];
         assert_eq!(top(Os::Mac), [&["app"][..], &common[..]].concat());
         assert_eq!(top(Os::Windows), common.to_vec());
     }
@@ -1577,7 +1592,7 @@ mod tests {
             top,
             [
                 "vcs.commit",
-                "vcs.push",
+                "vcs.gitPush",
                 "vcs.update",
                 "vcs.pull",
                 "vcs.fetch",

@@ -6,6 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Popup } from "@/ui";
 import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
+import { isJjPath } from "./store";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -16,6 +17,7 @@ interface PopupState {
   x: number;
   y: number;
   id: number;
+  doc: EditorView["state"]["doc"];
 }
 
 let root: Root | null = null;
@@ -35,6 +37,7 @@ function render(state: PopupState | null) {
 }
 
 export function closeHunkPopup() {
+  ++seq;
   openFor = null;
   render(null);
 }
@@ -47,7 +50,7 @@ export function openHunkPopup(view: EditorView, hunk: EditorHunk, path: string) 
   const x = gutterRect ? gutterRect.right : (coords?.left ?? 0);
   const y = coords ? (hunk.to > hunk.from ? coords.bottom : coords.top) : 0;
   openFor = view;
-  render({ view, hunk, path, x, y, id: ++seq });
+  render({ view, hunk, path, x, y, id: ++seq, doc });
 }
 
 export function installHunkPopup(): () => void {
@@ -58,6 +61,7 @@ export function installHunkPopup(): () => void {
     },
   });
   return () => {
+    closeHunkPopup();
     setHunkPopupHooks(null);
     root?.unmount();
     host?.remove();
@@ -85,7 +89,12 @@ function HunkPopupView({ state }: { state: PopupState }) {
   const index = all.findIndex((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
 
   const rollback = () => {
-    const live = editorHunks(view.state).find((h) => h.start === hunk.start && h.oldStart === hunk.oldStart) ?? hunk;
+    // A refreshed baseline or edited buffer invalidates the displayed change.
+    if (view.state.readOnly || view.state.doc !== state.doc || !editorHunks(view.state).includes(hunk)) {
+      closeHunkPopup();
+      return;
+    }
+    const live = hunk;
     view.dispatch({
       changes: { from: live.from, to: live.to, insert: live.oldText },
       userEvent: "input.rollback",
@@ -97,7 +106,12 @@ function HunkPopupView({ state }: { state: PopupState }) {
 
   const step = (dir: 1 | -1) => {
     const target = gotoChange(view, dir);
-    if (target) requestAnimationFrame(() => openHunkPopup(view, target, path));
+    const ticket = seq;
+    if (target)
+      requestAnimationFrame(() => {
+        if (ticket === seq && openFor === view && editorHunks(view.state).includes(target))
+          openHunkPopup(view, target, path);
+      });
     else closeHunkPopup();
   };
 
@@ -111,7 +125,7 @@ function HunkPopupView({ state }: { state: PopupState }) {
       aria-label={KIND_TITLE[hunk.kind]}
       className={styles.popup}
     >
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Change actions")}>
+      <div className={styles.toolbar} role="toolbar" aria-label={tx("Change actions")} tabIndex={-1} data-autofocus>
         <IconButton
           icon="arrow-up"
           title="Previous Change"
@@ -126,16 +140,18 @@ function HunkPopupView({ state }: { state: PopupState }) {
           size="small"
           onClick={() => step(1)}
         />
-        <IconButton icon="undo" title="Rollback" size="small" data-autofocus onClick={rollback} />
-        <IconButton
-          icon="diff"
-          title="Show Diff"
-          size="small"
-          onClick={() => {
-            closeHunkPopup();
-            void executeAction("vcs.showDiff", { path, line: hunk.start });
-          }}
-        />
+        {!view.state.readOnly && <IconButton icon="undo" title="Rollback" size="small" onClick={rollback} />}
+        {!isJjPath(path) && (
+          <IconButton
+            icon="diff"
+            title="Show Diff"
+            size="small"
+            onClick={() => {
+              closeHunkPopup();
+              void executeAction("vcs.showDiff", { path, line: hunk.start });
+            }}
+          />
+        )}
         <IconButton
           icon={copied ? "check" : "copy"}
           title="Copy Original Text"

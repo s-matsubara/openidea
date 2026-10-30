@@ -500,6 +500,13 @@ impl EventFilter {
                 _ => None,
             })
             .collect();
+        if let Some(idx) = comps.iter().position(|c| *c == ".jj") {
+            let rest = &comps[idx + 1..];
+            return Some(
+                matches!(rest, [a, b] if *a == "working_copy" && *b == "checkout")
+                    || matches!(rest, [a, b, ..] if *a == "repo" && *b == "op_heads"),
+            );
+        }
         let idx = comps.iter().position(|c| *c == ".git")?;
         let rest = &comps[idx + 1..];
         Some(match rest {
@@ -541,6 +548,11 @@ impl EventFilter {
             return true;
         }
         let comps: Vec<_> = rel.components().collect();
+        if let Some(i) = comps.iter().position(|c| c.as_os_str() == ".jj") {
+            let rest: Vec<_> = comps[i + 1..].iter().map(|c| c.as_os_str()).collect();
+            return (rest.is_empty() || matches!(rest.as_slice(), [a] if *a == "working_copy" || *a == "repo"))
+                || matches!(rest.as_slice(), [a, b, ..] if *a == "repo" && *b == "op_heads");
+        }
         if let Some(i) = comps.iter().position(|c| c.as_os_str() == ".git") {
             let rest: Vec<_> = comps[i + 1..].iter().map(|c| c.as_os_str()).collect();
             return match rest.as_slice() {
@@ -952,6 +964,21 @@ mod tests {
         std::fs::remove_dir_all(root.join("target")).unwrap();
         let batch = filter.batch(&[ev(EventKind::Remove(RemoveKind::Folder), vec![root.join("target")])]);
         assert_eq!(batch.removed, vec![root.join("target")]);
+    }
+
+    #[test]
+    fn jj_metadata_refreshes_without_watching_object_or_lock_churn() {
+        let filter = EventFilter::new(PathBuf::from("/project"), &[]);
+        for path in [".jj", ".jj/working_copy", ".jj/repo", ".jj/repo/op_heads", ".jj/repo/op_heads/heads"] {
+            assert!(filter.should_watch_dir(&Path::new("/project").join(path)), "{path}");
+        }
+        for path in [".jj/working_copy/checkout", ".jj/repo/op_heads/abcdef"] {
+            assert_eq!(EventFilter::git_internal(Path::new(path)), Some(true));
+        }
+        for path in [".jj/working_copy/working_copy.lock", ".jj/repo/store/objects/abcdef"] {
+            assert_eq!(EventFilter::git_internal(Path::new(path)), Some(false));
+        }
+        assert!(!filter.should_watch_dir(Path::new("/project/.jj/repo/store")));
     }
 
     #[test]

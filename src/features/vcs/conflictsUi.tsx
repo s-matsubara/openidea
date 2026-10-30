@@ -39,8 +39,8 @@ export function showConflictsDialog() {
   openDialog((close) => <ConflictsDialog onClose={close} />);
 }
 
-export function openMergeEditor(path: string) {
-  void editorService().openInput(mergeInput(stripSlash(path)), { focus: true });
+export function openMergeEditor(path: string, vcs?: "jj") {
+  void editorService().openInput(mergeInput(stripSlash(path), vcs), { focus: true });
 }
 
 /** Accept Yours / Accept Theirs for a whole conflicted file. */

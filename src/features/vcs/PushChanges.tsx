@@ -127,7 +127,11 @@ export function PushChanges({
 }
 
 /** The selected commit's full message, revision, author and time. */
-function PushCommitDetails({ commit }: { commit: Commit }) {
+export function PushCommitDetails({
+  commit,
+}: {
+  commit: Pick<Commit, "message" | "summary" | "shortId" | "author" | "email" | "timeMs">;
+}) {
   const date = commit.timeMs ? new Date(commit.timeMs).toLocaleString() : null;
   return (
     <section className={styles.pushCommitDetails} aria-label={tx("Commit details")}>

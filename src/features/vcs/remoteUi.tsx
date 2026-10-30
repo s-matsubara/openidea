@@ -179,6 +179,10 @@ export interface PushTarget {
 
 export async function showPushDialog(target: PushTarget = {}) {
   await refreshNow();
+  openGitPushDialog(target);
+}
+
+export function openGitPushDialog(target: PushTarget) {
   // Several repositories: IDEA's dialog lists each one with outgoing commits.
   const multi = useVcs.getState().roots.length > 1 && !target.branch && !target.revision;
   openDialog((close) => (multi ? <MultiPushDialog onClose={close} /> : <PushDialog target={target} onClose={close} />));

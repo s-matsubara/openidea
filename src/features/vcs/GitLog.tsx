@@ -107,6 +107,7 @@ import {
   type LogChange,
 } from "./logChanges";
 import { canDeleteBranch, canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
+import { LineStats } from "./LogLineStats";
 import styles from "./GitLog.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -2710,22 +2711,6 @@ function nodeLineCount(node: FileTreeNode<ChangedFile | LogChange>): { added: nu
     removed += count.removed;
   }
   return node.children.length ? { added, removed } : null;
-}
-
-function LineStats({ added, removed }: { added: number; removed: number }) {
-  return (
-    <span className={styles.lineStats}>
-      <span className={styles.lineAdded} aria-label={added === 1 ? tx`${added} line added` : tx`${added} lines added`}>
-        +{added}
-      </span>
-      <span
-        className={styles.lineRemoved}
-        aria-label={removed === 1 ? tx`${removed} line deleted` : tx`${removed} lines deleted`}
-      >
-        −{removed}
-      </span>
-    </span>
-  );
 }
 
 function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile | LogChange>; flat?: boolean }) {

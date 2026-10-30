@@ -1,5 +1,5 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile, RevisionChange } from "@/bindings";
+import type { ChangedFile, JjBlameTarget, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
@@ -12,10 +12,10 @@ export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
   | { type: "rev"; rev: string; path?: string; label?: string }
   /** The working file (unsaved editor buffer included). */
-  | { type: "worktree"; label?: string }
+  | { type: "worktree"; label?: string; jjBlame?: JjBlameTarget | null }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  | { type: "text"; text: string; label: string }
+  | { type: "text"; text: string; label: string; jjBlame?: JjBlameTarget | null }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 

@@ -41,6 +41,111 @@ pub async fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: Pa
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_describe(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    edit: ide_vcs::JjDescriptionEdit,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_describe(&state.host, window.label(), root, edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_restore_files(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    commit: String,
+    paths: Vec<PathBuf>,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_restore_files(&state.host, window.label(), root, commit, paths).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_log_action(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    commit: String,
+    change: String,
+    action: ide_vcs::JjLogAction,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_log_action(&state.host, window.label(), root, commit, change, action).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    cursor: Option<JjHistoryCursor>,
+) -> IdeResult<JjHistoryPage> {
+    ide_host::ops::vcs::vcs_jj_history(&state.host, window.label(), root, cursor).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_files(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::vcs_jj_history_files(&state.host, window.label(), root, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_line_stats(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileLineStats>> {
+    ide_host::ops::vcs::vcs_jj_history_line_stats(&state.host, window.label(), root, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_annotate(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+    text: String,
+) -> IdeResult<Vec<BlameLine>> {
+    ide_host::ops::vcs::vcs_jj_annotate(&state.host, window.label(), root, path, commit, text).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_file_diff(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    ide_host::ops::vcs::vcs_jj_history_file_diff(&state.host, window.label(), root, path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_file_diff(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    ide_host::ops::vcs::vcs_jj_file_diff(&state.host, window.label(), path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_file_at(
     window: Window,
     state: State<'_, AppState>,
@@ -524,6 +629,18 @@ pub fn vcs_detected_git(state: State<'_, AppState>) -> Option<String> {
     ide_host::ops::vcs::vcs_detected_git(&state.host, "")
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_version(state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
+    ide_host::ops::vcs::vcs_jj_version(&state.host, "", path).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn vcs_detected_jj(state: State<'_, AppState>) -> Option<String> {
+    ide_host::ops::vcs::vcs_detected_jj(&state.host, "")
+}
+
 /// `git config --get <key>` in the project repository; `None` when unset.
 #[tauri::command]
 #[specta::specta]
@@ -877,4 +994,150 @@ pub async fn vcs_compare_paths(
     request: RequestId,
 ) -> IdeResult<ide_vcs::CompareResult> {
     ide_host::ops::vcs::vcs_compare_paths(&state.host, window.label(), paths, revision, repositories, request).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_workspaces(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<Vec<ide_vcs::JjWorkspace>> {
+    ide_host::ops::vcs::vcs_jj_workspaces(&state.host, window.label(), root).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_add_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    name: String,
+    path: PathBuf,
+    revision: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_add_workspace(&state.host, window.label(), root, name, path, revision).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_remove_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    expected: ide_vcs::JjWorkspace,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_remove_workspace(&state.host, window.label(), root, expected).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_update_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    expected: ide_vcs::JjWorkspace,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_update_workspace(&state.host, window.label(), root, expected).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_pull_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjPullOptions> {
+    ide_host::ops::vcs::vcs_jj_pull_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_fetch(state: State<'_, AppState>, window: tauri::Window, root: PathBuf) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_fetch(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_pull(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    remote: String,
+    bookmark: String,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_pull(&state.host, window.label(), root, remote, bookmark).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_fetch_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjFetchOptions> {
+    ide_host::ops::vcs::vcs_jj_fetch_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_fetch_selected(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    remote: String,
+    tag: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_fetch_selected(&state.host, window.label(), root, remote, tag).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_rebase_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjRebaseOptions> {
+    ide_host::ops::vcs::vcs_jj_rebase_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_rebase(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    source: Option<String>,
+    destination: String,
+    skip_emptied: bool,
+    ignore_immutable: bool,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_rebase(
+        &state.host,
+        window.label(),
+        root,
+        source,
+        destination,
+        skip_emptied,
+        ignore_immutable,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_push_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjPushOptions> {
+    ide_host::ops::vcs::vcs_jj_push_options(&state.host, window.label(), root).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_push(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    request: ide_vcs::JjPushRequest,
+) -> IdeResult<ide_vcs::JjPushPreview> {
+    ide_host::ops::vcs::vcs_jj_push(&state.host, window.label(), root, request).await
 }

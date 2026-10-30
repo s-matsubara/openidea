@@ -1,5 +1,7 @@
 {
   "Cannot copy reference": "Cannot copy reference",
+  "Annotate with Jujutsu Blame": "Annotate with Jujutsu Blame",
+  "Jujutsu working copy is unavailable": "Jujutsu working copy is unavailable",
   "Connect through:": "Connect through:",
   "Connect through": "Connect through",
   "WSL distribution:": "WSL distribution:",
@@ -26,6 +28,7 @@
   "Ruff formatting timed out": "Ruff formatting timed out",
   "Ruff configuration path does not exist: {path}": "Ruff configuration path does not exist: {path}",
   "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}": "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}",
+  "Line statistics unavailable": "Line statistics unavailable",
   "Show lines added and deleted": "Show lines added and deleted",
   "{added} line added": "{added} line added",
   "{added} lines added": "{added} lines added",

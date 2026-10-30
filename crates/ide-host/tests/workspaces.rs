@@ -165,3 +165,73 @@ async fn php_language_level_follows_the_member_of_the_file() {
     assert_eq!(level_elsewhere.member, None);
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attached_workspace_vcs_uses_members_not_the_state_container_ancestor() {
+    let Some(jj) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let state_home = base.join("unrelated-home");
+    std::fs::create_dir_all(state_home.join(".jj")).unwrap(); // Broken unrelated ancestor of app state only.
+    let source = base.join("source");
+    let secondary = base.join("secondary");
+    for args in [
+        vec!["git", "init", source.to_str().unwrap()],
+        vec!["-R", source.to_str().unwrap(), "config", "set", "--repo", "signing.behavior", "drop"],
+        vec!["-R", source.to_str().unwrap(), "workspace", "add", "--name", "secondary", secondary.to_str().unwrap()],
+    ] {
+        let out = std::process::Command::new(&jj).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let git = base.join("git-member");
+    std::fs::create_dir(&git).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&git).status().unwrap().success());
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: state_home.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&source, true, false).unwrap();
+    host.open_project("main", &source).unwrap();
+    let container = ops::project::attach_workspace(&host, "main", &secondary).unwrap();
+    host.trust.decide(&container, true, false).unwrap();
+    let project = host.open_project("main", &container).unwrap();
+    let mut expected = vec![source.clone(), secondary.clone()];
+    expected.sort();
+    assert_eq!(project.repos().roots(), expected); // Also verify the synchronous initial lookup.
+    project.refresh_repositories();
+    assert_eq!(project.repos().roots(), expected);
+    ops::project::attach_workspace(&host, "main", &git).unwrap();
+    assert!(project.repos().all().iter().any(|r| r.root() == git && r.kind() == ide_vcs::VcsKind::Git));
+    ops::project::save_workspace(&host, "main", "source", vec![source.clone()]).unwrap();
+    assert_eq!(project.root, container.as_ref());
+    assert_eq!(project.repos().roots(), vec![source.clone()]);
+    let roots = ops::vcs::vcs_roots(&host, "main").unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].root.as_ref(), source.as_path());
+    assert!(roots[0].unavailable_reason.is_none());
+    assert!(ops::vcs::vcs_jj_workspaces(&host, "main", source.clone()).await.is_ok());
+    assert!(ops::vcs::vcs_jj_history(&host, "main", source.clone(), None).await.is_ok());
+    assert!(ops::vcs::vcs_jj_workspaces(&host, "main", state_home.clone()).await.is_err());
+    assert!(ops::vcs::vcs_jj_history(&host, "main", secondary.clone(), None).await.is_err());
+    // Parent discovery remains correct for an actual project/member subfolder.
+    let sub = source.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    ops::project::save_workspace(&host, "main", "source", vec![sub.clone()]).unwrap();
+    assert_eq!(project.repos().roots(), vec![source.clone()]);
+    host.trust.decide(&sub, true, false).unwrap();
+    assert_eq!(host.open_project("plain", &sub).unwrap().repos().roots(), vec![source]);
+    host.close_project("plain");
+    ops::project::save_workspace(&host, "main", "source", vec![]).unwrap();
+    assert!(project.repos().is_empty());
+    std::fs::write(project.root.join(ide_workspace::workspace::FILE), "invalid manifest").unwrap();
+    project.refresh_repositories();
+    assert!(project.repos().is_empty());
+    assert!(state_home.join(".jj").is_dir());
+    host.close_project("main");
+}

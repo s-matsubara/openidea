@@ -1919,7 +1919,7 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.push", label: "Push…" },
+      { kind: "action", action: "vcs.gitPush", label: "Push…" },
       { kind: "action", action: "vcs.update", label: "Pull…" },
       { kind: "action", action: "vcs.fetch", label: "Fetch" },
       { kind: "separator" },

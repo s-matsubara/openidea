@@ -62,7 +62,7 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
-import { annotationsShown, blameSlot, toggleAnnotations } from "./blame";
+import { annotationsShown, blameSlot, toggleAnnotations, toggleJjAnnotations } from "./blame";
 import { diffBlameTarget } from "./diffBlame";
 import { changedChainNeighbour } from "./diffNavigation";
 import { movedCodeHighlights } from "./movedCode";
@@ -881,9 +881,21 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       }),
     ]);
   };
-  /** Annotate with Git Blame for a pane, by that side's own revision. */
+  /** Annotate a pane at its own revision. */
   const blameItems = (pane: DiffViewerPane) => {
-    const target = diffBlameTarget(pane.side === "left" ? left : right, path, !!getContext().vcsAvailable);
+    const side = pane.side === "left" ? left : right;
+    if ("jjBlame" in side) {
+      const target = side.jjBlame;
+      return target
+        ? [
+            {
+              label: annotationsShown(pane.view) ? "Close Annotations" : "Annotate with Jujutsu Blame",
+              run: () => void toggleJjAnnotations(pane.view, target),
+            },
+          ]
+        : [];
+    }
+    const target = diffBlameTarget(side, path, !!getContext().vcsAvailable);
     if (!target) return [];
     const view = pane.view;
     const text = target.revision ? view.state.doc.toString() : undefined;
@@ -895,7 +907,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     ];
   };
   /**
-   * The panes' right-click menu: the contributions' items for the clicked line and Git annotations
+   * The panes' right-click menu: the contributions' items for the clicked line and VCS annotations
    * (none: the default menu). The divider between the panes acts on the pane focused last.
    */
   const onContextMenu = (e: MouseEvent) => {

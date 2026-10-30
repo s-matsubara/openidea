@@ -70,14 +70,16 @@ import { pushAfterCommit } from "./commitUi";
 import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
-import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { DiffEditor } from "./DiffEditor";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
+import { CheckMark } from "./ChangeTreeCheck";
+import { JjWorkingCopyView } from "./JjWorkingCopyView";
 
 /** MIME type of changed files dragged between change lists (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -125,6 +127,7 @@ export function CommitTabs() {
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = useCommit((s) => s.tab);
+  const jj = useVcs((s) => s.jjRoots.length > 0);
   const counts = useStashTabCounts(available);
   return (
     <Tabs
@@ -134,7 +137,7 @@ export function CommitTabs() {
       onSelect={(id) => useCommit.setState({ tab: id as CommitTab })}
       aria-label="Commit"
       items={tabItems([
-        { id: "changes", label: "Commit" },
+        { id: "changes", label: jj && !available ? "Working Copy" : "Commit" },
         ...(available ? stashTabs({ combine, tab, ...counts }) : []),
       ])}
     />
@@ -142,19 +145,40 @@ export function CommitTabs() {
 }
 
 export function CommitToolWindow() {
+  const jj = useVcs((s) => s.jjRoots.length > 0);
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = stashTabOf(
     useCommit((s) => s.tab),
     combine,
   );
-  if (!available)
+  if (!available && !jj)
     return (
       <EmptyState icon="commit" title="Version control is not configured">
         <T>Open a Git repository to commit changes.</T>
       </EmptyState>
     );
-  return <div className={styles.root}>{tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}</div>;
+  return (
+    <div className={styles.root}>
+      {jj && available ? (
+        <SplitGroup orientation="vertical" className={styles.split}>
+          <SplitPanel defaultSize="40%" minSize="80px">
+            <JjWorkingCopyView />
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel defaultSize="60%" minSize="120px">
+            {tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}
+          </SplitPanel>
+        </SplitGroup>
+      ) : jj ? (
+        <JjWorkingCopyView />
+      ) : tab === "changes" ? (
+        <ChangesPanel />
+      ) : (
+        <StashContent tab={tab} />
+      )}
+    </div>
+  );
 }
 
 /** The Shelf, Stash or combined "Stashes and Shelves" tab. */
@@ -336,36 +360,6 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
     { label: "Copy Path", icon: "copy", run: () => void navigator.clipboard?.writeText(paths.join("\n")) },
   );
   return items;
-}
-
-function CheckMark({
-  checked,
-  indeterminate,
-  label,
-  onToggle,
-}: {
-  checked: boolean;
-  indeterminate: boolean;
-  label: string;
-  onToggle: () => void;
-}) {
-  return (
-    <span
-      role="checkbox"
-      aria-checked={indeterminate ? "mixed" : checked}
-      aria-label={label}
-      className={clsx(styles.check, (checked || indeterminate) && styles.checkOn)}
-      onMouseDown={(e) => {
-        if (e.button !== 0) return;
-        e.stopPropagation();
-        e.preventDefault();
-        onToggle();
-      }}
-      onDoubleClick={(e) => e.stopPropagation()}
-    >
-      {indeterminate ? <Icon name="minus" size={10} /> : checked ? <Icon name="check" size={10} /> : null}
-    </span>
-  );
 }
 
 /** Inclusion state of every change (user overrides over the change list defaults). */

@@ -15,6 +15,7 @@ import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import { tx } from "@/platform/i18n";
+import type { VcsRoot } from "@/bindings";
 
 const L = WORKFLOW_LIMITS;
 
@@ -35,6 +36,21 @@ function HistoryLimitRow() {
 
 function MappingsTable() {
   const project = useProject((s) => s.project);
+  const [mapping, setMapping] = useState<{ project: string; roots: VcsRoot[] } | null>(null);
+  const roots = mapping?.project === project?.root ? (mapping?.roots ?? []) : [];
+  useEffect(() => {
+    let active = true;
+    if (project && isTauri())
+      void call(commands.vcsRoots()).then(
+        (value) => {
+          if (active) setMapping({ project: project.root, roots: value });
+        },
+        () => undefined,
+      );
+    return () => {
+      active = false;
+    };
+  }, [project]);
   return (
     <div className={styles.tableBox}>
       <table className={styles.table} aria-label={tx("Directory mappings")}>
@@ -55,6 +71,16 @@ function MappingsTable() {
                 <T>No project is open</T>
               </td>
             </tr>
+          ) : roots.length ? (
+            roots.map((root) => (
+              <tr key={root.root}>
+                <td title={root.root}>{root.root}</td>
+                <td>
+                  {root.kind === "jj" ? "Jujutsu (jj)" : "Git"}
+                  {root.unavailableReason && <div role="status">{root.unavailableReason}</div>}
+                </td>
+              </tr>
+            ))
           ) : (
             <tr>
               <td title={project.root}>
@@ -74,20 +100,28 @@ function MappingsTable() {
 // Git
 
 function GitExecutableRow() {
-  const [path, setPath] = useSetting<string>("vcs.git.executable");
+  return <ExecutableRow vcs="git" />;
+}
+
+function JjExecutableRow() {
+  return <ExecutableRow vcs="jj" />;
+}
+
+function ExecutableRow({ vcs }: { vcs: "git" | "jj" }) {
+  const [path, setPath] = useSetting<string>(`vcs.${vcs}.executable`);
   const [detected, setDetected] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const id = useId();
   useEffect(() => {
     if (!isTauri()) return;
-    void commands.vcsDetectedGit().then(setDetected, () => undefined);
-  }, []);
+    void (vcs === "jj" ? commands.vcsDetectedJj() : commands.vcsDetectedGit()).then(setDetected, () => undefined);
+  }, [vcs]);
   const test = async () => {
     setTesting(true);
     setResult(null);
     try {
-      const info = await call(commands.vcsGitVersion(path));
+      const info = await call(vcs === "jj" ? commands.vcsJjVersion(path) : commands.vcsGitVersion(path));
       setResult({ ok: true, text: `${info.version.replace(/^git version/, "Git version is")} (${info.path})` });
     } catch (e) {
       setResult({ ok: false, text: e instanceof Error ? e.message : String(e) });
@@ -97,7 +131,7 @@ function GitExecutableRow() {
   };
   return (
     <Row
-      label="Path to Git executable"
+      label={vcs === "jj" ? "Path to jj executable" : "Path to Git executable"}
       htmlFor={id}
       hint={
         result ? (
@@ -475,6 +509,25 @@ export const VCS_PAGES: PageSpec[] = [
     keywords: ["root", "repository", "vcs root"],
     sections: [
       { options: [{ kind: "custom", label: "Directory", keywords: ["VCS", "Git"], component: MappingsTable }] },
+    ],
+  },
+  {
+    id: "vcs.jj",
+    title: "Jujutsu",
+    order: 9,
+    projectScope: true,
+    keywords: ["jj", "jujutsu", "executable"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "custom",
+            label: "Path to jj executable",
+            keywords: ["Test", "jj version"],
+            component: JjExecutableRow,
+          },
+        ],
+      },
     ],
   },
   {

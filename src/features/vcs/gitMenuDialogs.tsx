@@ -10,6 +10,7 @@ import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
+import { PullFrame } from "./pullFrame";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { isCurrentWorktree } from "./worktrees";
@@ -83,8 +84,8 @@ function MergeFlags({
   );
 }
 
-function useBranches(): Branch[] {
-  const [repo] = useState(currentRepo);
+function useBranches(selectedRepo?: string | null): Branch[] {
+  const [repo] = useState(() => (selectedRepo === undefined ? currentRepo() : selectedRepo));
   const [branches, setBranches] = useState<Branch[]>([]);
   useEffect(() => {
     let live = true;
@@ -94,7 +95,7 @@ function useBranches(): Branch[] {
     return () => {
       live = false;
     };
-  }, []);
+  }, [repo]);
   return branches;
 }
 
@@ -112,13 +113,59 @@ export function remoteBranchesOf(branches: readonly Branch[], remote: string): s
 // --- Pull -------------------------------------------------------------------
 
 export function showPullDialog() {
-  openDialog((close) => <PullDialog onClose={close} />);
+  openDialog((close) => <PullRepositoryDialog onClose={close} />);
 }
 
-function PullDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [info] = useState(() => useVcs.getState().branch);
-  const branches = useBranches();
+function PullRepositoryDialog({ onClose }: { onClose: () => void }) {
+  const roots = useVcs((state) => state.roots);
+  const project = useVcs((state) => state.root);
+  const [repo, setRepo] = useState(currentRepo);
+  if (roots.length < 2) return <PullDialog onClose={onClose} />;
+  const selected = repo && roots.includes(repo) ? repo : roots[0]!;
+  const selector = (
+    <Select
+      aria-label="Repository"
+      value={selected}
+      options={roots.map((root) => ({ value: root, label: repoName(root), detail: root }))}
+      onChange={setRepo}
+    />
+  );
+  return (
+    <PullDialog
+      key={`${project}\0${selected}`}
+      selectedRepo={selected}
+      onClose={onClose}
+      repositorySelector={selector}
+    />
+  );
+}
+
+function PullDialog({
+  onClose,
+  selectedRepo,
+  repositorySelector,
+}: {
+  onClose: () => void;
+  selectedRepo?: string;
+  repositorySelector?: React.ReactNode;
+}) {
+  const [repo] = useState(() => selectedRepo ?? currentRepo());
+  const [info, setInfo] = useState(() =>
+    selectedRepo === undefined || selectedRepo === currentRepo() ? useVcs.getState().branch : null,
+  );
+  useEffect(() => {
+    if (selectedRepo === undefined || selectedRepo === currentRepo()) return;
+    let alive = true;
+    void call(commands.vcsBranchInfo(selectedRepo))
+      .then((value) => {
+        if (alive) setInfo(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [selectedRepo]);
+  const branches = useBranches(repo);
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
   const [chosenBranch, setBranch] = useState<string | null>(null);
@@ -138,7 +185,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
     return () => {
       alive = false;
     };
-  }, [info?.upstream]);
+  }, [info?.upstream, repo]);
 
   const remoteBranches = useMemo(() => (remote ? remoteBranchesOf(branches, remote) : []), [branches, remote]);
   // Default: the upstream's branch, else the same name as the current branch.
@@ -169,49 +216,39 @@ function PullDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog
-      open
-      title={tx`Pull to ${info?.head ?? "HEAD"}`}
-      onClose={onClose}
-      width={460}
-      buttons={[
-        { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.form}>
-        {remotes && !remotes.length ? (
-          <div className={styles.hint}>
-            <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
-          </div>
-        ) : (
-          <div className={styles.fieldRow}>
-            <Select
-              aria-label="Remote"
-              value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
-              onChange={setRemote}
-            />
-            <Select
-              aria-label="Remote branch"
-              className={styles.grow}
-              value={branch}
-              placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
-              onChange={setBranch}
-            />
-          </div>
-        )}
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
-        <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
+    <PullFrame title={tx`Pull to ${info?.head ?? "HEAD"}`} onClose={onClose} disabled={!remote} run={() => void run()}>
+      {repositorySelector}
+      {remotes && !remotes.length ? (
         <div className={styles.hint}>
-          <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
+          <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
         </div>
+      ) : (
+        <div className={styles.fieldRow}>
+          <Select
+            aria-label="Remote"
+            value={remote}
+            options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
+            onChange={setRemote}
+          />
+          <Select
+            aria-label="Remote branch"
+            className={styles.grow}
+            value={branch}
+            placeholder="Branch"
+            options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
+            onChange={setBranch}
+          />
+        </div>
+      )}
+      <div className={styles.fieldLabel}>
+        <T>Options:</T>
       </div>
-    </Dialog>
+      <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
+      <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
+      <div className={styles.hint}>
+        <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
+      </div>
+    </PullFrame>
   );
 }
 

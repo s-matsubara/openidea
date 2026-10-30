@@ -5,8 +5,14 @@ export const MERGE_KIND = "merge";
 
 export interface MergeData {
   path: string;
+  vcs?: "jj";
 }
 
-export function mergeInput(path: string): EditorInput {
-  return { kind: MERGE_KIND, key: `merge:${path}`, path, data: { path } satisfies MergeData };
+export function mergeInput(path: string, vcs?: "jj"): EditorInput {
+  return {
+    kind: MERGE_KIND,
+    key: vcs === "jj" ? `merge:jj:${path}` : `merge:${path}`,
+    path,
+    data: { path, vcs } satisfies MergeData,
+  };
 }

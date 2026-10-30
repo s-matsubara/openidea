@@ -45,7 +45,7 @@ import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
-import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installVcsStore, isJjPath, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
@@ -103,6 +103,34 @@ function trackTitleItem(): () => void {
   };
 }
 
+function trackJujutsuWindow(): () => void {
+  let dispose: (() => void) | undefined;
+  const sync = (available: boolean) => {
+    if (available && !dispose) {
+      dispose = registerToolWindow({
+        id: "jujutsu",
+        title: "Jujutsu",
+        icon: "branch",
+        anchor: "bottom",
+        order: 6,
+        component: lazyComponent(() => import("./JjToolWindow").then((m) => m.JjToolWindow)),
+        headerContent: lazyComponent(() => import("./JjToolWindow").then((m) => m.JjTabs)),
+      });
+    } else if (!available && dispose) {
+      dispose();
+      dispose = undefined;
+    }
+  };
+  sync(useVcs.getState().jjRoots.length > 0);
+  const unsubscribe = useVcs.subscribe((state, previous) => {
+    if (state.jjRoots !== previous.jjRoots) sync(state.jjRoots.length > 0);
+  });
+  return () => {
+    unsubscribe();
+    dispose?.();
+  };
+}
+
 /**
  * The Commit tool window exists with the non-modal commit interface only; with the
  * modal one its tabs move to the Git tool window (and Commit… opens a dialog).
@@ -110,7 +138,8 @@ function trackTitleItem(): () => void {
 function trackCommitWindow(): () => void {
   let dispose: (() => void) | null = null;
   const sync = (nonModal: boolean) => {
-    if (nonModal && !dispose) {
+    const visible = nonModal || useVcs.getState().jjRoots.length > 0;
+    if (visible && !dispose) {
       dispose = registerToolWindow({
         id: "commit",
         title: "Commit",
@@ -121,21 +150,27 @@ function trackCommitWindow(): () => void {
         headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
         tabsReplaceTitle: true,
         useBadge: () => {
-          const n = useVcs((s) => s.status.length);
+          const n = useVcs(
+            (s) => s.status.length + s.jjRoots.reduce((n, r) => n + (r.workingCopy?.files.length ?? 0), 0),
+          );
           return n || null;
         },
       });
       // The Git window's Local Changes / Shelf / Stash tabs are gone: back to its Log.
       if (["changes", "shelf", "stashes"].includes(useGitLog.getState().tab)) selectGitTab("log");
-    } else if (!nonModal && dispose) {
+    } else if (!visible && dispose) {
       dispose();
       dispose = null;
     }
   };
   sync(workflowSettings().vcs.commit.nonModal);
   const unsub = onWorkflowSettingsChange((w) => w.vcs.commit.nonModal, sync);
+  const offVcs = useVcs.subscribe((s, p) => {
+    if (s.jjRoots.length !== p.jjRoots.length) sync(workflowSettings().vcs.commit.nonModal);
+  });
   return () => {
     unsub();
+    offVcs();
     dispose?.();
   };
 }
@@ -275,6 +310,7 @@ export function activate(): () => void {
       icon: () => "diff",
       restorable: true,
     }),
+    trackJujutsuWindow(),
     activateDiffViewer(),
     registerEditorKind({
       kind: MERGE_KIND,
@@ -307,12 +343,14 @@ export function activate(): () => void {
       menus: ["editorGutter"],
       order: 10,
       items: (_menu, { paths: [path] }) => {
-        if (!path || !getContext().vcsAvailable) return [];
+        if (!path) return [];
+        const jj = isJjPath(path);
+        if (!jj && !getContext().vcsAvailable) return [];
         const shown = editorsFor(path).some((h) => annotationsShown(h.view));
         return [
           {
-            label: shown ? "Close Annotations" : "Annotate with Git Blame",
-            run: () => void executeAction("vcs.annotate", path),
+            label: shown ? "Close Annotations" : jj ? "Annotate with Jujutsu Blame" : "Annotate with Git Blame",
+            run: () => void executeAction(jj ? "vcs.jjAnnotate" : "vcs.annotate", path),
           },
         ];
       },

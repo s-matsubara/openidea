@@ -169,19 +169,32 @@ export async function runRemote(
   const taskId = `vcs:${request}`;
   activeRemote = request;
   useVcs.setState({ remoteBusy: progressTitle });
-  const cancel = () => void commands.cancelRequest(request);
+  let cancelRequested = false;
+  const cancel = () => {
+    cancelRequested = true;
+    void commands.cancelRequest(request);
+  };
   const task = (message: string | null, fraction: number | null, done: boolean) =>
-    upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction, done, cancel });
+    upsertTaskSoon({
+      id: taskId,
+      title: progressTitle,
+      message,
+      fraction,
+      done,
+      cancel,
+    });
+  const showProgress = () =>
+    notifications().notify({
+      group: "vcs",
+      level: "info",
+      key: "vcs.remote",
+      title: `${progressTitle}…`,
+      body: detail,
+      sticky: true,
+      actions: [{ label: "Cancel", run: cancel }],
+    });
   task(detail ?? null, null, false);
-  notifications().notify({
-    group: "vcs",
-    level: "info",
-    key: "vcs.remote",
-    title: `${progressTitle}…`,
-    body: detail,
-    sticky: true,
-    actions: [{ label: "Cancel", run: cancelRemote }],
-  });
+  showProgress();
   logConsole("cmd", `git ${op.op}${detail ? ` (${detail})` : ""}`);
   const channel = new Channel<string>();
   let lastLine = "";
@@ -198,6 +211,7 @@ export async function runRemote(
     const updated: UpdatedRange[] = [];
     const pushed: Array<{ to: string; commits: number }> = [];
     for (const repo of repos) {
+      if (cancelRequested) break;
       const name = repos.length > 1 && repo ? repoName(repo) : null;
       if (name) logConsole("info", name);
       if (op.op === "pull" && repos.length > 1) {
@@ -224,7 +238,7 @@ export async function runRemote(
         failures.push(`${name}: ${errorMessage(e)}`);
       }
     }
-    if (failures.length) throw new Error(failures.join("\n"));
+    if (cancelRequested || failures.length) throw new Error(failures.join("\n"));
     lastRemoteError = null;
     if (isUpdate(op)) await notifyUpdated(updated);
     else {
@@ -245,7 +259,7 @@ export async function runRemote(
     }
     return true;
   } catch (e) {
-    const cancelled = isCancelled(e);
+    const cancelled = cancelRequested || isCancelled(e);
     lastRemoteError = cancelled ? null : errorMessage(e);
     logConsole(cancelled ? "info" : "err", cancelled ? `${doneTitle} cancelled` : errorMessage(e));
     // The user asked for it: the progress balloon just goes away.

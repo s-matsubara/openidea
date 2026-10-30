@@ -6,6 +6,7 @@ import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
+import { useVcs } from "@/features/vcs/store";
 
 const ROOT = "/p";
 const SCRATCHES = "/config/scratches";
@@ -47,12 +48,13 @@ const OTHER_ACTIONS = [
   "vcs.showDiff",
   "vcs.compareWithBranch",
   "vcs.rollback",
-  "vcs.push",
+  "vcs.gitPush",
 ];
 
 let disposers: Array<() => void> = [];
 
 beforeEach(() => {
+  useVcs.setState({ kinds: {}, available: false });
   useProjectTree.setState({ root: ROOT });
   useProject.setState({
     project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
@@ -172,6 +174,17 @@ describe("project view context menu", () => {
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
     for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
       expect(l).not.toContain(fileOnly);
+  });
+
+  it("hides unsupported Git actions on jj paths while retaining other Git roots", () => {
+    useVcs.setState({ kinds: { "/p": "git", "/p/jj": "jj", "/p/jj/nested-git": "git" } });
+    expect(sub(contextMenuItems([node("/p/jj/file.txt")]), "Git")).toBeUndefined();
+    expect(sub(contextMenuItems([node("/p/jj", true)]), "Git")).toBeUndefined();
+    expect(sub(contextMenuItems([node("/p/ordinary.txt")]), "Git")).toBeDefined();
+    expect(sub(contextMenuItems([node("/p/jj/nested-git/file.txt")]), "Git")).toBeDefined();
+    useProject.setState({ project: { ...useProject.getState().project!, isGit: false } });
+    useVcs.setState({ available: true });
+    expect(sub(contextMenuItems([node("/p/jj/nested-git/file.txt")]), "Git")).toBeDefined();
   });
 
   it("keeps the project root menu short and disables what cannot apply", () => {

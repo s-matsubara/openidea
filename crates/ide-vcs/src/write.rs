@@ -175,7 +175,7 @@ fn converted_blame(
     Ok(result)
 }
 
-fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
+pub(crate) fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
     let now =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
     (0..n)
