@@ -451,6 +451,17 @@ export function registerVcsActions(): () => void {
       run: () => void checkoutRevision(),
     },
     {
+      id: "vcs.showJjHistory",
+      title: "Show Jujutsu History",
+      category: "Version Control",
+      icon: "history",
+      when: "vcsJjAvailable",
+      run: () => {
+        selectGitTab("jj");
+        showGitWindow();
+      },
+    },
+    {
       id: "vcs.showLog",
       title: "Show Git Log",
       category: "Git",
