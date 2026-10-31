@@ -129,6 +129,7 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
         std::fs::write(at.join("same.txt"), text).unwrap();
         jj(at, &["new"]);
         std::fs::write(at.join("same.txt"), format!("{text} changed")).unwrap();
+        jj(at, &["describe", "-m", text]);
     }
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
@@ -154,6 +155,16 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
         let pair = vcs::vcs_jj_file_diff(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.unwrap();
         assert_eq!(pair.before, text);
         assert_eq!(pair.after, format!("{text} changed"));
+        let history = vcs::vcs_jj_history(&host, "main", at.to_path_buf(), None).await.unwrap();
+        assert_eq!(history.commits.iter().filter(|c| c.working_copy).count(), 1);
+        assert_eq!(history.commits.iter().find(|c| c.working_copy).unwrap().description, format!("{text}\n"));
+        assert!(history.commits.iter().all(|c| !c.description.contains(if text == "outer" {
+            "nested"
+        } else {
+            "outer"
+        })));
+        assert!(vcs::vcs_jj_history(&host, "main", at.join("same.txt"), None).await.is_err());
+
         let path = at.join("same.txt");
         let doc = project.documents.open(&path).unwrap();
         project
@@ -211,6 +222,10 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     let error =
         vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), nested_copy.commit_id.clone()).await.unwrap_err();
     assert!(error.to_string().contains("cannot run"));
+    assert!(
+        vcs::vcs_jj_history(&host, "main", nested.clone(), None).await.unwrap_err().to_string().contains("cannot run")
+    );
+
     project.settings.set(ide_workspace::SettingsScope::Project, "vcs.jj.executable", serde_json::json!(exe)).unwrap();
     ide_vcs::set_jj_executable(Some(&base.join("another-window-jj")));
     assert_eq!(
@@ -220,6 +235,17 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
             .after,
         "nested changed"
     );
+
+    ide_vcs::set_jj_executable(Some(&base.join("another-window-jj")));
+    assert!(
+        vcs::vcs_jj_history(&host, "main", nested.clone(), None)
+            .await
+            .unwrap()
+            .commits
+            .iter()
+            .any(|c| c.working_copy && c.description == "nested\n")
+    );
+    assert!(vcs::vcs_jj_history(&host, "main", base.join("outside"), None).await.is_err());
     assert!(vcs::vcs_jj_file_diff(&host, "main", base.join("outside"), String::new()).await.is_err());
     assert!(vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), "stale".into()).await.is_err());
     host.close_project("main");

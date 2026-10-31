@@ -112,10 +112,12 @@ struct SnapshotFile {
 }
 
 pub(crate) fn working_copy(repo: &crate::Repo) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
     snapshot(repo, &executable(None)?)
 }
 
 fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
     let mut cmd = Command::new(exe);
     cmd.current_dir(repo.root())
         .args(["--color=never", "--no-pager", "log", "--no-graph", "-r", "@", "-T", SNAPSHOT_TEMPLATE])
@@ -195,6 +197,7 @@ pub struct JjFileDiff {
 }
 
 fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<u8>> {
+    repo.require_execution_allowed()?;
     let mut cmd = Command::new(exe);
     cmd.current_dir(repo.root())
         .args(["--color=never", "--no-pager", "--ignore-working-copy"])
@@ -204,12 +207,13 @@ fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<
     ide_core::process::prepare(&mut cmd);
     let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
     if !out.status.success() {
-        return Err(IdeError::unavailable(format!("jj diff read: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        return Err(IdeError::unavailable(format!("jj read: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
     Ok(out.stdout)
 }
 
 pub(crate) fn file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+    repo.require_execution_allowed()?;
     file_diff_with(repo, path, commit, &executable(None)?)
 }
 
@@ -218,6 +222,7 @@ fn file_diff_with(repo: &crate::Repo, path: &Path, commit: &str, exe: &Path) -> 
 }
 
 pub(crate) fn line_hunks(repo: &crate::Repo, path: &Path, text: &str) -> IdeResult<Vec<crate::LineHunk>> {
+    repo.require_execution_allowed()?;
     if text.bytes().any(|b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
         return Err(IdeError::unavailable("Binary buffers are not supported in Jujutsu diffs"));
     }
@@ -533,5 +538,285 @@ newline.txt"
         assert!(diff_error.contains("Restricted Mode"), "{diff_error}");
         assert!(hunk_error.contains("Restricted Mode"), "{hunk_error}");
         assert!(!marker.exists(), "configured jj executable ran in Restricted Mode");
+    }
+}
+
+/// A pinned operation and the oldest returned frontier, scoped to one workspace.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryCursor {
+    pub root: String,
+    pub operation: String,
+    pub seen: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryCommit {
+    pub id: String,
+    pub change_id: String,
+    pub description: String,
+    pub parents: Vec<String>,
+    pub local_bookmarks: Vec<String>,
+    pub remote_bookmarks: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub time_ms: String,
+    pub working_copy: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryPage {
+    pub commits: Vec<JjHistoryCommit>,
+    pub next: Option<JjHistoryCursor>,
+}
+
+// Build the object explicitly: jj lists of strings serialize, mapped label lists do not.
+const HISTORY_TEMPLATE: &str = r#""{\"id\":" ++ json(commit_id) ++ ",\"changeId\":" ++ json(change_id) ++ ",\"description\":" ++ json(description) ++ ",\"parents\":" ++ json(parents.map(|p| p.commit_id())) ++ ",\"localBookmarks\":" ++ json(local_bookmarks.map(|b| b.name())) ++ ",\"remoteBookmarks\":[" ++ remote_bookmarks.map(|b| json(stringify(b.name() ++ "@" ++ b.remote()))).join(",") ++ "],\"author\":" ++ json(author.name()) ++ ",\"email\":" ++ json(author.email()) ++ ",\"timeMs\":" ++ json(author.timestamp().format("%s%3f")) ++ ",\"workingCopy\":" ++ json(current_working_copy) ++ "}\n""#;
+
+pub(crate) fn history(repo: &crate::Repo, cursor: Option<JjHistoryCursor>, limit: usize) -> IdeResult<JjHistoryPage> {
+    repo.require_execution_allowed()?;
+    history_with(repo, cursor, limit, &executable(None)?)
+}
+
+fn history_with(
+    repo: &crate::Repo,
+    cursor: Option<JjHistoryCursor>,
+    limit: usize,
+    exe: &Path,
+) -> IdeResult<JjHistoryPage> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu history requires a Jujutsu repository"));
+    }
+    let root = repo.root().to_string_lossy().into_owned();
+    let hex = |s: &str, length| s.len() == length && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut cursor = if let Some(cursor) = cursor {
+        if cursor.seen.len() > 1000 {
+            return Err(IdeError::unavailable(
+                "Jujutsu history has too many parallel heads to page safely; inspect with jj log",
+            ));
+        }
+        if cursor.root != root || !hex(&cursor.operation, 128) || cursor.seen.iter().any(|id| !hex(id, 40)) {
+            return Err(IdeError::invalid("Invalid Jujutsu history cursor; refresh history"));
+        }
+        cursor
+    } else {
+        // Snapshot disk once, then all metadata and subsequent pages read that operation.
+        // Capture after snapshot; a concurrent operation simply becomes the coherent view.
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(repo.root())
+            .args(["--color=never", "--no-pager", "log", "-G", "-r", "@", "-T", r#""""#])
+            .stdin(Stdio::null())
+            .env("LC_ALL", "C");
+        ide_core::process::prepare(&mut cmd);
+        let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj history: {e}")))?;
+        if !out.status.success() {
+            return Err(IdeError::unavailable(format!("jj history: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        let operation = String::from_utf8(read_command(repo, exe, &["op", "log", "-G", "--limit", "1", "-T", "id"])?)
+            .map_err(|e| IdeError::invalid(format!("invalid jj operation: {e}")))?;
+        if !hex(&operation, 128) {
+            return Err(IdeError::invalid("invalid jj history operation ID"));
+        }
+        JjHistoryCursor { root, operation, seen: Vec::new() }
+    };
+    let limit = limit.clamp(1, 100);
+    // Exclude exact immutable IDs rather than mutable change IDs or a moving @ offset.
+    let revset = if cursor.seen.is_empty() {
+        "all()".to_owned()
+    } else {
+        format!("all() ~ descendants({})", cursor.seen.join(" | "))
+    };
+    let bytes = read_command(
+        repo,
+        exe,
+        &[
+            "--at-operation",
+            &cursor.operation,
+            "log",
+            "-G",
+            "-r",
+            &revset,
+            "--limit",
+            &(limit + 1).to_string(),
+            "-T",
+            HISTORY_TEMPLATE,
+        ],
+    )?;
+    let mut commits = serde_json::Deserializer::from_slice(&bytes)
+        .into_iter::<JjHistoryCommit>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| IdeError::invalid(format!("invalid jj history JSON: {e}")))?;
+    let more = commits.len() > limit;
+    commits.truncate(limit);
+    if more {
+        // Compact the exclusion set to its oldest nodes. Because log is topological,
+        // every visible descendant has already been returned. Linear history keeps
+        // one ID, rather than growing a command argument for every loaded commit.
+        cursor.seen.extend(commits.iter().map(|c| c.id.clone()));
+        let frontier = format!("roots({})", cursor.seen.join(" | "));
+        let bytes = read_command(
+            repo,
+            exe,
+            &["--at-operation", &cursor.operation, "log", "-G", "-r", &frontier, "-T", "json(commit_id) ++ \"\\n\""],
+        )?;
+        cursor.seen = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter::<String>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IdeError::invalid(format!("invalid jj history frontier JSON: {e}")))?;
+    }
+    Ok(JjHistoryPage { commits, next: more.then_some(cursor) })
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn run(exe: &Path, root: &Path, args: &[&str]) {
+        let out = Command::new(exe)
+            .current_dir(root)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn real_history_preserves_merge_metadata_and_operation_pinned_pages() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let root = repo.root();
+        std::fs::write(root.join("common"), "base").unwrap();
+        run(&exe, root, &["describe", "-m", "共通\n\nfull body with \"quotes\"\n"]);
+        let base = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", &base, "-m", "left"]);
+        std::fs::write(root.join("left"), "left").unwrap();
+        std::fs::write(root.join("common"), "left").unwrap();
+        run(&exe, root, &["bookmark", "create", "left-label"]);
+        let left = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", &base, "-m", "right"]);
+        std::fs::write(root.join("right"), "right").unwrap();
+        std::fs::write(root.join("common"), "right").unwrap();
+        let right = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", "root()", "-m", "independent head"]);
+        run(&exe, root, &["bookmark", "create", "independent"]);
+        run(&exe, root, &["new", &left, &right, "-m", "統合\n\nmerge body\n"]);
+        let expected = history_with(&repo, None, 100, &exe).unwrap().commits;
+        let merge = expected.iter().find(|c| c.working_copy).unwrap();
+        assert_eq!(merge.parents, [left.clone(), right]);
+        assert!(merge.local_bookmarks.is_empty());
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", &merge.id, "-T", "json(conflict)"]).unwrap(),
+            b"true"
+        );
+        assert_eq!(merge.description, "統合\n\nmerge body\n");
+        assert!(expected.iter().any(|c| c.local_bookmarks == ["left-label"]));
+        assert!(expected.iter().all(|c| c.time_ms.parse::<i64>().unwrap() >= 0));
+        // Export then clone a local fixture to exercise real remote bookmark labels.
+        run(&exe, root, &["git", "export"]);
+        let clone = tempfile::tempdir().unwrap();
+        run(&exe, clone.path(), &["git", "clone", root.to_str().unwrap(), "remote"]);
+        let cloned = crate::Repo::discover(&clone.path().join("remote")).unwrap().unwrap();
+        assert!(
+            history_with(&cloned, None, 100, &exe)
+                .unwrap()
+                .commits
+                .iter()
+                .any(|c| c.remote_bookmarks.iter().any(|b| b == "left-label@origin"))
+        );
+
+        assert!(expected.iter().any(|c| c.description == "共通\n\nfull body with \"quotes\"\n"));
+        let first = history_with(&repo, None, 1, &exe).unwrap();
+        let mut cursor = first.next;
+        let mut seen = first.commits;
+        // Mutate @ after the first page; cursor must retain the old operation and @ marker.
+        run(&exe, root, &["describe", "-m", "new operation"]);
+        while let Some(next) = cursor {
+            let page = history_with(&repo, Some(next), 1, &exe).unwrap();
+            seen.extend(page.commits);
+            cursor = page.next;
+        }
+        assert_eq!(seen.iter().map(|c| &c.id).collect::<std::collections::HashSet<_>>().len(), expected.len());
+        assert_eq!(seen.len(), expected.len());
+        assert_eq!(seen.iter().filter(|c| c.working_copy).count(), 1);
+        for (index, c) in seen.iter().enumerate() {
+            assert!(c.parents.iter().all(|parent| seen.iter().position(|p| &p.id == parent).is_none_or(|p| p > index)));
+            assert_eq!(c.description, expected.iter().find(|e| e.id == c.id).unwrap().description);
+        }
+        assert!(
+            history_with(&repo, None, 100, &exe).unwrap().commits.iter().any(|c| c.description == "new operation\n")
+        );
+        let mut cursor = history_with(&repo, None, 1, &exe).unwrap().next.unwrap();
+        cursor.root.push_str("/other");
+        assert!(history_with(&repo, Some(cursor), 1, &exe).unwrap_err().to_string().contains("cursor"));
+        assert!(history_with(&repo, None, 1, &root.join("missing-jj")).is_err());
+        // Rewrite the same change independently from the same operation, creating
+        // divergence after jj reconciles operations. Both commit identities survive.
+        let before = history_with(&repo, None, 1, &exe).unwrap().next.unwrap().operation;
+        run(&exe, root, &["describe", "-m", "variant one"]);
+        run(&exe, root, &["--at-operation", &before, "describe", "-m", "variant two"]);
+        let divergent = history_with(&repo, None, 100, &exe).unwrap().commits;
+        let variants: Vec<_> = divergent.iter().filter(|c| c.description.starts_with("variant ")).collect();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].change_id, variants[1].change_id);
+        assert_ne!(variants[0].id, variants[1].id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_history_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        run(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        let fake = tmp.path().join("fake-jj");
+        std::fs::write(&fake, "#!/bin/sh\nprintf 'not-json'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cursor = JjHistoryCursor {
+            root: repo.root().to_string_lossy().into_owned(),
+            operation: "a".repeat(128),
+            seen: vec![],
+        };
+        assert!(history_with(&repo, Some(cursor), 1, &fake).unwrap_err().to_string().contains("JSON"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_history_pagination_does_not_spawn_configured_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join(".jj")).unwrap();
+        let marker = tmp.path().join("spawned");
+        let exe = tmp.path().join("fake-jj");
+        std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(false);
+        set_jj_executable(Some(&exe));
+        let first = repo.jj_history(None, 25).unwrap_err().to_string();
+        let cursor = JjHistoryCursor {
+            root: root.to_string_lossy().into_owned(),
+            operation: "a".repeat(128),
+            seen: vec!["b".repeat(40)],
+        };
+        let later = repo.jj_history(Some(cursor), 25).unwrap_err().to_string();
+        set_jj_executable(None);
+        assert!(first.contains("Restricted Mode"), "{first}");
+        assert!(later.contains("Restricted Mode"), "{later}");
+        assert!(!marker.exists(), "configured jj executable ran for restricted history");
     }
 }

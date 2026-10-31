@@ -433,6 +433,11 @@ export const commands = {
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
+	vcsJjHistory: (root: string, cursor: {
+	root: string,
+	operation: string,
+	seen: string[],
+} | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -3825,6 +3830,29 @@ export type JjFileDiff = {
 	after: string,
 	beforeLabel: string,
 	afterLabel: string,
+};
+export type JjHistoryCommit = {
+	id: string,
+	changeId: string,
+	description: string,
+	parents: string[],
+	localBookmarks: string[],
+	remoteBookmarks: string[],
+	author: string,
+	email: string,
+	timeMs: string,
+	workingCopy: boolean,
+};
+
+export type JjHistoryCursor = {
+	root: string,
+	operation: string,
+	seen: string[],
+};
+
+export type JjHistoryPage = {
+	commits: JjHistoryCommit[],
+	next: JjHistoryCursor | null,
 };
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */

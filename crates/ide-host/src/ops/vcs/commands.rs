@@ -234,6 +234,27 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     .await
 }
 
+/// History requires an exact discovered root; never fall back to the primary repository.
+pub async fn vcs_jj_history(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    cursor: Option<JjHistoryCursor>,
+) -> IdeResult<JjHistoryPage> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history(cursor, 100)
+    })
+    .await
+}
+
 pub async fn vcs_jj_file_diff(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<JjFileDiff> {
     let project = host.project(window)?;
     blocking(move || {
@@ -984,6 +1005,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
+    d.add(
+        "vcs_jj_history",
+        |c| async move { vcs_jj_history(&c.host, &c.window, c.arg("root")?, c.arg("cursor")?).await },
+    );
     d.add("vcs_jj_file_diff", |c| async move {
         vcs_jj_file_diff(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
     });
