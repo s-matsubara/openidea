@@ -351,3 +351,131 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     assert!(vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), "stale".into()).await.is_err());
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
+    let Some(exe) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let jj = |at: &Path, args: &[&str]| {
+        let out = Command::new(&exe)
+            .current_dir(at)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    for at in [&root, &nested] {
+        jj(at, &["git", "init", "--colocate"]);
+        jj(at, &["config", "set", "--repo", "signing.behavior", "drop"]);
+        std::fs::write(at.join("same.txt"), "before").unwrap();
+        jj(at, &["describe", "-m", "base"]);
+        jj(at, &["new", "-m", "child"]);
+        std::fs::write(at.join("same.txt"), "after").unwrap();
+    }
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_project("restricted", &root).unwrap();
+    let error = vcs::vcs_jj_log_action(
+        &host,
+        "restricted",
+        root.clone(),
+        "a".repeat(40),
+        "z".repeat(32),
+        ide_vcs::JjLogAction::New,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("Restricted Mode"), "{error}");
+    host.close_project("restricted");
+    host.trust.decide(&root, true, false).unwrap();
+    let project = host.open_project("main", &root).unwrap();
+    for _ in 0..500 {
+        if project.repos().all().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(project.repos().all().len(), 2);
+    let history = vcs::vcs_jj_history(&host, "main", nested.clone(), None).await.unwrap();
+    let selected = history.commits.iter().find(|c| c.working_copy).unwrap();
+    for invalid_root in [root.join("same.txt"), base.join("outside")] {
+        assert!(
+            vcs::vcs_jj_log_action(
+                &host,
+                "main",
+                invalid_root,
+                selected.id.clone(),
+                selected.change_id.clone(),
+                ide_vcs::JjLogAction::New
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("root")
+        );
+    }
+    let path = nested.join("same.txt");
+    let doc = project.documents.open(&path).unwrap();
+    project
+        .documents
+        .edit(
+            doc.id,
+            doc.version,
+            ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved ".into() }] },
+        )
+        .unwrap();
+    for action in [ide_vcs::JjLogAction::New, ide_vcs::JjLogAction::Edit, ide_vcs::JjLogAction::Abandon] {
+        let error = vcs::vcs_jj_log_action(
+            &host,
+            "main",
+            nested.clone(),
+            selected.id.clone(),
+            selected.change_id.clone(),
+            action,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Save unsaved documents"), "{error}");
+        assert_eq!(project.documents.snapshot(doc.id).unwrap().text, "unsaved after");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after");
+    }
+    project.documents.close(doc.id);
+    let clean = project.documents.open(&path).unwrap();
+    let parent = history.commits.iter().find(|c| c.id == selected.parents[0]).unwrap();
+    vcs::vcs_jj_log_action(
+        &host,
+        "main",
+        nested.clone(),
+        parent.id.clone(),
+        parent.change_id.clone(),
+        ide_vcs::JjLogAction::Edit,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "before");
+    assert_eq!(project.documents.snapshot(clean.id).unwrap().text, "before");
+    assert_eq!(std::fs::read_to_string(root.join("same.txt")).unwrap(), "after");
+    host.close_project("main");
+}

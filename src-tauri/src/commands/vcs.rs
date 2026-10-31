@@ -41,6 +41,19 @@ pub async fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: Pa
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_log_action(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    commit: String,
+    change: String,
+    action: ide_vcs::JjLogAction,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_log_action(&state.host, window.label(), root, commit, change, action).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_history(
     window: Window,
     state: State<'_, AppState>,

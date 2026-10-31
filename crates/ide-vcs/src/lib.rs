@@ -466,8 +466,8 @@ mod remotes;
 mod repo;
 mod roots;
 pub use jj::{
-    JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjWorkingCopy, detected_jj_executable, jj_version,
-    set_jj_executable,
+    JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjWorkingCopy, detected_jj_executable,
+    jj_version, set_jj_executable,
 };
 pub mod shelf;
 mod status;
@@ -567,6 +567,12 @@ impl Repo {
             ))
         }
     }
+    pub fn jj_log_action(&self, commit: &str, change: &str, action: &JjLogAction) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::log_action(self, commit, change, action)
+    }
+
     /// Read-only Jujutsu history pinned to one operation across pages.
     pub fn jj_history(&self, cursor: Option<jj::JjHistoryCursor>, limit: usize) -> IdeResult<jj::JjHistoryPage> {
         self.require_execution_allowed()?;

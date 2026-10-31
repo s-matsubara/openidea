@@ -440,6 +440,7 @@ export const commands = {
 	operation: string,
 	seen: string[],
 } | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -3845,6 +3846,9 @@ export type JjHistoryPage = {
 	commits: JjHistoryCommit[],
 	next: JjHistoryCursor | null,
 };
+
+/**  Log actions are separate from Git operations and accept full row identities only. */
+export type JjLogAction = { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "tag"; name: string };
 
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
