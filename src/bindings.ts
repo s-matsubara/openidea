@@ -450,6 +450,8 @@ export const commands = {
 	operation: string,
 	seen: string[],
 } | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
+	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
 	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
@@ -3896,6 +3898,14 @@ export type JdkVendor = {
 	name: string,
 };
 
+/**  Draft identity: an immutable anchor plus the description the user started editing. */
+export type JjDescriptionEdit = {
+	commit: string,
+	change: string,
+	original: string,
+	description: string,
+};
+
 /**  Immutable text pair for the shared diff viewer. Missing sides are explicit empty text. */
 export type JjFileDiff = {
 	before: string,
@@ -3911,6 +3921,7 @@ export type JjHistoryCommit = {
 	parents: string[],
 	localBookmarks: string[],
 	remoteBookmarks: string[],
+	tags: string[],
 	author: string,
 	email: string,
 	timeMs: string,

@@ -53,6 +53,7 @@ const row: JjHistoryCommit = {
   parents: [],
   localBookmarks: [],
   remoteBookmarks: [],
+  tags: [],
   author: "A",
   email: "a@b",
   timeMs: "0",

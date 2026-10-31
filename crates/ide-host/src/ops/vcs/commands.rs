@@ -233,7 +233,79 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     .await
 }
 
-/// Mutations require the exact discovered Jujutsu root and a current row identity.
+/// Description edits are scoped to an exact discovered root, independently of Git.
+pub async fn vcs_jj_describe(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    edit: ide_vcs::JjDescriptionEdit,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Description root is not a project Jujutsu repository"))?;
+        repo.jj_describe(&edit)
+    })
+    .await
+}
+
+/// Checked-file rollback requires an exact discovered root and clean documents.
+pub async fn vcs_jj_restore_files(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    paths: Vec<PathBuf>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Rollback root is not a project Jujutsu repository"))?;
+        for path in &paths {
+            if repos.for_path(path).is_none_or(|owner| owner.root() != root) {
+                return Err(ide_core::IdeError::invalid("Rollback target belongs to another repository"));
+            }
+        }
+        let copy = repo.jj_working_copy()?;
+        for file in &copy.files {
+            if paths.iter().any(|p| p == file.path.as_ref()) {
+                if let Some(source) = &file.renamed_from {
+                    if repos.for_path(&root.join(source)).is_none_or(|owner| owner.root() != root) {
+                        return Err(ide_core::IdeError::invalid("Rename source belongs to another repository"));
+                    }
+                }
+            }
+        }
+        // Rename sources may also be affected; refuse all dirty documents in this
+        // repository rather than silently overwriting a buffer not shown in the list.
+        for doc in project.documents.open_documents() {
+            let info = project.documents.snapshot(doc)?;
+            if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                return Err(ide_core::IdeError::invalid(
+                    "Save unsaved documents before Jujutsu rollback, then refresh",
+                ));
+            }
+        }
+        let result = repo.jj_restore_files(&commit, &paths);
+        project.documents.sync_from_disk();
+        result
+    })
+    .await
+}
+
+/// Log mutations require the exact discovered Jujutsu root and current row identity.
 pub async fn vcs_jj_log_action(
     host: &Host,
     window: &str,
@@ -1112,6 +1184,13 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
+    d.add(
+        "vcs_jj_describe",
+        |c| async move { vcs_jj_describe(&c.host, &c.window, c.arg("root")?, c.arg("edit")?).await },
+    );
+    d.add("vcs_jj_restore_files", |c| async move {
+        vcs_jj_restore_files(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("paths")?).await
+    });
     d.add("vcs_jj_log_action", |c| async move {
         vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
             .await

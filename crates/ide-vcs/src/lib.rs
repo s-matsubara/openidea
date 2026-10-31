@@ -468,8 +468,8 @@ mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
 pub use jj::{
-    JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjWorkingCopy, detected_jj_executable,
-    jj_version, set_jj_executable,
+    JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjWorkingCopy,
+    detected_jj_executable, jj_version, set_jj_executable,
 };
 pub mod shelf;
 mod status;
@@ -586,6 +586,16 @@ impl Repo {
         self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);
         jj::working_copy(self)
+    }
+
+    pub fn jj_describe(&self, edit: &jj::JjDescriptionEdit) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::describe(self, edit)
+    }
+
+    pub fn jj_restore_files(&self, commit: &str, paths: &[PathBuf]) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::restore_files(self, commit, paths)
     }
 
     /// Read-only editor changes against the single parent of @, including unsaved text.

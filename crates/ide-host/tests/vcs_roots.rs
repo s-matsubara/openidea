@@ -407,6 +407,26 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("Restricted Mode"), "{error}");
+    assert!(
+        vcs::vcs_jj_restore_files(&host, "restricted", root.clone(), "a".repeat(40), vec![root.join("same.txt")])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Restricted Mode")
+    );
+    let edit = ide_vcs::JjDescriptionEdit {
+        commit: "a".repeat(40),
+        change: "z".repeat(32),
+        original: "".into(),
+        description: "new description".into(),
+    };
+    assert!(
+        vcs::vcs_jj_describe(&host, "restricted", root.clone(), edit.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Restricted Mode")
+    );
     host.close_project("restricted");
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
@@ -435,6 +455,61 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
             .contains("root")
         );
     }
+    assert!(
+        vcs::vcs_jj_restore_files(
+            &host,
+            "main",
+            base.join("outside"),
+            selected.id.clone(),
+            vec![nested.join("same.txt")]
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        vcs::vcs_jj_restore_files(&host, "main", root.clone(), selected.id.clone(), vec![nested.join("same.txt")])
+            .await
+            .is_err()
+    );
+    assert!(
+        vcs::vcs_jj_restore_files(&host, "main", nested.clone(), "stale".into(), vec![nested.join("same.txt")])
+            .await
+            .is_err()
+    );
+    for invalid_root in [root.join("same.txt"), base.join("outside")] {
+        assert!(
+            vcs::vcs_jj_describe(&host, "main", invalid_root, edit.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("root")
+        );
+    }
+    let nested_copy = vcs::vcs_roots(&host, "main")
+        .unwrap()
+        .into_iter()
+        .find(|r| r.root.as_ref() == nested)
+        .unwrap()
+        .working_copy
+        .unwrap();
+    let nested_edit = ide_vcs::JjDescriptionEdit {
+        commit: nested_copy.commit_id,
+        change: nested_copy.change_id,
+        original: nested_copy.description,
+        description: "nested description\n\nbody\n".into(),
+    };
+    vcs::vcs_jj_describe(&host, "main", nested.clone(), nested_edit).await.unwrap();
+    let roots = vcs::vcs_roots(&host, "main").unwrap();
+    assert_eq!(
+        roots.iter().find(|r| r.root.as_ref() == nested).unwrap().working_copy.as_ref().unwrap().description,
+        "nested description\n\nbody\n"
+    );
+    assert_eq!(
+        roots.iter().find(|r| r.root.as_ref() == root).unwrap().working_copy.as_ref().unwrap().description,
+        "child\n"
+    );
+    let history = vcs::vcs_jj_history(&host, "main", nested.clone(), None).await.unwrap();
+    let selected = history.commits.iter().find(|c| c.working_copy).unwrap();
     let path = nested.join("same.txt");
     let doc = project.documents.open(&path).unwrap();
     project
@@ -461,8 +536,18 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
         assert_eq!(project.documents.snapshot(doc.id).unwrap().text, "unsaved after");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "after");
     }
+    assert!(
+        vcs::vcs_jj_restore_files(&host, "main", nested.clone(), selected.id.clone(), vec![path.clone()])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Save unsaved documents")
+    );
     project.documents.close(doc.id);
     let clean = project.documents.open(&path).unwrap();
+    vcs::vcs_jj_restore_files(&host, "main", nested.clone(), selected.id.clone(), vec![path.clone()]).await.unwrap();
+    assert_eq!(project.documents.snapshot(clean.id).unwrap().text, "before");
+    assert_eq!(std::fs::read_to_string(root.join("same.txt")).unwrap(), "after");
     let parent = history.commits.iter().find(|c| c.id == selected.parents[0]).unwrap();
     vcs::vcs_jj_log_action(
         &host,

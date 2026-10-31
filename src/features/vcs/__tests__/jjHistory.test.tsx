@@ -50,6 +50,7 @@ const commit = (id: string, patch: Partial<JjHistoryCommit> = {}): JjHistoryComm
   parents: ["parent-a", "parent-b"],
   localBookmarks: ["local"],
   remoteBookmarks: ["remote@origin"],
+  tags: [],
   author: "Writer",
   email: "a@example.com",
   timeMs: "1700000000000",
@@ -76,7 +77,14 @@ beforeEach(() => {
   useLogOptions.setState({ diffPreview: false });
   rootsRequest.mockReset();
   gitLog.mockReset();
-  useVcs.setState({ available: false, root: "/project", roots: [], jjRoots: [root("/one"), root("/two")], version: 0 });
+  useVcs.setState({
+    available: false,
+    root: "/project",
+    roots: [],
+    jjRoots: [root("/one"), root("/two")],
+    version: 0,
+    repo: null,
+  });
   useGitLog.setState({ tab: "log" });
 });
 
@@ -103,7 +111,9 @@ it("exposes Jujutsu in a jj-only existing window with full metadata and keyboard
   expect(within(details).getByText("parent-a")).toBeInTheDocument();
   expect(within(details).getByText("parent-b")).toBeInTheDocument();
   expect(within(details).getByText("remote@origin")).toBeInTheDocument();
-  expect(within(details).getByText(/日本語 full body/)).toHaveTextContent("subject first");
+  expect(within(details).getByText("subject first")).toBeInTheDocument();
+  expect(within(details).getByText(/日本語 full body/)).toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).toBeNull();
   fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
   expect(within(details).getByText("second")).toBeInTheDocument();
   expect(within(details).getByText("None (root)")).toBeInTheDocument();
@@ -117,7 +127,7 @@ it("rejects stale root and refresh responses and resets pagination and selection
   const current = deferred();
   history.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
   render(<GitToolWindow />);
-  fireEvent.change(screen.getByRole("combobox"), { target: { value: "/two" } });
+  act(() => useVcs.setState({ repo: "/two" }));
   await act(async () => current.resolve(ok([commit("two")], { root: "/two", operation: "op", seen: ["two"] })));
   await act(async () => old.resolve(ok([commit("stale-one")])));
   expect(screen.queryByText("subject stale-one")).toBeNull();
@@ -285,7 +295,7 @@ it("discards stale changed lists and file-open responses on commit/root/project/
     historyDiff.mockReturnValueOnce(pending.promise);
     fireEvent.doubleClick(await screen.findByText("current"));
     if (transition === "commit") fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowUp" });
-    else if (transition === "root") fireEvent.change(screen.getByRole("combobox"), { target: { value: "/two" } });
+    else if (transition === "root") act(() => useVcs.setState({ repo: "/two" }));
     else if (transition === "project") act(() => useVcs.setState({ root: "/other-project" }));
     else if (transition === "availability") act(() => useVcs.setState({ jjRoots: [root("/two", "CLI unavailable")] }));
     else fireEvent.click(screen.getByRole("button", { name: "Refresh Jujutsu history" }));
@@ -326,4 +336,43 @@ it("shows explicit list and content errors, then clears them with a fresh select
   fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
   await screen.findByText("No changes");
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("searches descriptions and full identities across pinned pages and clears without losing history", async () => {
+  const later = deferred();
+  const cursor = { root: "/one", operation: "op", seen: ["first"] };
+  history.mockResolvedValueOnce(ok([commit("first")], cursor)).mockReturnValueOnce(later.promise);
+  render(<GitToolWindow />);
+  await screen.findByText("first");
+  fireEvent.change(screen.getByPlaceholderText("Text or hash"), { target: { value: "deep body" } });
+  await waitFor(() => expect(history).toHaveBeenLastCalledWith("/one", cursor));
+  expect(screen.getByText("Searching history…")).toBeInTheDocument();
+  expect(screen.queryByText("No matches")).toBeNull();
+  await act(async () =>
+    later.resolve(
+      ok([
+        commit("full-commit-identity", {
+          description: "later subject\n\nDeep Body",
+          changeId: "full-change-identity",
+          workingCopy: false,
+          localBookmarks: ["main"],
+          remoteBookmarks: ["main@origin"],
+          tags: ["v1"],
+        }),
+      ]),
+    ),
+  );
+  expect(await screen.findByRole("option")).toHaveTextContent("later subject");
+  expect(screen.getByText("origin & main")).toBeInTheDocument();
+  expect(screen.getByTitle("Tags: v1")).toBeInTheDocument();
+  for (const value of ["COMMIT-IDENTITY", "CHANGE-IDENTITY"]) {
+    fireEvent.change(screen.getByPlaceholderText("Text or hash"), { target: { value } });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+  }
+  fireEvent.change(screen.getByPlaceholderText("Text or hash"), { target: { value: "absent" } });
+  expect(screen.getByText("No matches")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Jujutsu change details")).toBeNull();
+  fireEvent.change(screen.getByPlaceholderText("Text or hash"), { target: { value: "" } });
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  expect(history).toHaveBeenCalledTimes(2);
 });

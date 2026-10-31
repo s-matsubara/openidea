@@ -5,16 +5,6 @@
   height: 100%;
   overflow: hidden;
 }
-.rootLabel {
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-  align-items: center;
-}
-.rootLabel select {
-  min-width: 0;
-  max-width: 100%;
-}
 .list {
   flex: 1;
   min-height: 0;
@@ -38,16 +28,10 @@
   background: var(--log-row-bg);
 }
 .subject {
-  min-width: 80px;
-  flex: 1;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.bookmarks {
-  color: var(--text-link);
-}
-.change {
-  font-family: var(--font-mono);
 }
 .details {
   height: 100%;
