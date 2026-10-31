@@ -118,9 +118,32 @@ pub(crate) fn working_copy(repo: &crate::Repo) -> IdeResult<JjWorkingCopy> {
 
 fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
     repo.require_execution_allowed()?;
+    snapshot_at(repo, exe, None)
+}
+
+fn snapshot_at(repo: &crate::Repo, exe: &Path, revision: Option<&str>) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu history requires a Jujutsu repository"));
+    }
+    if revision.is_some_and(|id| id.len() != 40 || !id.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(IdeError::invalid("Jujutsu history requires a full immutable commit ID"));
+    }
     let mut cmd = Command::new(exe);
+    if revision.is_some() {
+        cmd.arg("--ignore-working-copy");
+    }
     cmd.current_dir(repo.root())
-        .args(["--color=never", "--no-pager", "log", "--no-graph", "-r", "@", "-T", SNAPSHOT_TEMPLATE])
+        .args([
+            "--color=never",
+            "--no-pager",
+            "log",
+            "--no-graph",
+            "-r",
+            revision.unwrap_or("@"),
+            "-T",
+            SNAPSHOT_TEMPLATE,
+        ])
         .stdin(Stdio::null())
         .env("LC_ALL", "C");
     ide_core::process::prepare(&mut cmd);
@@ -137,7 +160,7 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
     let mut data: Snapshot = serde_json::from_slice(&out.stdout)
         .map_err(|e| IdeError::invalid(format!("invalid jj working-copy JSON in {}: {e}", repo.root().display())))?;
     // Inherited merge conflicts may have no diff against the auto-merged parents.
-    for path in &data.conflicts {
+    for path in data.conflicts.iter().filter(|_| revision.is_none()) {
         if let Some(file) = data.files.iter_mut().find(|f| &f.path == path) {
             file.conflict = true;
         } else {
@@ -148,6 +171,9 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
                 conflict: true,
             });
         }
+    }
+    if revision.is_some_and(|id| id != data.commit_id) {
+        return Err(IdeError::invalid("Jujutsu history commit identity mismatch"));
     }
     let ignored = repo.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     let files = data
@@ -181,7 +207,11 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
         })
         .collect::<IdeResult<Vec<_>>>()?
         .into_iter()
-        .filter(|f| f.unstaged == Some(crate::ChangeKind::Conflicted) || !ignored.is_ignored_path(&f.rel_path))
+        .filter(|f| {
+            revision.is_some()
+                || f.unstaged == Some(crate::ChangeKind::Conflicted)
+                || !ignored.is_ignored_path(&f.rel_path)
+        })
         .collect();
     Ok(JjWorkingCopy { change_id: data.change_id, commit_id: data.commit_id, description: data.description, files })
 }
@@ -210,6 +240,16 @@ fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<
         return Err(IdeError::unavailable(format!("jj read: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
     Ok(out.stdout)
+}
+
+pub(crate) fn history_files(repo: &crate::Repo, commit: &str) -> IdeResult<Vec<crate::FileStatus>> {
+    Ok(snapshot_at(repo, &executable(None)?, Some(commit))?.files)
+}
+
+pub(crate) fn history_file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+    let exe = executable(None)?;
+    let copy = snapshot_at(repo, &exe, Some(commit))?;
+    file_diff_snapshot(repo, path, Some(commit), &exe, copy, true)
 }
 
 pub(crate) fn file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
@@ -246,6 +286,21 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
             "Working copy changed; refresh the Jujutsu changes list and reopen the diff",
         ));
     }
+    file_diff_snapshot(repo, path, expected, exe, copy, false)
+}
+
+fn file_diff_snapshot(
+    repo: &crate::Repo,
+    path: &Path,
+    expected: Option<&str>,
+    exe: &Path,
+    copy: JjWorkingCopy,
+    historical: bool,
+) -> IdeResult<JjFileDiff> {
+    let rel = path.strip_prefix(repo.root()).map_err(|_| IdeError::invalid("path outside Jujutsu repository"))?;
+    if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(IdeError::invalid("invalid Jujutsu repository-relative path"));
+    }
     let commit = &copy.commit_id;
     // An unchanged on-disk file can still have unsaved editor changes.
     let unchanged = crate::FileStatus {
@@ -274,7 +329,7 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
     .map_err(|e| IdeError::invalid(format!("invalid jj parents JSON: {e}")))?;
     if parents.len() != 1 {
         return Err(IdeError::unavailable(
-            "Diffs against Jujutsu auto-merged parents are not supported yet; use jj diff -r @",
+            "Diffs against Jujutsu auto-merged parents are not supported yet; inspect the selected revision with jj diff",
         ));
     }
     let before_path = file.renamed_from.as_deref().unwrap_or(&file.rel_path);
@@ -309,9 +364,15 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
         before_label: if added {
             "(does not exist)".into()
         } else {
-            format!("Parent {} ({before_path})", &parents[0][..8])
+            format!("Parent {} ({before_path})", if historical { &parents[0] } else { &parents[0][..8] })
         },
-        after_label: if deleted { "@ (deleted)".into() } else { format!("@ {} ({})", &commit[..8], file.rel_path) },
+        after_label: if historical {
+            format!("{} {} ({})", commit, if deleted { "(deleted)" } else { "" }, file.rel_path)
+        } else if deleted {
+            "@ (deleted)".into()
+        } else {
+            format!("@ {} ({})", &commit[..8], file.rel_path)
+        },
     })
 }
 
@@ -333,6 +394,84 @@ mod snapshot_tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn historical_files_and_text_remain_exact_after_working_copy_rewrites() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        jj(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        let root = repo.root();
+        for (name, text) in [("unchanged", "same"), ("modified", "before"), ("deleted", "gone"), ("old", "rename")] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        jj(&exe, root, &["new"]);
+        std::fs::write(root.join("modified"), "historical").unwrap();
+        std::fs::remove_file(root.join("deleted")).unwrap();
+        std::fs::rename(root.join("old"), root.join("renamed")).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        for name in ["nested/日本語", "glob*[x]", "file:foo", "-option", "tab\tand\nnewline"] {
+            std::fs::write(root.join(name), "added").unwrap();
+        }
+        std::fs::write(root.join("binary"), b"a\0b").unwrap();
+        std::fs::write(root.join("nonutf8"), [0xff]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/passwd", root.join("link")).unwrap();
+        let accepted = snapshot(&repo, &exe).unwrap();
+        jj(&exe, root, &["describe", "-m", "rewritten externally"]);
+        jj(&exe, root, &["new"]);
+        std::fs::write(root.join("modified"), "current disk").unwrap();
+        let files = snapshot_at(&repo, &exe, Some(&accepted.commit_id)).unwrap().files;
+        assert!(!files.iter().any(|f| f.rel_path == "unchanged"));
+        assert!(files.iter().any(|f| f.rel_path == "nested/日本語"));
+        let get = |name: &str| {
+            let copy = snapshot_at(&repo, &exe, Some(&accepted.commit_id))?;
+            file_diff_snapshot(&repo, &root.join(name), Some(&accepted.commit_id), &exe, copy, true)
+        };
+        let modified = get("modified").unwrap();
+        assert_eq!((modified.before.as_str(), modified.after.as_str()), ("before", "historical"));
+        assert!(modified.after_label.contains(&accepted.commit_id));
+        let deleted = get("deleted").unwrap();
+        assert_eq!((deleted.before.as_str(), deleted.after.as_str()), ("gone", ""));
+        let renamed = get("renamed").unwrap();
+        assert_eq!((renamed.before.as_str(), renamed.after.as_str()), ("rename", "rename"));
+        assert!(renamed.before_label.contains("old"));
+        for name in ["nested/日本語", "glob*[x]", "file:foo", "-option", "tab\tand\nnewline"] {
+            let pair = get(name).unwrap();
+            assert_eq!((pair.before.as_str(), pair.after.as_str()), ("", "added"));
+        }
+        assert!(get("unchanged").is_err());
+        assert!(get("../outside").is_err());
+        assert!(get("binary").unwrap_err().to_string().contains("Binary"));
+        assert!(get("nonutf8").unwrap_err().to_string().contains("Non-UTF-8"));
+        #[cfg(unix)]
+        assert!(get("link").unwrap_err().to_string().contains("regular UTF-8"));
+        assert!(snapshot_at(&repo, &exe, Some("@")).is_err());
+        assert!(snapshot_at(&repo, &exe, Some(&"f".repeat(40))).is_err());
+        assert!(snapshot_at(&repo, &root.join("missing-jj"), Some(&accepted.commit_id)).is_err());
+        assert!(snapshot_at(&repo, &exe, Some(&"0".repeat(40))).unwrap().files.is_empty());
+        jj(&exe, root, &["new"]);
+        let empty = snapshot(&repo, &exe).unwrap();
+        assert!(snapshot_at(&repo, &exe, Some(&empty.commit_id)).unwrap().files.is_empty());
+        // A merge's list uses the merged parents; inherited additions are unchanged.
+        jj(&exe, root, &["new", &accepted.commit_id]);
+        std::fs::write(root.join("left"), "left").unwrap();
+        let left = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &accepted.commit_id]);
+        std::fs::write(root.join("right"), "right").unwrap();
+        let right = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &left, &right]);
+        std::fs::write(root.join("merge-only"), "merge").unwrap();
+        let merge = snapshot(&repo, &exe).unwrap();
+        let list = snapshot_at(&repo, &exe, Some(&merge.commit_id)).unwrap();
+        assert_eq!(list.files.iter().map(|f| f.rel_path.as_str()).collect::<Vec<_>>(), ["merge-only"]);
+        assert!(
+            file_diff_snapshot(&repo, &root.join("merge-only"), Some(&merge.commit_id), &exe, list, true)
+                .unwrap_err()
+                .to_string()
+                .contains("auto-merged")
+        );
     }
 
     #[test]
@@ -814,9 +953,13 @@ mod history_tests {
             seen: vec!["b".repeat(40)],
         };
         let later = repo.jj_history(Some(cursor), 25).unwrap_err().to_string();
+        let files = repo.jj_history_files(&"c".repeat(40)).unwrap_err().to_string();
+        let diff = repo.jj_history_file_diff(&root.join("file.txt"), &"c".repeat(40)).unwrap_err().to_string();
         set_jj_executable(None);
         assert!(first.contains("Restricted Mode"), "{first}");
         assert!(later.contains("Restricted Mode"), "{later}");
+        assert!(files.contains("Restricted Mode"), "{files}");
+        assert!(diff.contains("Restricted Mode"), "{diff}");
         assert!(!marker.exists(), "configured jj executable ran for restricted history");
     }
 }

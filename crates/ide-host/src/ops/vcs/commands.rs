@@ -222,9 +222,8 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
         let text = project.text_of(&path)?;
         apply_git_executable(&project.settings.effective());
         let repos = project.repos();
-        let repo = repos
-            .for_path(&path)
-            .ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
         if repo.kind() == VcsKind::Jj {
             repo.jj_line_hunks(&path, &text)
         } else {
@@ -251,6 +250,48 @@ pub async fn vcs_jj_history(
             .find(|r| r.root() == root)
             .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
         repo.jj_history(cursor, 100)
+    })
+    .await
+}
+
+/// Immutable historical reads require the exact owning root, including nested repositories.
+pub async fn vcs_jj_history_files(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history_files(&commit)
+    })
+    .await
+}
+
+pub async fn vcs_jj_history_file_diff(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history_file_diff(&path, &commit)
     })
     .await
 }
@@ -1036,6 +1077,12 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_jj_history",
         |c| async move { vcs_jj_history(&c.host, &c.window, c.arg("root")?, c.arg("cursor")?).await },
     );
+    d.add("vcs_jj_history_files", |c| async move {
+        vcs_jj_history_files(&c.host, &c.window, c.arg("root")?, c.arg("commit")?).await
+    });
+    d.add("vcs_jj_history_file_diff", |c| async move {
+        vcs_jj_history_file_diff(&c.host, &c.window, c.arg("root")?, c.arg("path")?, c.arg("commit")?).await
+    });
     d.add("vcs_jj_file_diff", |c| async move {
         vcs_jj_file_diff(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
     });

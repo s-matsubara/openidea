@@ -1,15 +1,30 @@
 /** Read-only history in the existing log window; Git operation state is never selected. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JjHistoryCommit, JjHistoryPage } from "@/bindings";
+import type { FileStatus, JjHistoryCommit, JjHistoryPage } from "@/bindings";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner } from "@/ui";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Spinner,
+  Tree,
+  fileIconName,
+  T,
+} from "@/ui";
 import { computeGraph } from "./graph";
 import { GraphCell } from "./GitLog";
-import { formatTime } from "./model";
+import { effectiveKind, fileCount, formatTime, KIND_COLOR } from "./model";
 import { refreshNow, repoName, useVcs } from "./store";
 import styles from "./GitLog.module.css";
 import jjStyles from "./JjHistory.module.css";
+import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
+import { jjFileDiffData, openDiff } from "./diffInput";
+import { useLogOptions } from "./logOptions";
+import { tx } from "@/platform/i18n";
 
 export function JjHistory() {
   useEffect(() => {
@@ -198,9 +213,152 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
         </SplitPanel>
         <SplitHandle />
         <SplitPanel id="details" minSize="120px">
-          {commit ? <HistoryDetails commit={commit} /> : <EmptyState>Select a change to view details</EmptyState>}
+          {commit ? (
+            <SplitGroup orientation="vertical" id="jj-log-details">
+              <SplitPanel id="files" defaultSize="60%" minSize="60px">
+                <HistoryFiles key={commit.id} root={root} commit={commit.id} />
+              </SplitPanel>
+              <SplitHandle />
+              <SplitPanel id="message" minSize="60px">
+                <HistoryDetails commit={commit} />
+              </SplitPanel>
+            </SplitGroup>
+          ) : (
+            <EmptyState>Select a change to view details</EmptyState>
+          )}
         </SplitPanel>
       </SplitGroup>
+    </div>
+  );
+}
+
+/** Scoped to one immutable commit: unmount invalidates lists, previews and in-flight opens. */
+function HistoryFiles({ root, commit }: { root: string; commit: string }) {
+  const [files, setFiles] = useState<FileStatus[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
+  const alive = useRef(false);
+  const opening = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const preview = useLogOptions((s) => s.diffPreview);
+  useEffect(() => {
+    alive.current = true;
+    let current = true;
+    const requests = opening;
+    const previews = timer;
+    void call(commands.vcsJjHistoryFiles(root, commit))
+      .then((next) => current && setFiles(next))
+      .catch((e) => current && setError(String(e)));
+    return () => {
+      current = false;
+      alive.current = false;
+      requests.current++;
+      clearTimeout(previews.current);
+    };
+  }, [root, commit]);
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current);
+      opening.current++;
+    },
+    [preview],
+  );
+  const tree = useMemo(() => buildFileTree(files ?? [], (f) => f.relPath), [files]);
+  const dirs = useMemo(() => dirKeys(tree), [tree]);
+  const open = (file: FileStatus, isPreview = false) => {
+    clearTimeout(timer.current);
+    const request = ++opening.current;
+    setError(null);
+    void call(commands.vcsJjHistoryFileDiff(root, file.path, commit))
+      .then((pair) => {
+        if (alive.current && request === opening.current)
+          return openDiff(jjFileDiffData(file.path, pair), { preview: isPreview, focus: !isPreview });
+      })
+      .catch((e) => alive.current && request === opening.current && setError(`${file.relPath}: ${String(e)}`));
+  };
+  const select = (keys: ReadonlySet<string>) => {
+    setSelected(keys);
+    clearTimeout(timer.current);
+    opening.current++;
+    if (!preview || keys.size !== 1) return;
+    const file = files?.find((f) => keys.has(`f:${f.relPath}`));
+    if (file) timer.current = setTimeout(() => open(file, true), 120);
+  };
+  const chosen = files?.find((f) => selected.has(`f:${f.relPath}`));
+  return (
+    <div className={styles.filesPane}>
+      <div className={styles.detailsBar} role="toolbar" aria-label={tx("Changed files")}>
+        <IconButton
+          icon="diff"
+          title="Show Diff"
+          size="small"
+          disabled={!chosen}
+          onClick={() => chosen && open(chosen)}
+        />
+        <span className={styles.detailsCount}>{files ? fileCount(files.length) : ""}</span>
+        <span className={styles.grow} />
+        <IconButton
+          icon="expand-all"
+          title="Expand All"
+          size="small"
+          disabled={!dirs.length}
+          onClick={() => setExpanded(new Set(dirs))}
+        />
+        <IconButton
+          icon="collapse-all"
+          title="Collapse All"
+          size="small"
+          disabled={!dirs.length}
+          onClick={() => setExpanded(new Set())}
+        />
+      </div>
+      {error && (
+        <div className={styles.message} role="alert">
+          {error}
+        </div>
+      )}
+      {!files && !error && (
+        <div className={styles.message}>
+          <Spinner size={12} />
+        </div>
+      )}
+      {files?.length === 0 && (
+        <EmptyState>
+          <T>No changes</T>
+        </EmptyState>
+      )}
+      {files && files.length > 0 && (
+        <Tree<FileTreeNode<FileStatus>>
+          roots={tree}
+          getKey={(n) => n.key}
+          getLabel={(n) => n.name}
+          getChildren={(n) => (n.file ? undefined : n.children)}
+          isExpandable={(n) => !n.file}
+          expanded={expanded ?? new Set(dirs)}
+          onExpandedChange={setExpanded}
+          selected={selected}
+          onSelectionChange={select}
+          onActivate={(n) => n.file && open(n.file)}
+          aria-label="Changed files"
+          className={styles.fileTree}
+          renderNode={(n) => (
+            <span
+              className={styles.fileRow}
+              title={n.file?.renamedFrom ? `${n.file.renamedFrom} → ${n.file.relPath}` : n.file?.relPath}
+            >
+              <Icon name={n.file ? fileIconName(n.name) : "folder"} size={16} className={styles.fileIcon} />
+              <span
+                className={styles.fileName}
+                style={n.file ? { color: KIND_COLOR[effectiveKind(n.file) ?? "modified"] } : undefined}
+              >
+                {n.name}
+              </span>
+              {!n.file && <span className={styles.fileDir}>{fileCount(n.count)}</span>}
+            </span>
+          )}
+        />
+      )}
     </div>
   );
 }

@@ -52,6 +52,29 @@ pub async fn vcs_jj_history(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_history_files(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::vcs_jj_history_files(&state.host, window.label(), root, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_file_diff(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    ide_host::ops::vcs::vcs_jj_history_file_diff(&state.host, window.label(), root, path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_file_diff(
     window: Window,
     state: State<'_, AppState>,

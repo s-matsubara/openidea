@@ -590,6 +590,18 @@ impl Repo {
     }
 
     /// Read-only immutable content pair for a file in the selected @ snapshot.
+    pub fn jj_history_files(&self, commit: &str) -> IdeResult<Vec<FileStatus>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_files(self, commit)
+    }
+
+    pub fn jj_history_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_file_diff(self, path, commit)
+    }
+
     pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
         self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);
