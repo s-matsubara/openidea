@@ -41,6 +41,17 @@ pub async fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: Pa
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_history(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    cursor: Option<JjHistoryCursor>,
+) -> IdeResult<JjHistoryPage> {
+    ide_host::ops::vcs::vcs_jj_history(&state.host, window.label(), root, cursor).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_file_diff(
     window: Window,
     state: State<'_, AppState>,

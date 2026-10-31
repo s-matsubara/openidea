@@ -1,3 +1,4 @@
+import { JjHistory } from "./JjHistory";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
@@ -107,15 +108,19 @@ function useGitTabs() {
   const tab = useGitLog((s) => s.tab);
   const logTabs = useGitLog((s) => s.logTabs);
   const counts = useStashTabCounts(available && modal);
-  const tabs = gitTabs({ modal, combine, tab, logTabs, ...counts });
-  return { tabs, shown: shownTab(tab, tabs, combine) };
+  const jj = useVcs((s) => s.jjRoots.length > 0);
+  const tabs = [
+    ...(available ? gitTabs({ modal, combine, tab, logTabs, ...counts }) : []),
+    ...(jj ? [{ id: "jj", label: "Jujutsu" }] : []),
+  ];
+  const shown = tabs.some((t) => t.id === tab) ? tab : available ? shownTab(tab, tabs, combine) : "jj";
+  return { tabs, shown };
 }
 
 /** Tool window header: [Local Changes / Stash…] Log, log tabs, Console and Worktrees content tabs. */
 export function GitTabs() {
-  const available = useVcs((s) => s.available);
   const { tabs, shown } = useGitTabs();
-  if (!available) return null;
+  if (!tabs.length) return null;
   return (
     <Tabs
       variant="compact"
@@ -134,7 +139,8 @@ export function GitToolWindow() {
   const { shown } = useGitTabs();
   const shownLog = useGitLog((s) => s.shownLog);
   const available = useVcs((s) => s.available);
-  if (!available)
+  const jj = useVcs((s) => s.jjRoots.length > 0);
+  if (!available && !jj)
     return (
       <EmptyState title="Version control is not configured">
         <T>The project is not a Git repository.</T>
@@ -147,7 +153,9 @@ export function GitToolWindow() {
       id={`openidea-git-panel-${shown}`}
       aria-labelledby={`openidea-git-tab-${shown}`}
     >
-      {shown === "changes" ? (
+      {shown === "jj" ? (
+        <JjHistory />
+      ) : shown === "changes" ? (
         <ChangesTree mode="local" />
       ) : shown === "shelf" || shown === "stashes" ? (
         <StashContent tab={shown} />

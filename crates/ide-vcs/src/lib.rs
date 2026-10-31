@@ -467,7 +467,10 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
-pub use jj::{JjFileDiff, JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
+pub use jj::{
+    JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjWorkingCopy, detected_jj_executable, jj_version,
+    set_jj_executable,
+};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -565,6 +568,12 @@ impl Repo {
                 "Project is in Restricted Mode. Trust the project to enable execution.",
             ))
         }
+    }
+    /// Read-only Jujutsu history pinned to one operation across pages.
+    pub fn jj_history(&self, cursor: Option<jj::JjHistoryCursor>, limit: usize) -> IdeResult<jj::JjHistoryPage> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history(self, cursor, limit)
     }
     /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
     pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
