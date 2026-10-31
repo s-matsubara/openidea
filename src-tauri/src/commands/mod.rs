@@ -227,6 +227,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_branch_info,
         vcs::vcs_line_hunks,
         vcs::vcs_file_at,
+        vcs::vcs_jj_file_diff,
         vcs::vcs_blame,
         vcs::vcs_log,
         vcs::vcs_commit_files,

@@ -98,3 +98,85 @@ async fn jj_roots_reject_git_operations_before_mutation() {
     assert!(!root.join(".git/index").exists());
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
+    let Some(exe) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let jj = |at: &Path, args: &[&str]| {
+        let out = Command::new(&exe)
+            .current_dir(at)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    jj(&root, &["git", "init", "--colocate"]);
+    jj(&nested, &["git", "init", "--colocate"]);
+    for (at, text) in [(&root, "outer"), (&nested, "nested")] {
+        std::fs::write(at.join("same.txt"), text).unwrap();
+        jj(at, &["new"]);
+        std::fs::write(at.join("same.txt"), format!("{text} changed")).unwrap();
+    }
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    let project = host.open_project("main", &root).unwrap();
+    for _ in 0..500 {
+        if project.repos().all().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(project.repos().all().len(), 2);
+    let roots = vcs::vcs_roots(&host, "main").unwrap();
+    for (at, text) in [(&root, "outer"), (&nested, "nested")] {
+        let copy = roots.iter().find(|r| Path::new(r.root.as_ref()) == at).unwrap().working_copy.as_ref().unwrap();
+        let pair = vcs::vcs_jj_file_diff(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.unwrap();
+        assert_eq!(pair.before, text);
+        assert_eq!(pair.after, format!("{text} changed"));
+        assert!(project.with_repo_of(&at.join("same.txt"), |r| r.stage(&[at.join("same.txt")])).is_err());
+    }
+    // The read route reapplies this project's executable setting even if another
+    // window has replaced the process-wide executable since the list was loaded.
+    let nested_copy =
+        roots.iter().find(|r| Path::new(r.root.as_ref()) == nested).unwrap().working_copy.as_ref().unwrap();
+    project
+        .settings
+        .set(ide_workspace::SettingsScope::Project, "vcs.jj.executable", serde_json::json!(base.join("missing-jj")))
+        .unwrap();
+    let error =
+        vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), nested_copy.commit_id.clone()).await.unwrap_err();
+    assert!(error.to_string().contains("cannot run"));
+    project.settings.set(ide_workspace::SettingsScope::Project, "vcs.jj.executable", serde_json::json!(exe)).unwrap();
+    ide_vcs::set_jj_executable(Some(&base.join("another-window-jj")));
+    assert_eq!(
+        vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), nested_copy.commit_id.clone())
+            .await
+            .unwrap()
+            .after,
+        "nested changed"
+    );
+    assert!(vcs::vcs_jj_file_diff(&host, "main", base.join("outside"), String::new()).await.is_err());
+    assert!(vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), "stale".into()).await.is_err());
+    host.close_project("main");
+}
