@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenIDEA",
-  "version": "0.1.37",
-  "identifier": "ai.l0ng.openidea",
+  "version": "2026.2.0",
+  "identifier": "cloud.matsubara.openidea",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -41,14 +41,15 @@
     "longDescription": "OpenIDEA is an open-source IDE inspired by IntelliJ IDEA. Not affiliated with JetBrains.",
     "macOS": {
       "entitlements": "./Entitlements.plist",
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     }
   },
   "mainBinaryName": "openidea",
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFCOUU0MUFFOUY4NzZCNkQKUldSdGE0ZWZya0dlRzNnRFJUR2loUVdNZ1BmamxkNzFoaWNPUTBsRmI0cjhxZFRqQURybkMwakEK",
-      "endpoints": ["https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json"]
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUzQThCRkIwMENEOTQ3MDMKUldRRFI5a01zTCtvVTc2NEc5Tmt2cUxiTSs4QUx2TW5JcDI0RjhhZ0pDc1hoM2cyRXdjVUF6M2QK",
+      "endpoints": ["https://github.com/s-matsubara/openidea/releases/latest/download/latest.json"]
     }
   }
 }
