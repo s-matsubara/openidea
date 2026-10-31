@@ -25,11 +25,11 @@ jobs:
         os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       # Only main saves the cache (saving takes minutes on Windows); PRs restore main's.
@@ -62,7 +62,7 @@ jobs:
     name: Remote server (linux musl)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
@@ -73,9 +73,9 @@ jobs:
 
   deny:
     name: Cargo deny
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
@@ -84,11 +84,11 @@ jobs:
     name: Frontend
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
@@ -103,11 +103,11 @@ jobs:
     # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
     container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm e2e
         env:
