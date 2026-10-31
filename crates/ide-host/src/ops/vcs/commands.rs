@@ -233,6 +233,45 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     .await
 }
 
+/// Mutations require the exact discovered Jujutsu root and a current row identity.
+pub async fn vcs_jj_log_action(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    change: String,
+    action: ide_vcs::JjLogAction,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu action root is not a project repository"))?;
+        if action.changes_working_copy() {
+            for doc in project.documents.open_documents() {
+                let info = project.documents.snapshot(doc)?;
+                if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                    return Err(ide_core::IdeError::invalid(
+                        "Save unsaved documents before changing the Jujutsu working copy",
+                    ));
+                }
+            }
+        }
+        let result = repo.jj_log_action(&commit, &change, &action);
+        // Reload clean documents even if jj reports an error after partial work.
+        if action.changes_working_copy() {
+            project.documents.sync_from_disk();
+        }
+        result
+    })
+    .await
+}
+
 /// History requires an exact discovered root; never fall back to the primary repository.
 pub async fn vcs_jj_history(
     host: &Host,
@@ -1073,6 +1112,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
+    d.add("vcs_jj_log_action", |c| async move {
+        vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
+            .await
+    });
     d.add(
         "vcs_jj_history",
         |c| async move { vcs_jj_history(&c.host, &c.window, c.arg("root")?, c.arg("cursor")?).await },

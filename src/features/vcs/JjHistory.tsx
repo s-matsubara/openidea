@@ -1,4 +1,4 @@
-/** Read-only history in the existing log window; Git operation state is never selected. */
+/** Jujutsu history in the existing log window; Git operation state is never selected. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileStatus, JjHistoryCommit, JjHistoryPage } from "@/bindings";
 import { setContext } from "@/platform/context";
@@ -14,6 +14,7 @@ import {
   Tree,
   fileIconName,
   T,
+  showContextMenu,
 } from "@/ui";
 import { computeGraph } from "./graph";
 import { GraphCell } from "./GitLog";
@@ -24,6 +25,7 @@ import jjStyles from "./JjHistory.module.css";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { jjFileDiffData, openDiff } from "./diffInput";
 import { useLogOptions } from "./logOptions";
+import { jjLogMenu } from "./jjLogActions";
 import { tx } from "@/platform/i18n";
 
 export function JjHistory() {
@@ -140,7 +142,7 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
           size="small"
           onClick={unavailable ? () => void refreshNow() : reload}
         />
-        <span>Jujutsu history · read-only</span>
+        <span>Jujutsu history</span>
         {loading && <Spinner size={12} />}
       </div>
       {(error || unavailable) && (
@@ -188,6 +190,14 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
                   onClick={() => {
                     select(c.id);
                     list.current?.focus();
+                  }}
+                  onContextMenu={(e) => {
+                    select(c.id);
+                    const request = generation.current;
+                    showContextMenu(
+                      e,
+                      jjLogMenu(root, c, () => request === generation.current, reload),
+                    );
                   }}
                   title={c.description}
                 >

@@ -955,11 +955,212 @@ mod history_tests {
         let later = repo.jj_history(Some(cursor), 25).unwrap_err().to_string();
         let files = repo.jj_history_files(&"c".repeat(40)).unwrap_err().to_string();
         let diff = repo.jj_history_file_diff(&root.join("file.txt"), &"c".repeat(40)).unwrap_err().to_string();
+        let action = repo.jj_log_action(&"c".repeat(40), &"z".repeat(32), &JjLogAction::New).unwrap_err().to_string();
         set_jj_executable(None);
         assert!(first.contains("Restricted Mode"), "{first}");
         assert!(later.contains("Restricted Mode"), "{later}");
         assert!(files.contains("Restricted Mode"), "{files}");
         assert!(diff.contains("Restricted Mode"), "{diff}");
+        assert!(action.contains("Restricted Mode"), "{action}");
         assert!(!marker.exists(), "configured jj executable ran for restricted history");
+    }
+}
+
+/// Log actions are separate from Git operations and accept full row identities only.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum JjLogAction {
+    New,
+    Edit,
+    Abandon,
+    Bookmark { name: String },
+    Tag { name: String },
+}
+
+impl JjLogAction {
+    pub fn changes_working_copy(&self) -> bool {
+        matches!(self, Self::New | Self::Edit | Self::Abandon)
+    }
+}
+
+pub(crate) fn log_action(repo: &crate::Repo, commit: &str, change: &str, action: &JjLogAction) -> IdeResult<()> {
+    log_action_with(repo, commit, change, action, &executable(None)?)
+}
+
+fn log_action_with(repo: &crate::Repo, commit: &str, change: &str, action: &JjLogAction, exe: &Path) -> IdeResult<()> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu actions require a Jujutsu repository"));
+    }
+    if commit.len() != 40
+        || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+        || change.len() != 32
+        || !change.bytes().all(|b| (b'k'..=b'z').contains(&b))
+    {
+        return Err(IdeError::invalid("Invalid full Jujutsu row identity; refresh history"));
+    }
+    // Snapshot disk first. Saving a buffer may have rewritten the displayed @;
+    // never silently redirect an old row to its replacement or an abandoned commit.
+    snapshot(repo, exe)?;
+    let revision = format!("({commit} & {change} & all())");
+    let accepted = read_command(repo, exe, &["log", "-G", "-r", &revision, "-T", "commit_id"])?;
+    if accepted != commit.as_bytes() {
+        return Err(IdeError::unavailable("Selected Jujutsu revision changed; refresh history and try again"));
+    }
+    let name = match action {
+        JjLogAction::Bookmark { name } | JjLogAction::Tag { name } => Some(name.as_str()),
+        _ => None,
+    };
+    if let Some(name) = name {
+        if name.is_empty() || name.starts_with('-') || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(IdeError::invalid("Invalid Jujutsu reference name"));
+        }
+        // tag set refuses movement but accepts an existing tag at the same target.
+        // The create dialog must reject that case too.
+        if matches!(action, JjLogAction::Tag { .. }) {
+            let bytes = read_command(repo, exe, &["tag", "list", "-T", "json(name) ++ \"\\n\""])?;
+            let names = serde_json::Deserializer::from_slice(&bytes).into_iter::<String>();
+            for existing in names {
+                if existing.map_err(|e| IdeError::invalid(format!("invalid jj tag JSON: {e}")))? == name {
+                    return Err(IdeError::invalid("Tag already exists; choose a new name"));
+                }
+            }
+        }
+    }
+    let args: Vec<&str> = match action {
+        JjLogAction::New => vec!["new", "--", &revision],
+        JjLogAction::Edit => vec!["edit", "--", &revision],
+        JjLogAction::Abandon => vec!["abandon", "--", &revision],
+        JjLogAction::Bookmark { name } => vec!["bookmark", "create", "-r", &revision, "--", name],
+        JjLogAction::Tag { name } => vec!["tag", "set", "-r", &revision, "--", name],
+    };
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager"])
+        .args(args)
+        .stdin(Stdio::null())
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(format!("jj action: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod log_action_tests {
+    use super::*;
+
+    fn fixture() -> Option<(tempfile::TempDir, crate::Repo, PathBuf)> {
+        let exe = detected_jj_executable()?;
+        let tmp = tempfile::tempdir().unwrap();
+        cli(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        cli(&exe, repo.root(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        Some((tmp, repo, exe))
+    }
+    fn cli(exe: &Path, root: &Path, args: &[&str]) {
+        let out = Command::new(exe)
+            .current_dir(root)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    fn row(repo: &crate::Repo, exe: &Path) -> JjWorkingCopy {
+        snapshot(repo, exe).unwrap()
+    }
+    fn act(repo: &crate::Repo, exe: &Path, row: &JjWorkingCopy, action: JjLogAction) -> IdeResult<()> {
+        log_action_with(repo, &row.commit_id, &row.change_id, &action, exe)
+    }
+
+    #[test]
+    fn log_actions_create_edit_abandon_and_rebase_descendants() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        std::fs::write(repo.root().join("base"), "base").unwrap();
+        cli(&exe, repo.root(), &["describe", "-m", "base"]);
+        let base = row(&repo, &exe);
+        act(&repo, &exe, &base, JjLogAction::New).unwrap();
+        let child = row(&repo, &exe);
+        assert_ne!(child.change_id, base.change_id);
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", "@-", "-T", "commit_id"]).unwrap(),
+            base.commit_id.as_bytes()
+        );
+        cli(&exe, repo.root(), &["describe", "-m", "child"]);
+        let child = row(&repo, &exe);
+        act(&repo, &exe, &base, JjLogAction::Edit).unwrap();
+        assert_eq!(row(&repo, &exe).change_id, base.change_id);
+        act(&repo, &exe, &base, JjLogAction::Abandon).unwrap();
+        let visible = read_command(&repo, &exe, &["log", "-G", "-r", "all()", "-T", "change_id ++ \"\\n\""]).unwrap();
+        let visible = String::from_utf8(visible).unwrap();
+        assert!(!visible.contains(&base.change_id));
+        assert!(visible.contains(&child.change_id));
+        let parents = read_command(
+            &repo,
+            &exe,
+            &["log", "-G", "-r", &child.change_id, "-T", "parents.map(|p| p.commit_id()).join(\" \")"],
+        )
+        .unwrap();
+        assert_eq!(parents, "0".repeat(40).as_bytes());
+    }
+
+    #[test]
+    fn log_actions_create_refs_without_moving_existing_refs_or_targeting_stale_rows() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "target"]);
+        let target = row(&repo, &exe);
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Bookmark { name: "topic".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Tag { name: "v-test".into() }).unwrap();
+        let current = row(&repo, &exe);
+        for action in [JjLogAction::Bookmark { name: "topic".into() }, JjLogAction::Tag { name: "v-test".into() }] {
+            assert!(act(&repo, &exe, &current, action).is_err());
+        }
+        for reference in ["topic", "v-test"] {
+            assert_eq!(
+                read_command(&repo, &exe, &["log", "-G", "-r", reference, "-T", "commit_id"]).unwrap(),
+                target.commit_id.as_bytes()
+            );
+        }
+        assert!(
+            act(&repo, &exe, &target, JjLogAction::Tag { name: "v-test".into() })
+                .unwrap_err()
+                .to_string()
+                .contains("already exists")
+        );
+        for name in ["", "--allow-move", "bad name", "bad\nname", "bad..name"] {
+            assert!(act(&repo, &exe, &current, JjLogAction::Bookmark { name: name.into() }).is_err(), "{name:?}");
+        }
+        cli(&exe, repo.root(), &["describe", "-m", "external rewrite"]);
+        assert!(act(&repo, &exe, &current, JjLogAction::New).unwrap_err().to_string().contains("refresh history"));
+        assert!(log_action_with(&repo, "@", &current.change_id, &JjLogAction::New, &exe).is_err());
+        assert!(log_action_with(&repo, &target.commit_id, &current.change_id, &JjLogAction::New, &exe).is_err());
+    }
+
+    #[test]
+    fn log_actions_keep_immutable_protection_and_allow_new_refs_on_immutable_revisions() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "immutable target"]);
+        let target = row(&repo, &exe);
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        cli(&exe, repo.root(), &["config", "set", "--repo", "revset-aliases.\"immutable_heads()\"", &target.commit_id]);
+        for action in [JjLogAction::Edit, JjLogAction::Abandon] {
+            let error = act(&repo, &exe, &target, action).unwrap_err().to_string();
+            assert!(error.contains("immutable"), "{error}");
+        }
+        act(&repo, &exe, &target, JjLogAction::Bookmark { name: "immutable-ref".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Tag { name: "immutable-tag".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        assert_ne!(row(&repo, &exe).change_id, target.change_id);
     }
 }
