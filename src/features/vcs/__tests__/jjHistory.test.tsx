@@ -1,15 +1,19 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { JjHistoryCommit, JjHistoryPage, VcsRoot } from "@/bindings";
+import type { FileStatus, JjHistoryCommit, JjHistoryPage, VcsRoot } from "@/bindings";
 import { getAction, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerHistoryActions } from "../historyActions";
 import { registerVcsActions } from "../actions";
 import { GitTabs, GitToolWindow } from "../GitLog";
+import { useLogOptions } from "../logOptions";
 import { useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
 const history = vi.fn();
+const historyFiles = vi.fn();
+const historyDiff = vi.fn();
+const openInput = vi.fn();
 const gitLog = vi.fn();
 const rootsRequest = vi.fn();
 vi.mock("@/platform/ipc", async (original) => {
@@ -18,12 +22,18 @@ vi.mock("@/platform/ipc", async (original) => {
     ...real,
     commands: {
       ...real.commands,
+      vcsJjHistoryFiles: (...args: unknown[]) => historyFiles(...args),
+      vcsJjHistoryFileDiff: (...args: unknown[]) => historyDiff(...args),
       vcsJjHistory: (...args: unknown[]) => history(...args),
       vcsRoots: () => rootsRequest(),
       vcsLog: (...args: unknown[]) => gitLog(...args),
     },
   };
 });
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  editorService: () => ({ openInput }),
+}));
 const root = (name: string, unavailableReason: string | null = null): VcsRoot => ({
   root: name,
   kind: "jj",
@@ -60,6 +70,10 @@ const deferred = () => {
 
 beforeEach(() => {
   history.mockReset();
+  historyFiles.mockReset().mockResolvedValue({ status: "ok", data: [] });
+  historyDiff.mockReset();
+  openInput.mockReset();
+  useLogOptions.setState({ diffPreview: false });
   rootsRequest.mockReset();
   gitLog.mockReset();
   useVcs.setState({ available: false, root: "/project", roots: [], jjRoots: [root("/one"), root("/two")], version: 0 });
@@ -209,5 +223,107 @@ it("rechecks root availability on refresh so an installed or restored CLI can re
   fireEvent.click(screen.getByRole("button", { name: "Refresh Jujutsu history" }));
   await screen.findByText("restored-cli");
   expect(rootsRequest).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+const changed = (path: string, kind: FileStatus["unstaged"] = "modified"): FileStatus => ({
+  path: `/one/${path}`,
+  relPath: path,
+  unstaged: kind,
+  staged: null,
+  renamedFrom: null,
+});
+const pair = {
+  before: "historical parent",
+  after: "historical after",
+  beforeLabel: "parent exact",
+  afterLabel: "commit exact",
+};
+
+it("renders a directory tree above metadata and activates historical read-only diffs by double click and Enter", async () => {
+  history.mockResolvedValue(ok([commit("first")]));
+  historyFiles.mockResolvedValue({ status: "ok", data: [changed("src/nested/a.ts"), changed("deleted", "deleted")] });
+  historyDiff.mockResolvedValue({ status: "ok", data: pair });
+  render(<GitToolWindow />);
+  const file = await screen.findByText("a.ts");
+  expect(screen.getByText("src/nested")).toBeInTheDocument();
+  expect(screen.queryByText("unchanged")).toBeNull();
+  expect(historyFiles).toHaveBeenCalledWith("/one", "first");
+  fireEvent.mouseDown(file);
+  expect(openInput).not.toHaveBeenCalled();
+  fireEvent.doubleClick(file);
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(historyDiff).toHaveBeenCalledWith("/one", "/one/src/nested/a.ts", "first");
+  expect(openInput.mock.calls[0]![0].data).toEqual({
+    path: "/one/src/nested/a.ts",
+    left: { type: "text", text: pair.before, label: pair.beforeLabel },
+    right: { type: "text", text: pair.after, label: pair.afterLabel },
+  });
+  fireEvent.mouseDown(screen.getByText("deleted"));
+  fireEvent.keyDown(screen.getByRole("tree"), { key: "Enter" });
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(2));
+  expect(historyDiff).toHaveBeenLastCalledWith("/one", "/one/deleted", "first");
+  fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+  expect(screen.queryByText("a.ts")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
+  expect(screen.getByText("a.ts")).toBeInTheDocument();
+  expect(screen.queryByTitle("Revert Selected Changes")).toBeNull();
+});
+
+it("discards stale changed lists and file-open responses on commit/root/project/refresh transitions", async () => {
+  history.mockResolvedValue(ok([commit("first"), commit("second")]));
+  const oldFiles = deferred();
+  historyFiles.mockReturnValueOnce(oldFiles.promise).mockResolvedValue({ status: "ok", data: [changed("current")] });
+  render(<GitToolWindow />);
+  await screen.findByText("first");
+  fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+  await screen.findByText("current");
+  await act(async () => oldFiles.resolve({ status: "ok", data: [changed("stale")] }));
+  expect(screen.queryByText("stale")).toBeNull();
+  for (const transition of ["commit", "root", "project", "refresh", "availability"]) {
+    const pending = deferred();
+    historyDiff.mockReturnValueOnce(pending.promise);
+    fireEvent.doubleClick(await screen.findByText("current"));
+    if (transition === "commit") fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowUp" });
+    else if (transition === "root") fireEvent.change(screen.getByRole("combobox"), { target: { value: "/two" } });
+    else if (transition === "project") act(() => useVcs.setState({ root: "/other-project" }));
+    else if (transition === "availability") act(() => useVcs.setState({ jjRoots: [root("/two", "CLI unavailable")] }));
+    else fireEvent.click(screen.getByRole("button", { name: "Refresh Jujutsu history" }));
+    await act(async () => pending.resolve({ status: "ok", data: pair }));
+    expect(openInput).not.toHaveBeenCalled();
+  }
+});
+
+it("previews selections with the existing option and cancels deferred previews on change", async () => {
+  useLogOptions.setState({ diffPreview: true });
+  history.mockResolvedValue(ok([commit("first"), commit("second")]));
+  historyFiles.mockResolvedValue({ status: "ok", data: [changed("preview")] });
+  historyDiff.mockResolvedValue({ status: "ok", data: pair });
+  render(<GitToolWindow />);
+  fireEvent.mouseDown(await screen.findByText("preview"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(openInput.mock.calls[0]![1]).toEqual({ preview: true, focus: false });
+  openInput.mockClear();
+  fireEvent.mouseDown(screen.getByText("preview"));
+  fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 160)));
+  expect(openInput).not.toHaveBeenCalled();
+});
+
+it("shows explicit list and content errors, then clears them with a fresh selected change", async () => {
+  history.mockResolvedValue(ok([commit("first"), commit("second"), commit("third")]));
+  historyFiles
+    .mockResolvedValueOnce({ status: "error", error: { kind: "unavailable", message: "expired snapshot" } })
+    .mockResolvedValueOnce({ status: "ok", data: [changed("binary")] })
+    .mockResolvedValueOnce({ status: "ok", data: [] });
+  historyDiff.mockResolvedValue({ status: "error", error: { kind: "unavailable", message: "Binary unsupported" } });
+  render(<GitToolWindow />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("expired snapshot");
+  fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+  fireEvent.doubleClick(await screen.findByText("binary"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Binary unsupported");
+  expect(openInput).not.toHaveBeenCalled();
+  fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+  await screen.findByText("No changes");
   expect(screen.queryByRole("alert")).toBeNull();
 });

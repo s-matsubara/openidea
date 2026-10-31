@@ -99,6 +99,38 @@ async fn jj_roots_reject_git_operations_before_mutation() {
     host.close_project("main");
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_version_does_not_spawn_configured_executable_in_restricted_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    std::fs::create_dir_all(root.join(".jj")).unwrap();
+    let marker = base.join("spawned");
+    let exe = base.join("fake-jj");
+    std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\nprintf 'jj 0.35.0\\n'\n", marker.display())).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_project("main", &root).unwrap();
+    let error = match vcs::vcs_jj_version(&host, "main", exe.to_string_lossy().into_owned()).await {
+        Ok(_) => panic!("restricted project ran jj version test"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("Restricted Mode"), "{error}");
+    assert!(!marker.exists(), "configured jj executable ran in Restricted Mode");
+    host.close_project("main");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     let Some(exe) = ide_vcs::detected_jj_executable() else { return };
@@ -124,6 +156,12 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     };
     jj(&root, &["git", "init", "--colocate"]);
+    std::fs::write(nested.join("historical.txt"), "outer historical nested path").unwrap();
+    jj(&root, &["describe", "-m", "outer historical"]);
+    let historical_id = ide_vcs::Repo::discover(&root).unwrap().unwrap().jj_working_copy().unwrap().commit_id;
+    jj(&root, &["new"]);
+    std::fs::remove_file(nested.join("historical.txt")).unwrap();
+    jj(&root, &["new"]);
     jj(&nested, &["git", "init", "--colocate"]);
     for (at, text) in [(&root, "outer"), (&nested, "nested")] {
         std::fs::write(at.join("same.txt"), text).unwrap();
@@ -141,6 +179,7 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
+    host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     for _ in 0..500 {
         if project.repos().all().len() == 2 {
@@ -150,11 +189,40 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     }
     assert_eq!(project.repos().all().len(), 2);
     let roots = vcs::vcs_roots(&host, "main").unwrap();
+    // Current nested-root discovery must not invalidate files owned by an older outer tree.
+    let old_nested_path =
+        vcs::vcs_jj_history_file_diff(&host, "main", root.clone(), nested.join("historical.txt"), historical_id)
+            .await
+            .unwrap();
+    assert_eq!(old_nested_path.before, "");
+    assert_eq!(old_nested_path.after, "outer historical nested path");
     for (at, text) in [(&root, "outer"), (&nested, "nested")] {
         let copy = roots.iter().find(|r| Path::new(r.root.as_ref()) == at).unwrap().working_copy.as_ref().unwrap();
         let pair = vcs::vcs_jj_file_diff(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.unwrap();
         assert_eq!(pair.before, text);
         assert_eq!(pair.after, format!("{text} changed"));
+        let historical =
+            vcs::vcs_jj_history_files(&host, "main", at.to_path_buf(), copy.commit_id.clone()).await.unwrap();
+        assert_eq!(historical.len(), 1);
+        assert_eq!(historical[0].rel_path, "same.txt");
+        let historical_pair =
+            vcs::vcs_jj_history_file_diff(&host, "main", at.to_path_buf(), at.join("same.txt"), copy.commit_id.clone())
+                .await
+                .unwrap();
+        assert_eq!(historical_pair.before, text);
+        assert_eq!(historical_pair.after, format!("{text} changed"));
+        assert!(vcs::vcs_jj_history_files(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.is_err());
+        assert!(
+            vcs::vcs_jj_history_file_diff(
+                &host,
+                "main",
+                at.to_path_buf(),
+                base.join("outside"),
+                copy.commit_id.clone()
+            )
+            .await
+            .is_err()
+        );
         let history = vcs::vcs_jj_history(&host, "main", at.to_path_buf(), None).await.unwrap();
         assert_eq!(history.commits.iter().filter(|c| c.working_copy).count(), 1);
         assert_eq!(history.commits.iter().find(|c| c.working_copy).unwrap().description, format!("{text}\n"));
@@ -181,7 +249,7 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
                 },
             )
             .unwrap();
-        let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap();
+        let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_text, text);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{text} changed"));
@@ -201,13 +269,13 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
                 },
             )
             .unwrap();
-        assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap().is_empty());
+        assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
         let doc = project.documents.snapshot(doc.id).unwrap();
         project
             .documents
             .edit(doc.id, doc.version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "\0".into() }] })
             .unwrap();
-        assert!(vcs::vcs_line_hunks(&host, "main", path).unwrap_err().to_string().contains("Binary buffers"));
+        assert!(vcs::vcs_line_hunks(&host, "main", path).await.unwrap_err().to_string().contains("Binary buffers"));
 
         assert!(project.with_repo_of(&at.join("same.txt"), |r| r.stage(&[at.join("same.txt")])).is_err());
     }
@@ -224,6 +292,27 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     assert!(error.to_string().contains("cannot run"));
     assert!(
         vcs::vcs_jj_history(&host, "main", nested.clone(), None).await.unwrap_err().to_string().contains("cannot run")
+    );
+
+    assert!(
+        vcs::vcs_jj_history_files(&host, "main", nested.clone(), nested_copy.commit_id.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cannot run")
+    );
+    assert!(
+        vcs::vcs_jj_history_file_diff(
+            &host,
+            "main",
+            nested.clone(),
+            nested.join("same.txt"),
+            nested_copy.commit_id.clone()
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("cannot run")
     );
 
     project.settings.set(ide_workspace::SettingsScope::Project, "vcs.jj.executable", serde_json::json!(exe)).unwrap();
@@ -246,6 +335,18 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
             .any(|c| c.working_copy && c.description == "nested\n")
     );
     assert!(vcs::vcs_jj_history(&host, "main", base.join("outside"), None).await.is_err());
+    assert!(
+        vcs::vcs_jj_history_file_diff(
+            &host,
+            "main",
+            root.clone(),
+            nested.join("same.txt"),
+            nested_copy.commit_id.clone()
+        )
+        .await
+        .is_err()
+    );
+    assert!(vcs::vcs_jj_history_files(&host, "main", root.clone(), "@".into()).await.is_err());
     assert!(vcs::vcs_jj_file_diff(&host, "main", base.join("outside"), String::new()).await.is_err());
     assert!(vcs::vcs_jj_file_diff(&host, "main", nested.join("same.txt"), "stale".into()).await.is_err());
     host.close_project("main");

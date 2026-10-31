@@ -433,6 +433,8 @@ export const commands = {
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
+	vcsJjHistoryFiles: (root: string, commit: string) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_jj_history_files", { root, commit })),
+	vcsJjHistoryFileDiff: (root: string, path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_history_file_diff", { root, path, commit })),
 	vcsJjHistory: (root: string, cursor: {
 	root: string,
 	operation: string,
@@ -3811,19 +3813,6 @@ export type JdkVendor = {
 	name: string,
 };
 
-export type JvmFilePresentation = {
-	path: string,
-	presentation: JvmPresentation,
-};
-
-export type JvmPresentation = {
-	kind: JvmTypeKind | null,
-	springBoot: boolean,
-	runnable: boolean,
-};
-
-export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
-
 /**  Immutable text pair for the shared diff viewer. Missing sides are explicit empty text. */
 export type JjFileDiff = {
 	before: string,
@@ -3831,6 +3820,7 @@ export type JjFileDiff = {
 	beforeLabel: string,
 	afterLabel: string,
 };
+
 export type JjHistoryCommit = {
 	id: string,
 	changeId: string,
@@ -3844,6 +3834,7 @@ export type JjHistoryCommit = {
 	workingCopy: boolean,
 };
 
+/**  A pinned operation and the oldest returned frontier, scoped to one workspace. */
 export type JjHistoryCursor = {
 	root: string,
 	operation: string,
@@ -3854,6 +3845,7 @@ export type JjHistoryPage = {
 	commits: JjHistoryCommit[],
 	next: JjHistoryCursor | null,
 };
+
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
 	executable?: string,
@@ -3866,6 +3858,19 @@ export type JjWorkingCopy = {
 	description: string,
 	files: FileStatus[],
 };
+
+export type JvmFilePresentation = {
+	path: string,
+	presentation: JvmPresentation,
+};
+
+export type JvmPresentation = {
+	kind: JvmTypeKind | null,
+	springBoot: boolean,
+	runnable: boolean,
+};
+
+export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;
