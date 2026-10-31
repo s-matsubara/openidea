@@ -6,6 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Popup } from "@/ui";
 import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
+import { isJjPath } from "./store";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -35,6 +36,7 @@ function render(state: PopupState | null) {
 }
 
 export function closeHunkPopup() {
+  ++seq;
   openFor = null;
   render(null);
 }
@@ -58,6 +60,7 @@ export function installHunkPopup(): () => void {
     },
   });
   return () => {
+    closeHunkPopup();
     setHunkPopupHooks(null);
     root?.unmount();
     host?.remove();
@@ -97,7 +100,12 @@ function HunkPopupView({ state }: { state: PopupState }) {
 
   const step = (dir: 1 | -1) => {
     const target = gotoChange(view, dir);
-    if (target) requestAnimationFrame(() => openHunkPopup(view, target, path));
+    const ticket = seq;
+    if (target)
+      requestAnimationFrame(() => {
+        if (ticket === seq && openFor === view && editorHunks(view.state).includes(target))
+          openHunkPopup(view, target, path);
+      });
     else closeHunkPopup();
   };
 
@@ -126,16 +134,18 @@ function HunkPopupView({ state }: { state: PopupState }) {
           size="small"
           onClick={() => step(1)}
         />
-        <IconButton icon="undo" title="Rollback" size="small" data-autofocus onClick={rollback} />
-        <IconButton
-          icon="diff"
-          title="Show Diff"
-          size="small"
-          onClick={() => {
-            closeHunkPopup();
-            void executeAction("vcs.showDiff", { path, line: hunk.start });
-          }}
-        />
+        {!isJjPath(path) && <IconButton icon="undo" title="Rollback" size="small" data-autofocus onClick={rollback} />}
+        {!isJjPath(path) && (
+          <IconButton
+            icon="diff"
+            title="Show Diff"
+            size="small"
+            onClick={() => {
+              closeHunkPopup();
+              void executeAction("vcs.showDiff", { path, line: hunk.start });
+            }}
+          />
+        )}
         <IconButton
           icon={copied ? "check" : "copy"}
           title="Copy Original Text"

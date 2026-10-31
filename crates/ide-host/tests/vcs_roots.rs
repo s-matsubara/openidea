@@ -1,5 +1,5 @@
 //! Repository-scoped patch operations must never fall back to the primary root.
-use ide_core::NullSink;
+use ide_core::{ChangeSet, NullSink, TextChange};
 use ide_host::{Host, HostConfig, ops::vcs};
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 
@@ -154,6 +154,50 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
         let pair = vcs::vcs_jj_file_diff(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.unwrap();
         assert_eq!(pair.before, text);
         assert_eq!(pair.after, format!("{text} changed"));
+        let path = at.join("same.txt");
+        let doc = project.documents.open(&path).unwrap();
+        project
+            .documents
+            .edit(
+                doc.id,
+                doc.version,
+                ChangeSet {
+                    changes: vec![TextChange {
+                        from: 0,
+                        to: doc.text.encode_utf16().count() as u32,
+                        insert: format!("{text} unsaved"),
+                    }],
+                },
+            )
+            .unwrap();
+        let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_text, text);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{text} changed"));
+        // Restoring only the buffer to the parent removes markers even while disk differs.
+        let doc = project.documents.snapshot(doc.id).unwrap();
+        project
+            .documents
+            .edit(
+                doc.id,
+                doc.version,
+                ChangeSet {
+                    changes: vec![TextChange {
+                        from: 0,
+                        to: doc.text.encode_utf16().count() as u32,
+                        insert: text.into(),
+                    }],
+                },
+            )
+            .unwrap();
+        assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap().is_empty());
+        let doc = project.documents.snapshot(doc.id).unwrap();
+        project
+            .documents
+            .edit(doc.id, doc.version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "\0".into() }] })
+            .unwrap();
+        assert!(vcs::vcs_line_hunks(&host, "main", path).unwrap_err().to_string().contains("Binary buffers"));
+
         assert!(project.with_repo_of(&at.join("same.txt"), |r| r.stage(&[at.join("same.txt")])).is_err());
     }
     // The read route reapplies this project's executable setting even if another

@@ -45,7 +45,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName } from "./store";
+import { isJjPath, refreshNow, repoName } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -288,6 +288,7 @@ export function registerVcsActions(): () => void {
         const explicit = argPaths(arg);
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
+        if (!explicit?.length && ed?.view.hasFocus && isJjPath(ed.ctx.path)) return;
         if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
         const sel = useCommit.getState().selection;
         const paths = explicit?.length ? explicit : commitWindowFocused() && sel.length ? sel : undefined;
