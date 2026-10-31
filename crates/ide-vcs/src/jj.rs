@@ -112,13 +112,38 @@ struct SnapshotFile {
 }
 
 pub(crate) fn working_copy(repo: &crate::Repo) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
     snapshot(repo, &executable(None)?)
 }
 
 fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
+    snapshot_at(repo, exe, None)
+}
+
+fn snapshot_at(repo: &crate::Repo, exe: &Path, revision: Option<&str>) -> IdeResult<JjWorkingCopy> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu history requires a Jujutsu repository"));
+    }
+    if revision.is_some_and(|id| id.len() != 40 || !id.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(IdeError::invalid("Jujutsu history requires a full immutable commit ID"));
+    }
     let mut cmd = Command::new(exe);
+    if revision.is_some() {
+        cmd.arg("--ignore-working-copy");
+    }
     cmd.current_dir(repo.root())
-        .args(["--color=never", "--no-pager", "log", "--no-graph", "-r", "@", "-T", SNAPSHOT_TEMPLATE])
+        .args([
+            "--color=never",
+            "--no-pager",
+            "log",
+            "--no-graph",
+            "-r",
+            revision.unwrap_or("@"),
+            "-T",
+            SNAPSHOT_TEMPLATE,
+        ])
         .stdin(Stdio::null())
         .env("LC_ALL", "C");
     ide_core::process::prepare(&mut cmd);
@@ -135,7 +160,7 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
     let mut data: Snapshot = serde_json::from_slice(&out.stdout)
         .map_err(|e| IdeError::invalid(format!("invalid jj working-copy JSON in {}: {e}", repo.root().display())))?;
     // Inherited merge conflicts may have no diff against the auto-merged parents.
-    for path in &data.conflicts {
+    for path in data.conflicts.iter().filter(|_| revision.is_none()) {
         if let Some(file) = data.files.iter_mut().find(|f| &f.path == path) {
             file.conflict = true;
         } else {
@@ -146,6 +171,9 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
                 conflict: true,
             });
         }
+    }
+    if revision.is_some_and(|id| id != data.commit_id) {
+        return Err(IdeError::invalid("Jujutsu history commit identity mismatch"));
     }
     let ignored = repo.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     let files = data
@@ -179,7 +207,11 @@ fn snapshot(repo: &crate::Repo, exe: &Path) -> IdeResult<JjWorkingCopy> {
         })
         .collect::<IdeResult<Vec<_>>>()?
         .into_iter()
-        .filter(|f| f.unstaged == Some(crate::ChangeKind::Conflicted) || !ignored.is_ignored_path(&f.rel_path))
+        .filter(|f| {
+            revision.is_some()
+                || f.unstaged == Some(crate::ChangeKind::Conflicted)
+                || !ignored.is_ignored_path(&f.rel_path)
+        })
         .collect();
     Ok(JjWorkingCopy { change_id: data.change_id, commit_id: data.commit_id, description: data.description, files })
 }
@@ -328,6 +360,7 @@ pub struct JjFileDiff {
 }
 
 fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<u8>> {
+    repo.require_execution_allowed()?;
     let mut cmd = Command::new(exe);
     cmd.current_dir(repo.root())
         .args(["--color=never", "--no-pager", "--ignore-working-copy"])
@@ -337,12 +370,23 @@ fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<
     ide_core::process::prepare(&mut cmd);
     let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
     if !out.status.success() {
-        return Err(IdeError::unavailable(format!("jj diff read: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        return Err(IdeError::unavailable(format!("jj read: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
     Ok(out.stdout)
 }
 
+pub(crate) fn history_files(repo: &crate::Repo, commit: &str) -> IdeResult<Vec<crate::FileStatus>> {
+    Ok(snapshot_at(repo, &executable(None)?, Some(commit))?.files)
+}
+
+pub(crate) fn history_file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+    let exe = executable(None)?;
+    let copy = snapshot_at(repo, &exe, Some(commit))?;
+    file_diff_snapshot(repo, path, Some(commit), &exe, copy, true)
+}
+
 pub(crate) fn file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+    repo.require_execution_allowed()?;
     file_diff_with(repo, path, commit, &executable(None)?)
 }
 
@@ -351,6 +395,7 @@ fn file_diff_with(repo: &crate::Repo, path: &Path, commit: &str, exe: &Path) -> 
 }
 
 pub(crate) fn line_hunks(repo: &crate::Repo, path: &Path, text: &str) -> IdeResult<Vec<crate::LineHunk>> {
+    repo.require_execution_allowed()?;
     if text.bytes().any(|b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
         return Err(IdeError::unavailable("Binary buffers are not supported in Jujutsu diffs"));
     }
@@ -373,6 +418,21 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
         return Err(IdeError::unavailable(
             "Working copy changed; refresh the Jujutsu changes list and reopen the diff",
         ));
+    }
+    file_diff_snapshot(repo, path, expected, exe, copy, false)
+}
+
+fn file_diff_snapshot(
+    repo: &crate::Repo,
+    path: &Path,
+    expected: Option<&str>,
+    exe: &Path,
+    copy: JjWorkingCopy,
+    historical: bool,
+) -> IdeResult<JjFileDiff> {
+    let rel = path.strip_prefix(repo.root()).map_err(|_| IdeError::invalid("path outside Jujutsu repository"))?;
+    if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(IdeError::invalid("invalid Jujutsu repository-relative path"));
     }
     let commit = &copy.commit_id;
     // An unchanged on-disk file can still have unsaved editor changes.
@@ -402,7 +462,7 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
     .map_err(|e| IdeError::invalid(format!("invalid jj parents JSON: {e}")))?;
     if parents.len() != 1 {
         return Err(IdeError::unavailable(
-            "Diffs against Jujutsu auto-merged parents are not supported yet; use jj diff -r @",
+            "Diffs against Jujutsu auto-merged parents are not supported yet; inspect the selected revision with jj diff",
         ));
     }
     let before_path = file.renamed_from.as_deref().unwrap_or(&file.rel_path);
@@ -437,9 +497,15 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
         before_label: if added {
             "(does not exist)".into()
         } else {
-            format!("Parent {} ({before_path})", &parents[0][..8])
+            format!("Parent {} ({before_path})", if historical { &parents[0] } else { &parents[0][..8] })
         },
-        after_label: if deleted { "@ (deleted)".into() } else { format!("@ {} ({})", &commit[..8], file.rel_path) },
+        after_label: if historical {
+            format!("{} {} ({})", commit, if deleted { "(deleted)" } else { "" }, file.rel_path)
+        } else if deleted {
+            "@ (deleted)".into()
+        } else {
+            format!("@ {} ({})", &commit[..8], file.rel_path)
+        },
     })
 }
 
@@ -461,6 +527,84 @@ mod snapshot_tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn historical_files_and_text_remain_exact_after_working_copy_rewrites() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        jj(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        let root = repo.root();
+        for (name, text) in [("unchanged", "same"), ("modified", "before"), ("deleted", "gone"), ("old", "rename")] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        jj(&exe, root, &["new"]);
+        std::fs::write(root.join("modified"), "historical").unwrap();
+        std::fs::remove_file(root.join("deleted")).unwrap();
+        std::fs::rename(root.join("old"), root.join("renamed")).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        for name in ["nested/日本語", "glob*[x]", "file:foo", "-option", "tab\tand\nnewline"] {
+            std::fs::write(root.join(name), "added").unwrap();
+        }
+        std::fs::write(root.join("binary"), b"a\0b").unwrap();
+        std::fs::write(root.join("nonutf8"), [0xff]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/passwd", root.join("link")).unwrap();
+        let accepted = snapshot(&repo, &exe).unwrap();
+        jj(&exe, root, &["describe", "-m", "rewritten externally"]);
+        jj(&exe, root, &["new"]);
+        std::fs::write(root.join("modified"), "current disk").unwrap();
+        let files = snapshot_at(&repo, &exe, Some(&accepted.commit_id)).unwrap().files;
+        assert!(!files.iter().any(|f| f.rel_path == "unchanged"));
+        assert!(files.iter().any(|f| f.rel_path == "nested/日本語"));
+        let get = |name: &str| {
+            let copy = snapshot_at(&repo, &exe, Some(&accepted.commit_id))?;
+            file_diff_snapshot(&repo, &root.join(name), Some(&accepted.commit_id), &exe, copy, true)
+        };
+        let modified = get("modified").unwrap();
+        assert_eq!((modified.before.as_str(), modified.after.as_str()), ("before", "historical"));
+        assert!(modified.after_label.contains(&accepted.commit_id));
+        let deleted = get("deleted").unwrap();
+        assert_eq!((deleted.before.as_str(), deleted.after.as_str()), ("gone", ""));
+        let renamed = get("renamed").unwrap();
+        assert_eq!((renamed.before.as_str(), renamed.after.as_str()), ("rename", "rename"));
+        assert!(renamed.before_label.contains("old"));
+        for name in ["nested/日本語", "glob*[x]", "file:foo", "-option", "tab\tand\nnewline"] {
+            let pair = get(name).unwrap();
+            assert_eq!((pair.before.as_str(), pair.after.as_str()), ("", "added"));
+        }
+        assert!(get("unchanged").is_err());
+        assert!(get("../outside").is_err());
+        assert!(get("binary").unwrap_err().to_string().contains("Binary"));
+        assert!(get("nonutf8").unwrap_err().to_string().contains("Non-UTF-8"));
+        #[cfg(unix)]
+        assert!(get("link").unwrap_err().to_string().contains("regular UTF-8"));
+        assert!(snapshot_at(&repo, &exe, Some("@")).is_err());
+        assert!(snapshot_at(&repo, &exe, Some(&"f".repeat(40))).is_err());
+        assert!(snapshot_at(&repo, &root.join("missing-jj"), Some(&accepted.commit_id)).is_err());
+        assert!(snapshot_at(&repo, &exe, Some(&"0".repeat(40))).unwrap().files.is_empty());
+        jj(&exe, root, &["new"]);
+        let empty = snapshot(&repo, &exe).unwrap();
+        assert!(snapshot_at(&repo, &exe, Some(&empty.commit_id)).unwrap().files.is_empty());
+        // A merge's list uses the merged parents; inherited additions are unchanged.
+        jj(&exe, root, &["new", &accepted.commit_id]);
+        std::fs::write(root.join("left"), "left").unwrap();
+        let left = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &accepted.commit_id]);
+        std::fs::write(root.join("right"), "right").unwrap();
+        let right = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &left, &right]);
+        std::fs::write(root.join("merge-only"), "merge").unwrap();
+        let merge = snapshot(&repo, &exe).unwrap();
+        let list = snapshot_at(&repo, &exe, Some(&merge.commit_id)).unwrap();
+        assert_eq!(list.files.iter().map(|f| f.rel_path.as_str()).collect::<Vec<_>>(), ["merge-only"]);
+        assert!(
+            file_diff_snapshot(&repo, &root.join("merge-only"), Some(&merge.commit_id), &exe, list, true)
+                .unwrap_err()
+                .to_string()
+                .contains("auto-merged")
+        );
     }
 
     #[test]
@@ -666,5 +810,733 @@ newline.txt"
         assert!(diff_error.contains("Restricted Mode"), "{diff_error}");
         assert!(hunk_error.contains("Restricted Mode"), "{hunk_error}");
         assert!(!marker.exists(), "configured jj executable ran in Restricted Mode");
+    }
+}
+
+/// A pinned operation and the oldest returned frontier, scoped to one workspace.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryCursor {
+    pub root: String,
+    pub operation: String,
+    pub seen: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryCommit {
+    pub id: String,
+    pub change_id: String,
+    pub description: String,
+    pub parents: Vec<String>,
+    pub local_bookmarks: Vec<String>,
+    pub remote_bookmarks: Vec<String>,
+    pub tags: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub time_ms: String,
+    pub working_copy: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjHistoryPage {
+    pub commits: Vec<JjHistoryCommit>,
+    pub next: Option<JjHistoryCursor>,
+}
+
+// Build the object explicitly: jj lists of strings serialize, mapped label lists do not.
+const HISTORY_TEMPLATE: &str = r#""{\"id\":" ++ json(commit_id) ++ ",\"changeId\":" ++ json(change_id) ++ ",\"description\":" ++ json(description) ++ ",\"parents\":" ++ json(parents.map(|p| p.commit_id())) ++ ",\"localBookmarks\":" ++ json(local_bookmarks.map(|b| b.name())) ++ ",\"remoteBookmarks\":[" ++ remote_bookmarks.map(|b| json(stringify(b.name() ++ "@" ++ b.remote()))).join(",") ++ "],\"tags\":" ++ json(tags.map(|t| t.name())) ++ ",\"author\":" ++ json(author.name()) ++ ",\"email\":" ++ json(author.email()) ++ ",\"timeMs\":" ++ json(author.timestamp().format("%s%3f")) ++ ",\"workingCopy\":" ++ json(current_working_copy) ++ "}\n""#;
+
+pub(crate) fn history(repo: &crate::Repo, cursor: Option<JjHistoryCursor>, limit: usize) -> IdeResult<JjHistoryPage> {
+    repo.require_execution_allowed()?;
+    history_with(repo, cursor, limit, &executable(None)?)
+}
+
+fn history_with(
+    repo: &crate::Repo,
+    cursor: Option<JjHistoryCursor>,
+    limit: usize,
+    exe: &Path,
+) -> IdeResult<JjHistoryPage> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu history requires a Jujutsu repository"));
+    }
+    let root = repo.root().to_string_lossy().into_owned();
+    let hex = |s: &str, length| s.len() == length && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut cursor = if let Some(cursor) = cursor {
+        if cursor.seen.len() > 1000 {
+            return Err(IdeError::unavailable(
+                "Jujutsu history has too many parallel heads to page safely; inspect with jj log",
+            ));
+        }
+        if cursor.root != root || !hex(&cursor.operation, 128) || cursor.seen.iter().any(|id| !hex(id, 40)) {
+            return Err(IdeError::invalid("Invalid Jujutsu history cursor; refresh history"));
+        }
+        cursor
+    } else {
+        // Snapshot disk once, then all metadata and subsequent pages read that operation.
+        // Capture after snapshot; a concurrent operation simply becomes the coherent view.
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(repo.root())
+            .args(["--color=never", "--no-pager", "log", "-G", "-r", "@", "-T", r#""""#])
+            .stdin(Stdio::null())
+            .env("LC_ALL", "C");
+        ide_core::process::prepare(&mut cmd);
+        let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj history: {e}")))?;
+        if !out.status.success() {
+            return Err(IdeError::unavailable(format!("jj history: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        let operation = String::from_utf8(read_command(repo, exe, &["op", "log", "-G", "--limit", "1", "-T", "id"])?)
+            .map_err(|e| IdeError::invalid(format!("invalid jj operation: {e}")))?;
+        if !hex(&operation, 128) {
+            return Err(IdeError::invalid("invalid jj history operation ID"));
+        }
+        JjHistoryCursor { root, operation, seen: Vec::new() }
+    };
+    let limit = limit.clamp(1, 100);
+    // Exclude exact immutable IDs rather than mutable change IDs or a moving @ offset.
+    let revset = if cursor.seen.is_empty() {
+        "all()".to_owned()
+    } else {
+        format!("all() ~ descendants({})", cursor.seen.join(" | "))
+    };
+    let bytes = read_command(
+        repo,
+        exe,
+        &[
+            "--at-operation",
+            &cursor.operation,
+            "log",
+            "-G",
+            "-r",
+            &revset,
+            "--limit",
+            &(limit + 1).to_string(),
+            "-T",
+            HISTORY_TEMPLATE,
+        ],
+    )?;
+    let mut commits = serde_json::Deserializer::from_slice(&bytes)
+        .into_iter::<JjHistoryCommit>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| IdeError::invalid(format!("invalid jj history JSON: {e}")))?;
+    let more = commits.len() > limit;
+    commits.truncate(limit);
+    if more {
+        // Compact the exclusion set to its oldest nodes. Because log is topological,
+        // every visible descendant has already been returned. Linear history keeps
+        // one ID, rather than growing a command argument for every loaded commit.
+        cursor.seen.extend(commits.iter().map(|c| c.id.clone()));
+        let frontier = format!("roots({})", cursor.seen.join(" | "));
+        let bytes = read_command(
+            repo,
+            exe,
+            &["--at-operation", &cursor.operation, "log", "-G", "-r", &frontier, "-T", "json(commit_id) ++ \"\\n\""],
+        )?;
+        cursor.seen = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter::<String>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IdeError::invalid(format!("invalid jj history frontier JSON: {e}")))?;
+    }
+    Ok(JjHistoryPage { commits, next: more.then_some(cursor) })
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn run(exe: &Path, root: &Path, args: &[&str]) {
+        let out = Command::new(exe)
+            .current_dir(root)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn description_preserves_multiline_clears_and_accepts_file_snapshots_only() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        run(&exe, temp.path(), &["describe", "-m", "original"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let before = snapshot(&repo, &exe).unwrap();
+        let mut edit = JjDescriptionEdit {
+            commit: before.commit_id.clone(),
+            change: before.change_id.clone(),
+            original: before.description.clone(),
+            description: "subject\n\nbody with \"quotes\" and --flags\n".into(),
+        };
+        std::fs::write(repo.root().join("file"), "saved while typing").unwrap();
+        let rewritten = snapshot(&repo, &exe).unwrap();
+        assert_ne!(before.commit_id, rewritten.commit_id);
+        describe_with(&repo, &edit, &exe).unwrap();
+        let saved = snapshot(&repo, &exe).unwrap();
+        assert_eq!(saved.change_id, before.change_id);
+        assert_eq!(saved.description, edit.description);
+        assert_eq!(std::fs::read_to_string(repo.root().join("file")).unwrap(), "saved while typing");
+        // A stale baseline never overwrites an external description.
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("description changed"));
+        edit.commit = saved.commit_id;
+        edit.original = saved.description;
+        edit.description.clear();
+        describe_with(&repo, &edit, &exe).unwrap();
+        let cleared = snapshot(&repo, &exe).unwrap();
+        assert_eq!(cleared.description, "");
+        edit.commit = cleared.commit_id;
+        edit.original.clear();
+        run(&exe, repo.root(), &["new", "-m", "another change"]);
+        assert!(describe_with(&repo, &edit, &exe).is_err());
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, "another change\n");
+        repo.set_execution_allowed(false);
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("Restricted Mode"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn description_refuses_external_switch_between_validation_and_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&exe, &root, &["git", "init"]);
+        run(&exe, &root, &["config", "set", "--repo", "signing.behavior", "drop"]);
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        let copy = snapshot(&repo, &exe).unwrap();
+        let edit = JjDescriptionEdit {
+            commit: copy.commit_id.clone(),
+            change: copy.change_id,
+            original: copy.description,
+            description: "must not redirect".into(),
+        };
+        let wrapper = temp.path().join("jj-wrapper");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nfor arg in \"$@\"; do\nif [ \"$arg\" = describe ]; then\n'{}' new -m switched >/dev/null 2>&1 || exit 90\nfi\ndone\nexec '{}' \"$@\"\n", exe.display(), exe.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(describe_with(&repo, &edit, &wrapper).is_err());
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, "switched\n");
+        assert_eq!(snapshot_at(&repo, &exe, Some(&copy.commit_id)).unwrap().description, "");
+    }
+
+    #[test]
+    fn description_rejects_divergent_same_change_version() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        run(&exe, temp.path(), &["describe", "-m", "original"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let base = snapshot(&repo, &exe).unwrap();
+        let operation = String::from_utf8(
+            read_command(&repo, &exe, &["op", "log", "--no-graph", "--limit", "1", "-T", "id"]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(repo.root().join("file"), "first branch").unwrap();
+        let first = snapshot(&repo, &exe).unwrap();
+        run(&exe, repo.root(), &["op", "restore", operation.trim()]);
+        std::fs::write(repo.root().join("file"), "second branch").unwrap();
+        let second = snapshot(&repo, &exe).unwrap();
+        assert_eq!(first.change_id, second.change_id);
+        let edit = JjDescriptionEdit {
+            commit: first.commit_id,
+            change: first.change_id,
+            original: first.description,
+            description: "must not save".into(),
+        };
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("diverged"));
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, base.description);
+    }
+
+    #[test]
+    fn real_history_preserves_merge_metadata_and_operation_pinned_pages() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let root = repo.root();
+        std::fs::write(root.join("common"), "base").unwrap();
+        run(&exe, root, &["describe", "-m", "共通\n\nfull body with \"quotes\"\n"]);
+        let base = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", &base, "-m", "left"]);
+        std::fs::write(root.join("left"), "left").unwrap();
+        std::fs::write(root.join("common"), "left").unwrap();
+        run(&exe, root, &["bookmark", "create", "left-label"]);
+        let left = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", &base, "-m", "right"]);
+        std::fs::write(root.join("right"), "right").unwrap();
+        std::fs::write(root.join("common"), "right").unwrap();
+        let right = history_with(&repo, None, 100, &exe).unwrap().commits[0].id.clone();
+        run(&exe, root, &["new", "root()", "-m", "independent head"]);
+        run(&exe, root, &["bookmark", "create", "independent"]);
+        run(&exe, root, &["new", &left, &right, "-m", "統合\n\nmerge body\n"]);
+        run(&exe, root, &["tag", "set", "release", "-r", &left]);
+        let expected = history_with(&repo, None, 100, &exe).unwrap().commits;
+        let merge = expected.iter().find(|c| c.working_copy).unwrap();
+        assert_eq!(merge.parents, [left.clone(), right]);
+        assert!(merge.local_bookmarks.is_empty());
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", &merge.id, "-T", "json(conflict)"]).unwrap(),
+            b"true"
+        );
+        assert_eq!(merge.description, "統合\n\nmerge body\n");
+        assert!(expected.iter().any(|c| c.local_bookmarks == ["left-label"] && c.tags == ["release"]));
+        assert!(expected.iter().all(|c| c.time_ms.parse::<i64>().unwrap() >= 0));
+        // Export then clone a local fixture to exercise real remote bookmark labels.
+        run(&exe, root, &["git", "export"]);
+        let clone = tempfile::tempdir().unwrap();
+        run(&exe, clone.path(), &["git", "clone", root.to_str().unwrap(), "remote"]);
+        let cloned = crate::Repo::discover(&clone.path().join("remote")).unwrap().unwrap();
+        assert!(
+            history_with(&cloned, None, 100, &exe)
+                .unwrap()
+                .commits
+                .iter()
+                .any(|c| c.remote_bookmarks.iter().any(|b| b == "left-label@origin"))
+        );
+
+        assert!(expected.iter().any(|c| c.description == "共通\n\nfull body with \"quotes\"\n"));
+        let first = history_with(&repo, None, 1, &exe).unwrap();
+        let mut cursor = first.next;
+        let mut seen = first.commits;
+        // Mutate @ after the first page; cursor must retain the old operation and @ marker.
+        run(&exe, root, &["describe", "-m", "new operation"]);
+        while let Some(next) = cursor {
+            let page = history_with(&repo, Some(next), 1, &exe).unwrap();
+            seen.extend(page.commits);
+            cursor = page.next;
+        }
+        assert_eq!(seen.iter().map(|c| &c.id).collect::<std::collections::HashSet<_>>().len(), expected.len());
+        assert_eq!(seen.len(), expected.len());
+        assert_eq!(seen.iter().filter(|c| c.working_copy).count(), 1);
+        for (index, c) in seen.iter().enumerate() {
+            assert!(c.parents.iter().all(|parent| seen.iter().position(|p| &p.id == parent).is_none_or(|p| p > index)));
+            assert_eq!(c.description, expected.iter().find(|e| e.id == c.id).unwrap().description);
+        }
+        assert!(
+            history_with(&repo, None, 100, &exe).unwrap().commits.iter().any(|c| c.description == "new operation\n")
+        );
+        let mut cursor = history_with(&repo, None, 1, &exe).unwrap().next.unwrap();
+        cursor.root.push_str("/other");
+        assert!(history_with(&repo, Some(cursor), 1, &exe).unwrap_err().to_string().contains("cursor"));
+        assert!(history_with(&repo, None, 1, &root.join("missing-jj")).is_err());
+        // Rewrite the same change independently from the same operation, creating
+        // divergence after jj reconciles operations. Both commit identities survive.
+        let before = history_with(&repo, None, 1, &exe).unwrap().next.unwrap().operation;
+        run(&exe, root, &["describe", "-m", "variant one"]);
+        run(&exe, root, &["--at-operation", &before, "describe", "-m", "variant two"]);
+        let divergent = history_with(&repo, None, 100, &exe).unwrap().commits;
+        let variants: Vec<_> = divergent.iter().filter(|c| c.description.starts_with("variant ")).collect();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].change_id, variants[1].change_id);
+        assert_ne!(variants[0].id, variants[1].id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_history_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        run(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        let fake = tmp.path().join("fake-jj");
+        std::fs::write(&fake, "#!/bin/sh\nprintf 'not-json'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cursor = JjHistoryCursor {
+            root: repo.root().to_string_lossy().into_owned(),
+            operation: "a".repeat(128),
+            seen: vec![],
+        };
+        assert!(history_with(&repo, Some(cursor), 1, &fake).unwrap_err().to_string().contains("JSON"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_history_pagination_does_not_spawn_configured_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join(".jj")).unwrap();
+        let marker = tmp.path().join("spawned");
+        let exe = tmp.path().join("fake-jj");
+        std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(false);
+        set_jj_executable(Some(&exe));
+        let first = repo.jj_history(None, 25).unwrap_err().to_string();
+        let cursor = JjHistoryCursor {
+            root: root.to_string_lossy().into_owned(),
+            operation: "a".repeat(128),
+            seen: vec!["b".repeat(40)],
+        };
+        let later = repo.jj_history(Some(cursor), 25).unwrap_err().to_string();
+        let files = repo.jj_history_files(&"c".repeat(40)).unwrap_err().to_string();
+        let diff = repo.jj_history_file_diff(&root.join("file.txt"), &"c".repeat(40)).unwrap_err().to_string();
+        let action = repo.jj_log_action(&"c".repeat(40), &"z".repeat(32), &JjLogAction::New).unwrap_err().to_string();
+        set_jj_executable(None);
+        assert!(first.contains("Restricted Mode"), "{first}");
+        assert!(later.contains("Restricted Mode"), "{later}");
+        assert!(files.contains("Restricted Mode"), "{files}");
+        assert!(diff.contains("Restricted Mode"), "{diff}");
+        assert!(action.contains("Restricted Mode"), "{action}");
+        assert!(!marker.exists(), "configured jj executable ran for restricted history");
+    }
+}
+
+/// Log actions are separate from Git operations and accept full row identities only.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum JjLogAction {
+    New,
+    Edit,
+    Abandon,
+    Bookmark { name: String },
+    MoveBookmark { name: String },
+    Tag { name: String },
+}
+
+impl JjLogAction {
+    pub fn changes_working_copy(&self) -> bool {
+        matches!(self, Self::New | Self::Edit | Self::Abandon)
+    }
+}
+
+pub(crate) fn log_action(repo: &crate::Repo, commit: &str, change: &str, action: &JjLogAction) -> IdeResult<()> {
+    log_action_with(repo, commit, change, action, &executable(None)?)
+}
+
+fn log_action_with(repo: &crate::Repo, commit: &str, change: &str, action: &JjLogAction, exe: &Path) -> IdeResult<()> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Jujutsu actions require a Jujutsu repository"));
+    }
+    if commit.len() != 40
+        || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+        || change.len() != 32
+        || !change.bytes().all(|b| (b'k'..=b'z').contains(&b))
+    {
+        return Err(IdeError::invalid("Invalid full Jujutsu row identity; refresh history"));
+    }
+    // Snapshot disk first. Saving a buffer may have rewritten the displayed @;
+    // never silently redirect an old row to its replacement or an abandoned commit.
+    snapshot(repo, exe)?;
+    let revision = format!("({commit} & {change} & all())");
+    let accepted = read_command(repo, exe, &["log", "-G", "-r", &revision, "-T", "commit_id"])?;
+    if accepted != commit.as_bytes() {
+        return Err(IdeError::unavailable("Selected Jujutsu revision changed; refresh history and try again"));
+    }
+    let name = match action {
+        JjLogAction::Bookmark { name } | JjLogAction::MoveBookmark { name } | JjLogAction::Tag { name } => {
+            Some(name.as_str())
+        }
+        _ => None,
+    };
+    if let Some(name) = name {
+        if name.is_empty() || name.starts_with('-') || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(IdeError::invalid("Invalid Jujutsu reference name"));
+        }
+        if matches!(action, JjLogAction::MoveBookmark { .. }) {
+            let bookmark = format!("bookmarks(exact:{})", serde_json::to_string(name).unwrap());
+            if read_command(repo, exe, &["log", "-G", "-r", &bookmark, "-T", "commit_id"])?.is_empty() {
+                return Err(IdeError::invalid("Local bookmark does not exist; enter an existing bookmark name"));
+            }
+        }
+        // tag set refuses movement but accepts an existing tag at the same target.
+        // The create dialog must reject that case too.
+        if matches!(action, JjLogAction::Tag { .. }) {
+            let bytes = read_command(repo, exe, &["tag", "list", "-T", "json(name) ++ \"\\n\""])?;
+            let names = serde_json::Deserializer::from_slice(&bytes).into_iter::<String>();
+            for existing in names {
+                if existing.map_err(|e| IdeError::invalid(format!("invalid jj tag JSON: {e}")))? == name {
+                    return Err(IdeError::invalid("Tag already exists; choose a new name"));
+                }
+            }
+        }
+    }
+    // Bookmark move accepts patterns; keep the entered name literal.
+    let bookmark_pattern = name.map(|name| format!("exact:{name}"));
+    let args: Vec<&str> = match action {
+        JjLogAction::New => vec!["new", "--", &revision],
+        JjLogAction::Edit => vec!["edit", "--", &revision],
+        JjLogAction::Abandon => vec!["abandon", "--", &revision],
+        JjLogAction::Bookmark { name } => vec!["bookmark", "create", "-r", &revision, "--", name],
+        JjLogAction::MoveBookmark { .. } => {
+            vec!["bookmark", "move", "--allow-backwards", "--to", &revision, "--", bookmark_pattern.as_deref().unwrap()]
+        }
+        JjLogAction::Tag { name } => vec!["tag", "set", "-r", &revision, "--", name],
+    };
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager"])
+        .args(args)
+        .stdin(Stdio::null())
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(format!("jj action: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod log_action_tests {
+    use super::*;
+
+    fn fixture() -> Option<(tempfile::TempDir, crate::Repo, PathBuf)> {
+        let exe = detected_jj_executable()?;
+        let tmp = tempfile::tempdir().unwrap();
+        cli(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        cli(&exe, repo.root(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        Some((tmp, repo, exe))
+    }
+    fn cli(exe: &Path, root: &Path, args: &[&str]) {
+        let out = Command::new(exe)
+            .current_dir(root)
+            .args([
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=test@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    fn row(repo: &crate::Repo, exe: &Path) -> JjWorkingCopy {
+        snapshot(repo, exe).unwrap()
+    }
+    fn act(repo: &crate::Repo, exe: &Path, row: &JjWorkingCopy, action: JjLogAction) -> IdeResult<()> {
+        log_action_with(repo, &row.commit_id, &row.change_id, &action, exe)
+    }
+
+    #[test]
+    fn rollback_restores_only_literal_checked_entries_and_rejects_stale_lists() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let root = repo.root();
+        for name in ["modified", "deleted", "untouched", "glob*[x]", "binary"] {
+            std::fs::write(root.join(name), b"base\0bytes").unwrap();
+        }
+        cli(&exe, root, &["new", "-m", "changes"]);
+        for name in ["modified", "untouched", "glob*[x]", "binary", "added"] {
+            std::fs::write(root.join(name), b"changed\0bytes").unwrap();
+        }
+        std::fs::remove_file(root.join("deleted")).unwrap();
+        let before = row(&repo, &exe);
+        let paths: Vec<_> = ["modified", "deleted", "glob*[x]", "binary", "added"].map(|n| root.join(n)).into();
+        restore_files_with(&repo, &before.commit_id, &paths, &exe).unwrap();
+        for name in ["modified", "deleted", "glob*[x]", "binary"] {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), b"base\0bytes");
+        }
+        assert!(!root.join("added").exists());
+        assert_eq!(std::fs::read(root.join("untouched")).unwrap(), b"changed\0bytes");
+        assert!(restore_files_with(&repo, &before.commit_id, &[root.join("untouched")], &exe).is_err());
+        let current = row(&repo, &exe);
+        assert!(restore_files_with(&repo, &current.commit_id, &[root.join("not-changed")], &exe).is_err());
+        assert!(restore_files_with(&repo, &current.commit_id, &[], &exe).is_err());
+    }
+
+    #[test]
+    fn rollback_renames_restore_endpoints_without_touching_other_changes() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let root = repo.root();
+        std::fs::write(root.join("old"), "original").unwrap();
+        cli(&exe, root, &["new"]);
+        std::fs::rename(root.join("old"), root.join("new")).unwrap();
+        std::fs::write(root.join("unrelated"), "keep").unwrap();
+        let before = row(&repo, &exe);
+        // jj may report a rename or separate added/deleted entries depending on
+        // copy tracking. Only a checked rename includes both endpoints.
+        let renamed = before.files.iter().find(|f| f.renamed_from.is_some());
+        let paths = if let Some(file) = renamed {
+            vec![file.path.as_ref().to_path_buf()]
+        } else {
+            vec![root.join("old"), root.join("new")]
+        };
+        restore_files_with(&repo, &before.commit_id, &paths, &exe).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("old")).unwrap(), "original");
+        assert!(!root.join("new").exists());
+        assert_eq!(std::fs::read_to_string(root.join("unrelated")).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_symlink_leaf_does_not_write_link_target() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), repo.root().join("link")).unwrap();
+        let copy = row(&repo, &exe);
+        restore_files_with(&repo, &copy.commit_id, &[repo.root().join("link")], &exe).unwrap();
+        assert!(!repo.root().join("link").symlink_metadata().is_ok());
+        assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "outside");
+    }
+
+    #[test]
+    fn rollback_rejects_merge_baselines_and_conflicts() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        std::fs::write(repo.root().join("file"), "base").unwrap();
+        cli(&exe, repo.root(), &["new"]);
+        std::fs::write(repo.root().join("file"), "left").unwrap();
+        let left = row(&repo, &exe);
+        cli(&exe, repo.root(), &["new", "@-"]);
+        std::fs::write(repo.root().join("file"), "right").unwrap();
+        let right = row(&repo, &exe);
+        cli(&exe, repo.root(), &["new", &left.commit_id, &right.commit_id]);
+        let merge = row(&repo, &exe);
+        let error =
+            restore_files_with(&repo, &merge.commit_id, &[repo.root().join("file")], &exe).unwrap_err().to_string();
+        assert!(error.contains("auto-merged"), "{error}");
+        cli(&exe, repo.root(), &["new"]);
+        let conflict = row(&repo, &exe);
+        let error =
+            restore_files_with(&repo, &conflict.commit_id, &[repo.root().join("file")], &exe).unwrap_err().to_string();
+        assert!(error.contains("conflicts"), "{error}");
+    }
+
+    #[test]
+    fn log_actions_create_edit_abandon_and_rebase_descendants() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        std::fs::write(repo.root().join("base"), "base").unwrap();
+        cli(&exe, repo.root(), &["describe", "-m", "base"]);
+        let base = row(&repo, &exe);
+        act(&repo, &exe, &base, JjLogAction::New).unwrap();
+        let child = row(&repo, &exe);
+        assert_ne!(child.change_id, base.change_id);
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", "@-", "-T", "commit_id"]).unwrap(),
+            base.commit_id.as_bytes()
+        );
+        cli(&exe, repo.root(), &["describe", "-m", "child"]);
+        let child = row(&repo, &exe);
+        act(&repo, &exe, &base, JjLogAction::Edit).unwrap();
+        assert_eq!(row(&repo, &exe).change_id, base.change_id);
+        act(&repo, &exe, &base, JjLogAction::Abandon).unwrap();
+        let visible = read_command(&repo, &exe, &["log", "-G", "-r", "all()", "-T", "change_id ++ \"\\n\""]).unwrap();
+        let visible = String::from_utf8(visible).unwrap();
+        assert!(!visible.contains(&base.change_id));
+        assert!(visible.contains(&child.change_id));
+        let parents = read_command(
+            &repo,
+            &exe,
+            &["log", "-G", "-r", &child.change_id, "-T", "parents.map(|p| p.commit_id()).join(\" \")"],
+        )
+        .unwrap();
+        assert_eq!(parents, "0".repeat(40).as_bytes());
+    }
+
+    #[test]
+    fn log_actions_create_refs_without_moving_existing_refs_or_targeting_stale_rows() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "target"]);
+        let target = row(&repo, &exe);
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Bookmark { name: "topic".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Tag { name: "v-test".into() }).unwrap();
+        let current = row(&repo, &exe);
+        for action in [JjLogAction::Bookmark { name: "topic".into() }, JjLogAction::Tag { name: "v-test".into() }] {
+            assert!(act(&repo, &exe, &current, action).is_err());
+        }
+        for reference in ["topic", "v-test"] {
+            assert_eq!(
+                read_command(&repo, &exe, &["log", "-G", "-r", reference, "-T", "commit_id"]).unwrap(),
+                target.commit_id.as_bytes()
+            );
+        }
+        assert!(
+            act(&repo, &exe, &target, JjLogAction::Tag { name: "v-test".into() })
+                .unwrap_err()
+                .to_string()
+                .contains("already exists")
+        );
+        for name in ["", "--allow-move", "bad name", "bad\nname", "bad..name"] {
+            assert!(act(&repo, &exe, &current, JjLogAction::Bookmark { name: name.into() }).is_err(), "{name:?}");
+        }
+        cli(&exe, repo.root(), &["describe", "-m", "external rewrite"]);
+        assert!(act(&repo, &exe, &current, JjLogAction::New).unwrap_err().to_string().contains("refresh history"));
+        assert!(log_action_with(&repo, "@", &current.change_id, &JjLogAction::New, &exe).is_err());
+        assert!(log_action_with(&repo, &target.commit_id, &current.change_id, &JjLogAction::New, &exe).is_err());
+    }
+
+    #[test]
+    fn log_actions_move_only_the_named_existing_local_bookmark() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "base"]);
+        let base = row(&repo, &exe);
+        act(&repo, &exe, &base, JjLogAction::Bookmark { name: "main".into() }).unwrap();
+        act(&repo, &exe, &base, JjLogAction::Bookmark { name: "main-other".into() }).unwrap();
+        act(&repo, &exe, &base, JjLogAction::Bookmark { name: "topic*".into() }).unwrap();
+        act(&repo, &exe, &base, JjLogAction::Bookmark { name: "topic-other".into() }).unwrap();
+        act(&repo, &exe, &base, JjLogAction::New).unwrap();
+        let target = row(&repo, &exe);
+        for name in ["main", "topic*"] {
+            act(&repo, &exe, &target, JjLogAction::MoveBookmark { name: name.into() }).unwrap();
+            assert_eq!(
+                read_command(&repo, &exe, &["log", "-G", "-r", &format!("bookmarks(exact:{name})"), "-T", "commit_id"])
+                    .unwrap(),
+                target.commit_id.as_bytes()
+            );
+        }
+        for name in ["main-other", "topic-other"] {
+            assert_eq!(
+                read_command(&repo, &exe, &["log", "-G", "-r", name, "-T", "commit_id"]).unwrap(),
+                base.commit_id.as_bytes()
+            );
+        }
+        act(&repo, &exe, &base, JjLogAction::MoveBookmark { name: "main".into() }).unwrap();
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", "main", "-T", "commit_id"]).unwrap(),
+            base.commit_id.as_bytes()
+        );
+        for name in ["missing", "main@origin", "", "--all", "bad name"] {
+            assert!(act(&repo, &exe, &target, JjLogAction::MoveBookmark { name: name.into() }).is_err(), "{name:?}");
+        }
+        assert!(
+            read_command(&repo, &exe, &["log", "-G", "-r", "bookmarks(exact:missing)", "-T", "commit_id"])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!JjLogAction::MoveBookmark { name: "main".into() }.changes_working_copy());
+        cli(&exe, repo.root(), &["describe", "-m", "rewritten"]);
+        assert!(
+            act(&repo, &exe, &target, JjLogAction::MoveBookmark { name: "main".into() })
+                .unwrap_err()
+                .to_string()
+                .contains("refresh history")
+        );
+    }
+
+    #[test]
+    fn log_actions_keep_immutable_protection_and_allow_new_refs_on_immutable_revisions() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "immutable target"]);
+        let target = row(&repo, &exe);
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        cli(&exe, repo.root(), &["config", "set", "--repo", "revset-aliases.\"immutable_heads()\"", &target.commit_id]);
+        for action in [JjLogAction::Edit, JjLogAction::Abandon] {
+            let error = act(&repo, &exe, &target, action).unwrap_err().to_string();
+            assert!(error.contains("immutable"), "{error}");
+        }
+        act(&repo, &exe, &target, JjLogAction::Bookmark { name: "immutable-ref".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::Tag { name: "immutable-tag".into() }).unwrap();
+        act(&repo, &exe, &target, JjLogAction::New).unwrap();
+        assert_ne!(row(&repo, &exe).change_id, target.change_id);
     }
 }
