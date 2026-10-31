@@ -432,6 +432,7 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -3818,6 +3819,13 @@ export type JvmPresentation = {
 
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
+/**  Immutable text pair for the shared diff viewer. Missing sides are explicit empty text. */
+export type JjFileDiff = {
+	before: string,
+	after: string,
+	beforeLabel: string,
+	afterLabel: string,
+};
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
 	executable?: string,

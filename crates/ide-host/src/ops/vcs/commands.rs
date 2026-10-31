@@ -225,6 +225,19 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     .await
 }
 
+pub async fn vcs_jj_file_diff(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<JjFileDiff> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        repo.set_ignored_names(project.settings.effective().ignored_names());
+        repo.jj_file_diff(&path, &commit)
+    })
+    .await
+}
+
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
     let project = host.project(window)?;
     blocking(move || {
@@ -962,6 +975,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
+    d.add("vcs_jj_file_diff", |c| async move {
+        vcs_jj_file_diff(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
+    });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
