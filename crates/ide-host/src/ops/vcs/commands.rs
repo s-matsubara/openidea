@@ -220,7 +220,16 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     let project = host.project(window)?;
     blocking(move || {
         let text = project.text_of(&path)?;
-        project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .for_path(&path)
+            .ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        if repo.kind() == VcsKind::Jj {
+            repo.jj_line_hunks(&path, &text)
+        } else {
+            project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+        }
     })
     .await
 }

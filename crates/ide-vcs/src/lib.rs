@@ -571,6 +571,13 @@ impl Repo {
         jj::working_copy(self)
     }
 
+    /// Read-only editor changes against the single parent of @, including unsaved text.
+    pub fn jj_line_hunks(&self, path: &Path, text: &str) -> IdeResult<Vec<LineHunk>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::line_hunks(self, path, text)
+    }
+
     /// Read-only immutable content pair for a file in the selected @ snapshot.
     pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
         self.require_execution_allowed()?;
