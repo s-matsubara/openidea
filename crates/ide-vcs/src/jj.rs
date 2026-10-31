@@ -216,6 +216,139 @@ fn snapshot_at(repo: &crate::Repo, exe: &Path, revision: Option<&str>) -> IdeRes
     Ok(JjWorkingCopy { change_id: data.change_id, commit_id: data.commit_id, description: data.description, files })
 }
 
+/// Draft identity: an immutable anchor plus the description the user started editing.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjDescriptionEdit {
+    pub commit: String,
+    pub change: String,
+    pub original: String,
+    pub description: String,
+}
+
+pub(crate) fn describe(repo: &crate::Repo, edit: &JjDescriptionEdit) -> IdeResult<()> {
+    describe_with(repo, edit, &executable(None)?)
+}
+
+fn describe_with(repo: &crate::Repo, edit: &JjDescriptionEdit, exe: &Path) -> IdeResult<()> {
+    use std::io::Write;
+    repo.require_execution_allowed()?;
+    if edit.commit.len() != 40 || !edit.commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(IdeError::invalid("Description requires a full commit identity"));
+    }
+    let copy = snapshot(repo, exe)?;
+    if copy.change_id != edit.change || copy.description != edit.original {
+        return Err(IdeError::invalid("Working copy or description changed; refresh and review the description"));
+    }
+    // File snapshots rewrite the commit while preserving change identity. Only
+    // accept successors of the draft's immutable anchor, never a divergent version.
+    if copy.commit_id != edit.commit {
+        let evolution = read_command(
+            repo,
+            exe,
+            &["evolog", "--no-graph", "-r", &copy.commit_id, "-T", "commit.commit_id() ++ \"\\n\""],
+        )?;
+        if !String::from_utf8_lossy(&evolution).lines().any(|id| id == edit.commit) {
+            return Err(IdeError::invalid("Working-copy version diverged; review the description before saving"));
+        }
+    }
+    // Ignore disk snapshotting here: the validated commit remains current through
+    // ordinary file edits. exactly() rejects an empty intersection after an external
+    // mutation/switch; describe alone treats empty selections as successful no-ops.
+    let target = format!("exactly(({} & @), 1)", copy.commit_id);
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager", "--ignore-working-copy", "describe", "-r", &target, "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    let written = child.stdin.take().unwrap().write_all(edit.description.as_bytes());
+    let out = child.wait_with_output().map_err(|e| IdeError::unavailable(format!("jj describe: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(format!("jj describe: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    written.map_err(|e| IdeError::unavailable(format!("jj description input: {e}")))?;
+    Ok(())
+}
+
+/// Restore only listed changed entries from the single parent of the accepted @.
+pub(crate) fn restore_files(repo: &crate::Repo, commit: &str, paths: &[PathBuf]) -> IdeResult<()> {
+    restore_files_with(repo, commit, paths, &executable(None)?)
+}
+
+fn restore_files_with(repo: &crate::Repo, commit: &str, paths: &[PathBuf], exe: &Path) -> IdeResult<()> {
+    repo.require_execution_allowed()?;
+    let copy = snapshot(repo, exe)?;
+    if copy.commit_id != commit || paths.is_empty() {
+        return Err(IdeError::invalid("Working copy changed or no files checked; refresh and try again"));
+    }
+    let parents: Vec<String> = serde_json::from_slice(&read_command(
+        repo,
+        exe,
+        &["log", "-G", "-r", commit, "-T", "json(parents.map(|p| p.commit_id()))"],
+    )?)
+    .map_err(|e| IdeError::invalid(format!("invalid jj parents: {e}")))?;
+    if parents.len() != 1 {
+        return Err(IdeError::unavailable("Rollback against auto-merged parents is not supported; use jj restore"));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for path in paths {
+        let file = copy
+            .files
+            .iter()
+            .find(|f| f.path.as_ref() == path)
+            .ok_or_else(|| IdeError::invalid("Rollback target is no longer a changed file"))?;
+        if file.unstaged == Some(crate::ChangeKind::Conflicted) {
+            return Err(IdeError::unavailable("Resolve Jujutsu conflicts before rollback"));
+        }
+        names.insert(file.rel_path.clone());
+        if let Some(old) = &file.renamed_from {
+            names.insert(old.clone());
+        }
+    }
+    for name in &names {
+        let rel = Path::new(name);
+        if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+            return Err(IdeError::invalid("Invalid rollback path"));
+        }
+        // Never traverse an on-disk symlink directory, including deleted-file parents.
+        let mut ancestor = repo.root().to_path_buf();
+        for part in rel.parent().unwrap_or(Path::new("")).components() {
+            ancestor.push(part);
+            if ancestor.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(IdeError::invalid("Rollback path crosses a symlink directory"));
+            }
+        }
+    }
+    // @ intersection makes a CLI snapshot/external switch between validation and
+    // mutation fail instead of rewriting a stale commit or a different working copy.
+    let destination = format!("({commit} & @)");
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(repo.root()).args([
+        "--color=never",
+        "--no-pager",
+        "restore",
+        "--from",
+        &parents[0],
+        "--into",
+        &destination,
+        "--",
+    ]);
+    for name in names {
+        cmd.arg(format!("file:{}", serde_json::to_string(&name).unwrap()));
+    }
+    cmd.stdin(Stdio::null()).env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(format!("jj rollback: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(())
+}
+
 /// Immutable text pair for the shared diff viewer. Missing sides are explicit empty text.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -698,6 +831,7 @@ pub struct JjHistoryCommit {
     pub parents: Vec<String>,
     pub local_bookmarks: Vec<String>,
     pub remote_bookmarks: Vec<String>,
+    pub tags: Vec<String>,
     pub author: String,
     pub email: String,
     pub time_ms: String,
@@ -712,7 +846,7 @@ pub struct JjHistoryPage {
 }
 
 // Build the object explicitly: jj lists of strings serialize, mapped label lists do not.
-const HISTORY_TEMPLATE: &str = r#""{\"id\":" ++ json(commit_id) ++ ",\"changeId\":" ++ json(change_id) ++ ",\"description\":" ++ json(description) ++ ",\"parents\":" ++ json(parents.map(|p| p.commit_id())) ++ ",\"localBookmarks\":" ++ json(local_bookmarks.map(|b| b.name())) ++ ",\"remoteBookmarks\":[" ++ remote_bookmarks.map(|b| json(stringify(b.name() ++ "@" ++ b.remote()))).join(",") ++ "],\"author\":" ++ json(author.name()) ++ ",\"email\":" ++ json(author.email()) ++ ",\"timeMs\":" ++ json(author.timestamp().format("%s%3f")) ++ ",\"workingCopy\":" ++ json(current_working_copy) ++ "}\n""#;
+const HISTORY_TEMPLATE: &str = r#""{\"id\":" ++ json(commit_id) ++ ",\"changeId\":" ++ json(change_id) ++ ",\"description\":" ++ json(description) ++ ",\"parents\":" ++ json(parents.map(|p| p.commit_id())) ++ ",\"localBookmarks\":" ++ json(local_bookmarks.map(|b| b.name())) ++ ",\"remoteBookmarks\":[" ++ remote_bookmarks.map(|b| json(stringify(b.name() ++ "@" ++ b.remote()))).join(",") ++ "],\"tags\":" ++ json(tags.map(|t| t.name())) ++ ",\"author\":" ++ json(author.name()) ++ ",\"email\":" ++ json(author.email()) ++ ",\"timeMs\":" ++ json(author.timestamp().format("%s%3f")) ++ ",\"workingCopy\":" ++ json(current_working_copy) ++ "}\n""#;
 
 pub(crate) fn history(repo: &crate::Repo, cursor: Option<JjHistoryCursor>, limit: usize) -> IdeResult<JjHistoryPage> {
     repo.require_execution_allowed()?;
@@ -831,6 +965,101 @@ mod history_tests {
     }
 
     #[test]
+    fn description_preserves_multiline_clears_and_accepts_file_snapshots_only() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        run(&exe, temp.path(), &["describe", "-m", "original"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let before = snapshot(&repo, &exe).unwrap();
+        let mut edit = JjDescriptionEdit {
+            commit: before.commit_id.clone(),
+            change: before.change_id.clone(),
+            original: before.description.clone(),
+            description: "subject\n\nbody with \"quotes\" and --flags\n".into(),
+        };
+        std::fs::write(repo.root().join("file"), "saved while typing").unwrap();
+        let rewritten = snapshot(&repo, &exe).unwrap();
+        assert_ne!(before.commit_id, rewritten.commit_id);
+        describe_with(&repo, &edit, &exe).unwrap();
+        let saved = snapshot(&repo, &exe).unwrap();
+        assert_eq!(saved.change_id, before.change_id);
+        assert_eq!(saved.description, edit.description);
+        assert_eq!(std::fs::read_to_string(repo.root().join("file")).unwrap(), "saved while typing");
+        // A stale baseline never overwrites an external description.
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("description changed"));
+        edit.commit = saved.commit_id;
+        edit.original = saved.description;
+        edit.description.clear();
+        describe_with(&repo, &edit, &exe).unwrap();
+        let cleared = snapshot(&repo, &exe).unwrap();
+        assert_eq!(cleared.description, "");
+        edit.commit = cleared.commit_id;
+        edit.original.clear();
+        run(&exe, repo.root(), &["new", "-m", "another change"]);
+        assert!(describe_with(&repo, &edit, &exe).is_err());
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, "another change\n");
+        repo.set_execution_allowed(false);
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("Restricted Mode"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn description_refuses_external_switch_between_validation_and_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&exe, &root, &["git", "init"]);
+        run(&exe, &root, &["config", "set", "--repo", "signing.behavior", "drop"]);
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        let copy = snapshot(&repo, &exe).unwrap();
+        let edit = JjDescriptionEdit {
+            commit: copy.commit_id.clone(),
+            change: copy.change_id,
+            original: copy.description,
+            description: "must not redirect".into(),
+        };
+        let wrapper = temp.path().join("jj-wrapper");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nfor arg in \"$@\"; do\nif [ \"$arg\" = describe ]; then\n'{}' new -m switched >/dev/null 2>&1 || exit 90\nfi\ndone\nexec '{}' \"$@\"\n", exe.display(), exe.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(describe_with(&repo, &edit, &wrapper).is_err());
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, "switched\n");
+        assert_eq!(snapshot_at(&repo, &exe, Some(&copy.commit_id)).unwrap().description, "");
+    }
+
+    #[test]
+    fn description_rejects_divergent_same_change_version() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let temp = tempfile::tempdir().unwrap();
+        run(&exe, temp.path(), &["git", "init"]);
+        run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
+        run(&exe, temp.path(), &["describe", "-m", "original"]);
+        let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        let base = snapshot(&repo, &exe).unwrap();
+        let operation = String::from_utf8(
+            read_command(&repo, &exe, &["op", "log", "--no-graph", "--limit", "1", "-T", "id"]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(repo.root().join("file"), "first branch").unwrap();
+        let first = snapshot(&repo, &exe).unwrap();
+        run(&exe, repo.root(), &["op", "restore", operation.trim()]);
+        std::fs::write(repo.root().join("file"), "second branch").unwrap();
+        let second = snapshot(&repo, &exe).unwrap();
+        assert_eq!(first.change_id, second.change_id);
+        let edit = JjDescriptionEdit {
+            commit: first.commit_id,
+            change: first.change_id,
+            original: first.description,
+            description: "must not save".into(),
+        };
+        assert!(describe_with(&repo, &edit, &exe).unwrap_err().to_string().contains("diverged"));
+        assert_eq!(snapshot(&repo, &exe).unwrap().description, base.description);
+    }
+
+    #[test]
     fn real_history_preserves_merge_metadata_and_operation_pinned_pages() {
         let Some(exe) = detected_jj_executable() else { return };
         let temp = tempfile::tempdir().unwrap();
@@ -852,6 +1081,7 @@ mod history_tests {
         run(&exe, root, &["new", "root()", "-m", "independent head"]);
         run(&exe, root, &["bookmark", "create", "independent"]);
         run(&exe, root, &["new", &left, &right, "-m", "統合\n\nmerge body\n"]);
+        run(&exe, root, &["tag", "set", "release", "-r", &left]);
         let expected = history_with(&repo, None, 100, &exe).unwrap().commits;
         let merge = expected.iter().find(|c| c.working_copy).unwrap();
         assert_eq!(merge.parents, [left.clone(), right]);
@@ -861,7 +1091,7 @@ mod history_tests {
             b"true"
         );
         assert_eq!(merge.description, "統合\n\nmerge body\n");
-        assert!(expected.iter().any(|c| c.local_bookmarks == ["left-label"]));
+        assert!(expected.iter().any(|c| c.local_bookmarks == ["left-label"] && c.tags == ["release"]));
         assert!(expected.iter().all(|c| c.time_ms.parse::<i64>().unwrap() >= 0));
         // Export then clone a local fixture to exercise real remote bookmark labels.
         run(&exe, root, &["git", "export"]);
@@ -1081,6 +1311,90 @@ mod log_action_tests {
     }
     fn act(repo: &crate::Repo, exe: &Path, row: &JjWorkingCopy, action: JjLogAction) -> IdeResult<()> {
         log_action_with(repo, &row.commit_id, &row.change_id, &action, exe)
+    }
+
+    #[test]
+    fn rollback_restores_only_literal_checked_entries_and_rejects_stale_lists() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let root = repo.root();
+        for name in ["modified", "deleted", "untouched", "glob*[x]", "binary"] {
+            std::fs::write(root.join(name), b"base\0bytes").unwrap();
+        }
+        cli(&exe, root, &["new", "-m", "changes"]);
+        for name in ["modified", "untouched", "glob*[x]", "binary", "added"] {
+            std::fs::write(root.join(name), b"changed\0bytes").unwrap();
+        }
+        std::fs::remove_file(root.join("deleted")).unwrap();
+        let before = row(&repo, &exe);
+        let paths: Vec<_> = ["modified", "deleted", "glob*[x]", "binary", "added"].map(|n| root.join(n)).into();
+        restore_files_with(&repo, &before.commit_id, &paths, &exe).unwrap();
+        for name in ["modified", "deleted", "glob*[x]", "binary"] {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), b"base\0bytes");
+        }
+        assert!(!root.join("added").exists());
+        assert_eq!(std::fs::read(root.join("untouched")).unwrap(), b"changed\0bytes");
+        assert!(restore_files_with(&repo, &before.commit_id, &[root.join("untouched")], &exe).is_err());
+        let current = row(&repo, &exe);
+        assert!(restore_files_with(&repo, &current.commit_id, &[root.join("not-changed")], &exe).is_err());
+        assert!(restore_files_with(&repo, &current.commit_id, &[], &exe).is_err());
+    }
+
+    #[test]
+    fn rollback_renames_restore_endpoints_without_touching_other_changes() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let root = repo.root();
+        std::fs::write(root.join("old"), "original").unwrap();
+        cli(&exe, root, &["new"]);
+        std::fs::rename(root.join("old"), root.join("new")).unwrap();
+        std::fs::write(root.join("unrelated"), "keep").unwrap();
+        let before = row(&repo, &exe);
+        // jj may report a rename or separate added/deleted entries depending on
+        // copy tracking. Only a checked rename includes both endpoints.
+        let renamed = before.files.iter().find(|f| f.renamed_from.is_some());
+        let paths = if let Some(file) = renamed {
+            vec![file.path.as_ref().to_path_buf()]
+        } else {
+            vec![root.join("old"), root.join("new")]
+        };
+        restore_files_with(&repo, &before.commit_id, &paths, &exe).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("old")).unwrap(), "original");
+        assert!(!root.join("new").exists());
+        assert_eq!(std::fs::read_to_string(root.join("unrelated")).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_symlink_leaf_does_not_write_link_target() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), repo.root().join("link")).unwrap();
+        let copy = row(&repo, &exe);
+        restore_files_with(&repo, &copy.commit_id, &[repo.root().join("link")], &exe).unwrap();
+        assert!(!repo.root().join("link").symlink_metadata().is_ok());
+        assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "outside");
+    }
+
+    #[test]
+    fn rollback_rejects_merge_baselines_and_conflicts() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        std::fs::write(repo.root().join("file"), "base").unwrap();
+        cli(&exe, repo.root(), &["new"]);
+        std::fs::write(repo.root().join("file"), "left").unwrap();
+        let left = row(&repo, &exe);
+        cli(&exe, repo.root(), &["new", "@-"]);
+        std::fs::write(repo.root().join("file"), "right").unwrap();
+        let right = row(&repo, &exe);
+        cli(&exe, repo.root(), &["new", &left.commit_id, &right.commit_id]);
+        let merge = row(&repo, &exe);
+        let error =
+            restore_files_with(&repo, &merge.commit_id, &[repo.root().join("file")], &exe).unwrap_err().to_string();
+        assert!(error.contains("auto-merged"), "{error}");
+        cli(&exe, repo.root(), &["new"]);
+        let conflict = row(&repo, &exe);
+        let error =
+            restore_files_with(&repo, &conflict.commit_id, &[repo.root().join("file")], &exe).unwrap_err().to_string();
+        assert!(error.contains("conflicts"), "{error}");
     }
 
     #[test]

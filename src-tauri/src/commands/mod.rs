@@ -231,6 +231,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_jj_history_files,
         vcs::vcs_jj_history_file_diff,
         vcs::vcs_jj_history,
+        vcs::vcs_jj_describe,
+        vcs::vcs_jj_restore_files,
         vcs::vcs_jj_log_action,
         vcs::vcs_blame,
         vcs::vcs_log,

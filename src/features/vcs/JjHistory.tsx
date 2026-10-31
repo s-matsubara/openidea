@@ -11,6 +11,7 @@ import {
   SplitHandle,
   SplitPanel,
   Spinner,
+  SearchField,
   Tree,
   fileIconName,
   T,
@@ -19,7 +20,7 @@ import {
 import { computeGraph } from "./graph";
 import { GraphCell } from "./GitLog";
 import { effectiveKind, fileCount, formatTime, KIND_COLOR } from "./model";
-import { refreshNow, repoName, useVcs } from "./store";
+import { refreshNow, useVcs } from "./store";
 import styles from "./GitLog.module.css";
 import jjStyles from "./JjHistory.module.css";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
@@ -36,26 +37,17 @@ export function JjHistory() {
   const roots = useVcs((s) => s.jjRoots);
   const project = useVcs((s) => s.root);
   const version = useVcs((s) => s.version);
-  const [requestedRoot, setRoot] = useState<string | null>(null);
-  const root = roots.find((r) => r.root === requestedRoot) ?? roots[0];
+  const activeRoot = useVcs((s) => s.repo);
+  const root = roots.find((r) => r.root === activeRoot) ?? roots[0];
+  const [query, setQuery] = useState("");
   // Key both workspace and repository; remounting synchronously drops old rows/selection.
   return (
     <div className={jjStyles.root}>
-      <div className={styles.detailsBar}>
-        <label className={jjStyles.rootLabel}>
-          Repository
-          <select aria-label="Jujutsu repository" value={root?.root ?? ""} onChange={(e) => setRoot(e.target.value)}>
-            {roots.map((r) => (
-              <option key={r.root} value={r.root}>
-                {repoName(r.root)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
       {root ? (
         <History
           key={`${project}\0${root.root}\0${version}\0${root.unavailableReason}`}
+          query={query}
+          setQuery={setQuery}
           root={root.root}
           unavailable={root.unavailableReason}
         />
@@ -66,12 +58,26 @@ export function JjHistory() {
   );
 }
 
-function History({ root, unavailable }: { root: string; unavailable: string | null }) {
+function History({
+  root,
+  unavailable,
+  query,
+  setQuery,
+}: {
+  root: string;
+  unavailable: string | null;
+  query: string;
+  setQuery: (query: string) => void;
+}) {
   const [page, setPage] = useState<JjHistoryPage>({ commits: [], next: null });
   const [selected, select] = useState<string | null>(null);
   const [loading, setLoading] = useState(!unavailable);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  const currentQuery = useRef(query);
+  useEffect(() => {
+    currentQuery.current = query;
+  }, [query]);
   const pending = useRef(false);
   const list = useRef<HTMLDivElement>(null);
   const readFirst = useCallback(
@@ -112,7 +118,7 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
       requests.current++;
     };
   }, [readFirst, unavailable]);
-  const more = () => {
+  const more = useCallback(() => {
     if (!page.next || pending.current) return;
     const request = generation.current;
     pending.current = true;
@@ -130,21 +136,27 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
           setLoading(false);
         }
       });
-  };
-  const graph = useMemo(() => computeGraph(page.commits).rows, [page.commits]);
-  const commit = page.commits.find((c) => c.id === selected);
+  }, [page.next, root]);
+  const needle = query.trim().toLocaleLowerCase();
+  // Search the entire pinned operation, rather than silently limiting matches to loaded rows.
+  // One page at a time; clearing the query stops further reads and in-flight pages remain valid.
+  useEffect(() => {
+    if (!needle || !page.next || loading || error || unavailable) return;
+    const timer = setTimeout(more, 180);
+    return () => clearTimeout(timer);
+  }, [needle, page.next, loading, error, unavailable, more]);
+  const visible = useMemo(
+    () =>
+      page.commits.filter(
+        (c) => !needle || [c.description, c.id, c.changeId].some((value) => value.toLocaleLowerCase().includes(needle)),
+      ),
+    [page.commits, needle],
+  );
+  const visibleSelected = visible.some((c) => c.id === selected) ? selected : (visible[0]?.id ?? null);
+  const graph = useMemo(() => computeGraph(visible).rows, [visible]);
+  const commit = visible.find((c) => c.id === visibleSelected);
   return (
     <div className={jjStyles.root}>
-      <div className={styles.detailsBar}>
-        <IconButton
-          icon="refresh"
-          title="Refresh Jujutsu history"
-          size="small"
-          onClick={unavailable ? () => void refreshNow() : reload}
-        />
-        <span>Jujutsu history</span>
-        {loading && <Spinner size={12} />}
-      </div>
       {(error || unavailable) && (
         <div className={styles.message} role="alert">
           {error ?? unavailable}
@@ -153,26 +165,52 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
       <SplitGroup orientation="horizontal" id="jj-log">
         <SplitPanel id="history" defaultSize="60%" minSize="120px">
           <div className={jjStyles.root}>
+            <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
+              <SearchField
+                className={styles.textFilter}
+                value={query}
+                onChange={(value) => {
+                  currentQuery.current = value;
+                  setQuery(value);
+                }}
+                placeholder="Text or hash"
+                aria-label="Filter by message"
+              />
+              {needle && !error && !unavailable && (loading || page.next) && (
+                <span role="status">
+                  <T>Searching history…</T>
+                </span>
+              )}
+              {loading && <Spinner size={12} />}
+              <span className={styles.grow} />
+              <IconButton
+                icon="refresh"
+                title="Refresh Jujutsu history"
+                size="small"
+                onClick={unavailable ? () => void refreshNow() : reload}
+              />
+            </div>
+
             <div
               className={jjStyles.list}
               ref={list}
               role="listbox"
               aria-label="Jujutsu history"
               tabIndex={0}
-              aria-activedescendant={selected ? `jj-${selected}` : undefined}
+              aria-activedescendant={visibleSelected ? `jj-${visibleSelected}` : undefined}
               onKeyDown={(e) => {
-                const index = page.commits.findIndex((c) => c.id === selected);
+                const index = visible.findIndex((c) => c.id === visibleSelected);
                 const next =
                   e.key === "ArrowDown"
-                    ? Math.min(index + 1, page.commits.length - 1)
+                    ? Math.min(index + 1, visible.length - 1)
                     : e.key === "ArrowUp"
                       ? Math.max(0, index - 1)
                       : e.key === "Home"
                         ? 0
                         : e.key === "End"
-                          ? page.commits.length - 1
+                          ? visible.length - 1
                           : -1;
-                const c = page.commits[next];
+                const c = visible[next];
                 if (c) {
                   e.preventDefault();
                   select(c.id);
@@ -180,13 +218,13 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
                 }
               }}
             >
-              {page.commits.map((c, i) => (
+              {visible.map((c, i) => (
                 <div
                   key={c.id}
                   id={`jj-${c.id}`}
                   role="option"
-                  aria-selected={c.id === selected}
-                  className={`${jjStyles.row} ${c.id === selected ? jjStyles.selected : ""}`}
+                  aria-selected={c.id === visibleSelected}
+                  className={`${jjStyles.row} ${c.id === visibleSelected ? jjStyles.selected : ""}`}
                   onClick={() => {
                     select(c.id);
                     list.current?.focus();
@@ -196,25 +234,35 @@ function History({ root, unavailable }: { root: string; unavailable: string | nu
                     const request = generation.current;
                     showContextMenu(
                       e,
-                      jjLogMenu(root, c, () => request === generation.current, reload),
+                      jjLogMenu(
+                        root,
+                        c,
+                        () => request === generation.current && query === currentQuery.current,
+                        reload,
+                      ),
                     );
                   }}
                   title={c.description}
                 >
-                  <GraphCell row={graph[i]!} head={c.workingCopy} />
-                  <span className={jjStyles.subject}>
-                    {c.workingCopy ? "@ " : ""}
-                    {c.description.split("\n")[0] || "(no description)"}
+                  <span className={styles.colSubject}>
+                    <GraphCell row={graph[i]!} head={c.workingCopy} />
+                    <span className={jjStyles.subject}>
+                      {c.workingCopy ? "@ " : ""}
+                      {c.description.split("\n")[0] || "(no description)"}
+                    </span>
+                    <JjRefs commit={c} />
                   </span>
-                  <span className={jjStyles.bookmarks}>{[...c.localBookmarks, ...c.remoteBookmarks].join(", ")}</span>
-                  <span className={jjStyles.change}>{c.changeId.slice(0, 8)}</span>
-                  <span className={styles.muted}>{c.author}</span>
-                  <span className={styles.muted}>{formatTime(Number(c.timeMs))}</span>
+                  <span className={`${styles.colAuthor} ${styles.muted}`} title={`${c.author} <${c.email}>`}>
+                    {c.author}
+                  </span>
+                  <span className={`${styles.colDate} ${styles.muted}`}>{formatTime(Number(c.timeMs))}</span>
                 </div>
               ))}
-              {!loading && !error && !page.commits.length && <EmptyState>No history</EmptyState>}
+              {!loading && !error && !visible.length && !page.next && (
+                <EmptyState>{needle ? <T>No matches</T> : <T>No history</T>}</EmptyState>
+              )}
             </div>
-            {page.next && (
+            {page.next && !needle && (
               <button type="button" disabled={loading} onClick={more}>
                 Load more
               </button>
@@ -373,10 +421,58 @@ function HistoryFiles({ root, commit }: { root: string; commit: string }) {
   );
 }
 
+/** Keep jj bookmark identity explicit; Git's slash-prefixed ref parser is not applicable. */
+function JjRefs({ commit: c }: { commit: JjHistoryCommit }) {
+  const groups = new Map<string, string[]>();
+  const remaining = [...c.remoteBookmarks];
+  for (const local of c.localBookmarks) {
+    const remotes = remaining.filter((ref) => ref.startsWith(`${local}@`));
+    groups.set(local, remotes);
+    for (const ref of remotes) remaining.splice(remaining.indexOf(ref), 1);
+  }
+  return (
+    <span className={styles.refs}>
+      {[...groups].map(([local, remotes]) => (
+        <span
+          key={`local:${local}`}
+          className={`${styles.ref} ${styles.refLocal}`}
+          title={`${tx("Local bookmarks")}: ${local}${remotes.length ? `; ${tx("Remote bookmarks")}: ${remotes.join(", ")}` : ""}`}
+        >
+          {remotes.length ? `${remotes.map((ref) => ref.slice(local.length + 1)).join(", ")} & ${local}` : local}
+        </span>
+      ))}
+      {remaining.map((ref) => (
+        <span
+          key={`remote:${ref}`}
+          className={`${styles.ref} ${styles.refRemote}`}
+          title={`${tx("Remote bookmarks")}: ${ref}`}
+        >
+          {ref}
+        </span>
+      ))}
+      {c.tags.map((tag) => (
+        <span key={`tag:${tag}`} className={`${styles.ref} ${styles.refTag}`} title={`${tx("Tags")}: ${tag}`}>
+          {tag}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function HistoryDetails({ commit: c }: { commit: JjHistoryCommit }) {
   return (
     <div className={jjStyles.details} aria-label="Jujutsu change details">
-      {c.workingCopy && <strong>@ Current working copy</strong>}
+      <div className={styles.subjectLine}>{c.description.split("\n")[0] || tx("(no description)")}</div>
+      {c.description.includes("\n") && (
+        <div className={styles.fullMessage}>
+          {c.description.slice(c.description.indexOf("\n") + 1).replace(/^\n+/, "")}
+        </div>
+      )}
+      {c.workingCopy && (
+        <div className={styles.meta}>
+          @ <T>Current working copy</T>
+        </div>
+      )}
       <dl>
         <dt>Change ID</dt>
         <dd>{c.changeId}</dd>
@@ -393,7 +489,11 @@ function HistoryDetails({ commit: c }: { commit: JjHistoryCommit }) {
         <dt>Remote bookmarks</dt>
         <dd>{c.remoteBookmarks.join(", ") || "None"}</dd>
       </dl>
-      <pre className={jjStyles.description}>{c.description || "(no description)"}</pre>
+      {c.tags.length > 0 && (
+        <div className={styles.meta}>
+          <T>Tags</T>: {c.tags.join(", ")}
+        </div>
+      )}
     </div>
   );
 }
