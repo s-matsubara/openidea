@@ -131,3 +131,33 @@ it("shows read errors without opening an empty or stale diff", async () => {
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Binary/));
   expect(openInput).not.toHaveBeenCalled();
 });
+
+it("opens existing jj files against the live working document", async () => {
+  const file = { path: "/jj/a", relPath: "a", unstaged: "modified" as const, staged: null, renamedFrom: null };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  readDiff.mockResolvedValue({
+    status: "ok",
+    data: { before: "parent", after: "disk", beforeLabel: "Parent abc", afterLabel: "@ def" },
+  });
+  render(<CommitToolWindow />);
+  fireEvent.click(screen.getByText("a"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(openInput.mock.calls[0]![0].data.right).toEqual({ type: "worktree", label: "Working copy @" });
+});
+it("does not open an in-flight diff after its working-copy root changes", async () => {
+  const file = { path: "/jj/a", relPath: "a", unstaged: "modified" as const, staged: null, renamedFrom: null };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  let resolve!: (value: unknown) => void;
+  readDiff.mockReturnValue(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  render(<CommitToolWindow />);
+  fireEvent.click(screen.getByText("a"));
+  useVcs.setState({ jjRoots: [] });
+  resolve({ status: "ok", data: { before: "parent", after: "disk", beforeLabel: "Parent abc", afterLabel: "@ def" } });
+  await waitFor(() => expect(readDiff).toHaveBeenCalledTimes(1));
+  await new Promise((done) => setTimeout(done, 0));
+  expect(openInput).not.toHaveBeenCalled();
+});

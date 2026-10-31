@@ -326,6 +326,7 @@ export function hunksInSelection(state: EditorState): EditorHunk[] {
 
 /** IDEA's Rollback Lines: restores the hunks touched by the selection; false when there are none. */
 export function rollbackSelectedLines(view: EditorView): boolean {
+  if (view.state.readOnly) return false;
   const hunks = hunksInSelection(view.state);
   if (!hunks.length) return false;
   view.dispatch({
