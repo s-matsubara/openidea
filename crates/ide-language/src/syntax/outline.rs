@@ -162,7 +162,7 @@ fn collect(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<Built>
         let mut def: Option<(Node, ItemKind, bool)> = None;
         let mut names: Vec<Node> = Vec::new();
         let (mut detail, mut trait_, mut container) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q.roles[c.index as usize] {
                 Role::Def { kind, tag } => def = Some((c.node, kind, tag)),
                 Role::Name => names.push(c.node),

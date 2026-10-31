@@ -4,7 +4,7 @@
  * as IDEA keeps them per project) and file icons for the user's patterns.
  */
 import { executeAction, registerActions } from "@/platform/actions";
-import { call, commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
+import { call, commands, isTauri, type LanguageInfo } from "@/platform/ipc";
 import {
   sampleFileName,
   userFileType,
