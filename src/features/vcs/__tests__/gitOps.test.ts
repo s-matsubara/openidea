@@ -5,6 +5,11 @@ import { getAction } from "@/platform/actions";
 import { evaluateWhen } from "@/platform/context";
 import type { Branch, BranchInfo, Commit, FileStatus } from "@/bindings";
 
+const activeEditorMock = vi.hoisted(() => vi.fn());
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  activeEditor: activeEditorMock,
+}));
 const vcsStatus = vi.fn();
 const vcsRoots = vi.fn();
 const vcsBranchInfo = vi.fn();
@@ -258,6 +263,21 @@ describe("status refresh", () => {
       expect(evaluateWhen(getAction("vcs.push")?.when, context)).toBe(true);
       expect(evaluateWhen(getAction("vcs.addToVcs")?.when, { ...context, activeToolWindow: "project" })).toBe(true);
     } finally {
+      dispose();
+    }
+  });
+
+  it("does not roll back a focused jj buffer even if the action is invoked directly", () => {
+    const dispose = registerVcsActions();
+    const dispatch = vi.fn();
+    activeEditorMock.mockReturnValue({ ctx: { path: "/jj/file" }, view: { hasFocus: true, dispatch } });
+    useVcs.setState({ kinds: { "/jj": "jj" } });
+    try {
+      const action = getAction("vcs.rollback")!;
+      expect(() => action.run({} as Parameters<typeof action.run>[0])).not.toThrow();
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      activeEditorMock.mockReset();
       dispose();
     }
   });

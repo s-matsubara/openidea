@@ -11,7 +11,7 @@ import type { HunkKind, LineHunk } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { LaneMarker, gutterLaneMarkers, scrollbarMarks, type EditorDocContext, type ScrollbarMark } from "@/editor/api";
 import { lineStarts } from "./hunks";
-import { useVcs } from "./store";
+import { isJjPath, repoOf, useVcs } from "./store";
 
 /** A hunk with its current extent as document offsets (mapped through edits). */
 export interface EditorHunk extends LineHunk {
@@ -40,9 +40,9 @@ const COLOR: Record<HunkKind, string> = {
 };
 
 const TITLE: Record<HunkKind, string> = {
-  added: "Added lines (click to show)",
-  modified: "Modified lines (click to show)",
-  deleted: "Deleted lines (click to show)",
+  added: "Added lines",
+  modified: "Modified lines",
+  deleted: "Deleted lines",
 };
 
 const MARK = {
@@ -155,7 +155,6 @@ export function showHunkPopup(view: EditorView, hunk: EditorHunk, path: string) 
 class HunkFetcher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private seq = 0;
-  private dirtySince = 0;
   private destroyed = false;
   private readonly unsub: () => void;
 
@@ -165,26 +164,43 @@ class HunkFetcher implements PluginValue {
   ) {
     this.schedule(30);
     this.unsub = useVcs.subscribe((s, prev) => {
-      if (s.version !== prev.version || s.available !== prev.available) this.schedule(60);
+      if (
+        s.version !== prev.version ||
+        s.available !== prev.available ||
+        s.kinds !== prev.kinds ||
+        s.jjRoots !== prev.jjRoots
+      ) {
+        popupHooks?.docChanged(this.view);
+        this.view.dispatch({ effects: setHunksEffect.of([]) });
+        this.schedule(60);
+      }
     });
   }
 
   update(u: ViewUpdate) {
     if (u.docChanged) {
       popupHooks?.docChanged(this.view);
-      this.dirtySince = ++this.seq;
       this.schedule(300);
     }
   }
 
   schedule(delay: number) {
+    ++this.seq;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.fetch(), delay);
   }
 
   async fetch() {
     if (this.destroyed) return;
-    if (!useVcs.getState().available || !isTauri()) {
+    const state = useVcs.getState();
+    const jjRoot = repoOf(
+      this.path,
+      state.jjRoots.map((root) => root.root),
+    );
+    const readable = isJjPath(this.path)
+      ? state.jjRoots.some((root) => root.root === jjRoot && !root.unavailableReason)
+      : state.available;
+    if (!readable || !isTauri()) {
       if (editorHunks(this.view.state).length) this.view.dispatch({ effects: setHunksEffect.of([]) });
       return;
     }
@@ -193,14 +209,17 @@ class HunkFetcher implements PluginValue {
       const hunks = await call(commands.vcsLineHunks(this.path));
       if (this.destroyed) return;
       // The buffer changed while the request was in flight; a fresh request is scheduled.
-      if (this.dirtySince > ticket) return;
+      if (this.seq !== ticket) return;
       this.view.dispatch({ effects: setHunksEffect.of(hunks) });
     } catch {
-      // Paths outside the repository etc.: no markers.
+      // Unsupported jj baselines/files and paths outside a repository must not
+      // retain markers from an earlier successful request.
+      if (!this.destroyed && this.seq === ticket) this.view.dispatch({ effects: setHunksEffect.of([]) });
     }
   }
 
   destroy() {
+    popupHooks?.docChanged(this.view);
     this.destroyed = true;
     clearTimeout(this.timer);
     this.unsub();
@@ -212,7 +231,7 @@ function scrollMarks(state: EditorState): ScrollbarMark[] {
     from: h.from,
     to: h.to > h.from ? h.to - 1 : h.from,
     color: COLOR[h.kind],
-    tooltip: TITLE[h.kind].replace(" (click to show)", ""),
+    tooltip: TITLE[h.kind],
   }));
 }
 

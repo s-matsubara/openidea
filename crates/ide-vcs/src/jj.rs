@@ -214,6 +214,18 @@ pub(crate) fn file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeRes
 }
 
 fn file_diff_with(repo: &crate::Repo, path: &Path, commit: &str, exe: &Path) -> IdeResult<JjFileDiff> {
+    file_diff_read(repo, path, Some(commit), exe)
+}
+
+pub(crate) fn line_hunks(repo: &crate::Repo, path: &Path, text: &str) -> IdeResult<Vec<crate::LineHunk>> {
+    if text.bytes().any(|b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
+        return Err(IdeError::unavailable("Binary buffers are not supported in Jujutsu diffs"));
+    }
+    let diff = file_diff_read(repo, path, None, &executable(None)?)?;
+    Ok(crate::diff_hunks(&diff.before, text))
+}
+
+fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: &Path) -> IdeResult<JjFileDiff> {
     if repo.kind() != crate::VcsKind::Jj {
         return Err(IdeError::invalid("Jujutsu diff requires a Jujutsu repository"));
     }
@@ -224,15 +236,25 @@ fn file_diff_with(repo: &crate::Repo, path: &Path, commit: &str, exe: &Path) -> 
     // Snapshot once, then pin every read to the accepted immutable commit. Never pair a
     // stale list's rename/kind with a newer @ (including an externally switched @).
     let copy = snapshot(repo, exe)?;
-    if copy.commit_id != commit {
+    if expected.is_some_and(|commit| copy.commit_id != commit) {
         return Err(IdeError::unavailable(
             "Working copy changed; refresh the Jujutsu changes list and reopen the diff",
         ));
     }
+    let commit = &copy.commit_id;
+    // An unchanged on-disk file can still have unsaved editor changes.
+    let unchanged = crate::FileStatus {
+        path: path.to_path_buf().into(),
+        rel_path: rel.to_string_lossy().into_owned(),
+        staged: None,
+        unstaged: None,
+        renamed_from: None,
+    };
     let file = copy
         .files
         .iter()
         .find(|f| Path::new(&f.rel_path) == rel)
+        .or_else(|| expected.is_none().then_some(&unchanged))
         .ok_or_else(|| IdeError::invalid("file is no longer in the Jujutsu changes list; refresh it"))?;
     if file.unstaged == Some(crate::ChangeKind::Conflicted) {
         return Err(IdeError::unavailable(
@@ -319,6 +341,9 @@ mod snapshot_tests {
             std::fs::write(root.join(name), text).unwrap();
         }
         jj(&exe, root, &["new"]);
+        let unchanged = file_diff_read(&repo, &root.join("modified"), None, &exe).unwrap();
+        assert_eq!(unchanged.before, "before\n");
+        assert_eq!(crate::diff_hunks(&unchanged.before, "unsaved\n")[0].old_text, "before\n");
         std::fs::write(root.join("modified"), "after\n").unwrap();
         std::fs::remove_file(root.join("deleted")).unwrap();
         std::fs::rename(root.join("old name"), root.join("new name")).unwrap();
@@ -329,6 +354,17 @@ mod snapshot_tests {
         std::fs::write(root.join("non-utf8"), [0xff]).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink("/etc/passwd", root.join("outside-link")).unwrap();
+        // Gutter reads use the same parent and rename baseline as the diff viewer.
+        let gutter = |name: &str, text: &str| {
+            let pair = file_diff_read(&repo, &root.join(name), None, &exe).unwrap();
+            crate::diff_hunks(&pair.before, text)
+        };
+        assert_eq!(gutter("modified", "buffer\n")[0].old_text, "before\n");
+        assert_eq!(gutter("deleted", "")[0].kind, crate::HunkKind::Deleted);
+        assert_eq!(gutter("empty", "unsaved\n")[0].kind, crate::HunkKind::Added);
+        assert_eq!(gutter("new name", "unsaved rename")[0].old_text, "rename contents");
+        assert!(file_diff_read(&repo, &root.join("binary"), None, &exe).is_err());
+        assert!(file_diff_read(&repo, &root.join("non-utf8"), None, &exe).is_err());
         let copy = snapshot(&repo, &exe).unwrap();
         let get = |name: &str| file_diff_with(&repo, &root.join(name), &copy.commit_id, &exe);
         let modified = get("modified").unwrap();
@@ -491,9 +527,11 @@ newline.txt"
         set_jj_executable(Some(&exe));
         let error = repo.jj_working_copy().unwrap_err().to_string();
         let diff_error = repo.jj_file_diff(&root.join("file.txt"), "abc12345").unwrap_err().to_string();
+        let hunk_error = repo.jj_line_hunks(&root.join("file.txt"), "text").unwrap_err().to_string();
         set_jj_executable(None);
         assert!(error.contains("Restricted Mode"), "{error}");
         assert!(diff_error.contains("Restricted Mode"), "{diff_error}");
+        assert!(hunk_error.contains("Restricted Mode"), "{hunk_error}");
         assert!(!marker.exists(), "configured jj executable ran in Restricted Mode");
     }
 }
