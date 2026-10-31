@@ -1,8 +1,19 @@
-import { beforeEach, expect, it } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { VcsRoot } from "@/bindings";
 import { CommitToolWindow } from "../CommitView";
 import { useVcs } from "../store";
+
+const readDiff = vi.fn();
+const openInput = vi.fn();
+vi.mock("@/platform/ipc", async (original) => {
+  const real = await original<typeof import("@/platform/ipc")>();
+  return { ...real, commands: { ...real.commands, vcsJjFileDiff: (...args: unknown[]) => readDiff(...args) } };
+});
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  editorService: () => ({ openInput }),
+}));
 
 const root = (patch: Partial<VcsRoot> = {}): VcsRoot => ({
   root: "/jj",
@@ -16,6 +27,8 @@ const root = (patch: Partial<VcsRoot> = {}): VcsRoot => ({
 });
 
 beforeEach(() => {
+  readDiff.mockReset();
+  openInput.mockReset();
   useVcs.setState({ available: false, root: "/jj", roots: [], jjRoots: [root()], error: null, status: [] });
 });
 
@@ -68,4 +81,53 @@ it("retains the jj root heading alongside a Git root", () => {
   useVcs.setState({ roots: ["/git"] });
   render(<CommitToolWindow />);
   expect(screen.getByText("jj")).toBeInTheDocument();
+});
+
+it("opens deleted jj files as immutable diffs using their owning root snapshot", async () => {
+  const file = {
+    path: "/nested/jj/deleted",
+    relPath: "deleted",
+    unstaged: "deleted" as const,
+    staged: null,
+    renamedFrom: null,
+  };
+  useVcs.setState({
+    roots: ["/git"],
+    jjRoots: [
+      root({ root: "/nested/jj", workingCopy: { ...root().workingCopy!, commitId: "snapshot", files: [file] } }),
+    ],
+  });
+  readDiff.mockResolvedValue({
+    status: "ok",
+    data: { before: "old", after: "", beforeLabel: "Parent abc (deleted)", afterLabel: "@ (deleted)" },
+  });
+  render(<CommitToolWindow />);
+  fireEvent.click(screen.getByText("deleted"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(readDiff).toHaveBeenCalledWith(file.path, "snapshot");
+  const data = openInput.mock.calls[0]![0].data;
+  expect(data).toEqual({
+    path: file.path,
+    left: { type: "text", text: "old", label: "Parent abc (deleted)" },
+    right: { type: "text", text: "", label: "@ (deleted)" },
+  });
+});
+
+it("shows read errors without opening an empty or stale diff", async () => {
+  const file = {
+    path: "/jj/binary",
+    relPath: "binary",
+    unstaged: "modified" as const,
+    staged: null,
+    renamedFrom: null,
+  };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  readDiff.mockResolvedValue({
+    status: "error",
+    error: { message: "Binary files are not supported", kind: "unavailable" },
+  });
+  render(<CommitToolWindow />);
+  fireEvent.click(screen.getByText("binary"));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Binary/));
+  expect(openInput).not.toHaveBeenCalled();
 });

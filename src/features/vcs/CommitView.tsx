@@ -50,7 +50,7 @@ import { moveToChangelist } from "./changelistsUi";
 import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
+import { jjFileDiffData, openDiff, withChain, workingDiffData } from "./diffInput";
 import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
@@ -161,6 +161,7 @@ export function CommitToolWindow() {
 
 /** Read-only @ display: deliberately has no Git action menus or inclusion controls. */
 export function JjWorkingCopies() {
+  const [diffError, setDiffError] = useState<string | null>(null);
   const roots = useVcs((s) => s.jjRoots);
   const gitRootCount = useVcs((s) => s.roots.length);
   const error = useVcs((s) => s.error);
@@ -171,6 +172,7 @@ export function JjWorkingCopies() {
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
       </div>
       {error && <div role="alert">{error}</div>}
+      {diffError && <div role="alert">{diffError}</div>}
       {roots.map((root) => (
         <section key={root.root} aria-label={root.root}>
           {roots.length + gitRootCount > 1 && <div className={styles.toolbar}>{repoName(root.root)}</div>}
@@ -196,7 +198,10 @@ export function JjWorkingCopies() {
                   aria-label="Working-copy changes"
                   empty={<span className={styles.empty}>No working-copy changes</span>}
                   onActivate={(f) => {
-                    if (effectiveKind(f) !== "deleted") void editorService().openFile(f.path, { focus: true });
+                    setDiffError(null);
+                    void call(commands.vcsJjFileDiff(f.path, root.workingCopy!.commitId))
+                      .then((pair) => openDiff(jjFileDiffData(f.path, pair)))
+                      .catch((e) => setDiffError(`${f.relPath}: ${e instanceof Error ? e.message : String(e)}`));
                   }}
                   renderItem={(f) => {
                     const kind = effectiveKind(f) ?? "modified";

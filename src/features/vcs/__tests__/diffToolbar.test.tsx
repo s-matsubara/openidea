@@ -150,6 +150,24 @@ describe("Diff toolbar", () => {
   });
 });
 
+it("renders jj snapshot sides read-only without hunk mutation controls", async () => {
+  const { diffInput, jjFileDiffData } = await import("../diffInput");
+  const input = diffInput(
+    jjFileDiffData("/p/a.ts", {
+      before: "old\n",
+      after: "new\n",
+      beforeLabel: "Parent 1234",
+      afterLabel: "@ 5678",
+    }),
+  );
+  render(<DiffEditor input={input} />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+  for (const content of document.querySelectorAll(".cm-content"))
+    expect(content).toHaveAttribute("contenteditable", "false");
+  expect(screen.queryByRole("button", { name: /Revert|Stage|Unstage|Apply/ })).toBeNull();
+  expect(document.querySelector(".cm-changeGutter")).toBeNull();
+});
+
 const doc = (s: string) => Text.of(s.split("\n"));
 
 describe("mapLine", () => {

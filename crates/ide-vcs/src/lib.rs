@@ -467,7 +467,7 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
-pub use jj::{JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
+pub use jj::{JjFileDiff, JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -557,15 +557,27 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
     }
+    pub(crate) fn require_execution_allowed(&self) -> IdeResult<()> {
+        if self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(ide_core::IdeError::unavailable(
+                "Project is in Restricted Mode. Trust the project to enable execution.",
+            ))
+        }
+    }
     /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
     pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
-        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(ide_core::IdeError::unavailable(
-                "Project is in Restricted Mode. Trust the project to enable execution.",
-            ));
-        }
+        self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);
         jj::working_copy(self)
+    }
+
+    /// Read-only immutable content pair for a file in the selected @ snapshot.
+    pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::file_diff(self, path, commit)
     }
 
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
