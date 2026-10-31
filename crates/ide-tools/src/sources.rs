@@ -390,7 +390,18 @@ pub fn sha256_file(path: &std::path::Path) -> IdeResult<String> {
     use sha2::Digest;
     let mut f = std::fs::File::open(path)?;
     let mut hasher = sha2::Sha256::new();
-    std::io::copy(&mut f, &mut hasher)?;
+    let mut buffer = [0; 8192];
+    loop {
+        let read = match std::io::Read::read(&mut f, &mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -627,6 +638,16 @@ mod tests {
         assert_eq!(
             sha256_file(tmp.path()).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn sha256_of_file_streams_multiple_chunks() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), vec![b'a'; 8193]).unwrap();
+        assert_eq!(
+            sha256_file(tmp.path()).unwrap(),
+            "9c10c48d1f1d6618db88fde2c25409181c9201ed34ec6815d62bcf57c10d177b"
         );
     }
 }

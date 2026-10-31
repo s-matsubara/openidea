@@ -243,7 +243,7 @@ async function setLinked(root: string, poms: string[], linked: boolean) {
   if (useProject.getState().project?.root !== root) return;
   const settings = await commands.settingsGet();
   if (useProject.getState().project?.root !== root) return;
-  const maven = settings.languages.java?.maven;
+  const maven = settings.languages?.java?.maven;
   const unlinkedBefore = maven?.unlinkedProjects ?? [];
   const linkedBefore = maven?.linkedProjects ?? [];
   const known = new Set(useBuild.getState().model?.maven?.projects.map((p) => p.pom));

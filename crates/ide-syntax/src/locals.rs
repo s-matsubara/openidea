@@ -223,10 +223,10 @@ fn collect<'t>(
         if n.is_multiple_of(2048) {
             cx.check()?;
         }
-        if !q.accepts(m.pattern_index, m.captures) {
+        if !q.accepts(m.pattern_index, m.captures()) {
             continue;
         }
-        for c in m.captures {
+        for c in m.captures() {
             let node = c.node;
             let named = || name.is_none_or(|name| &text[node.byte_range()] == name);
             match q.roles[c.index as usize] {

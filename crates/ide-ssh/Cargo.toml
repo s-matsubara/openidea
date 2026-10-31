@@ -17,9 +17,9 @@ dirs.workspace = true
 uuid.workspace = true
 keyring.workspace = true
 keyring-core.workspace = true
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-config = "0.58.0"
-russh-sftp = "2.4"
+russh-sftp = "3.0"
 flate2 = "1"
 
 [features]

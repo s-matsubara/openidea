@@ -23,12 +23,12 @@ env:
 jobs:
   # Creates (or reuses) one draft release that every platform build uploads into.
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       release_id: ${{ steps.release.outputs.id }}
       official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - name: Tag matches app version
         run: |
@@ -62,7 +62,7 @@ jobs:
             echo "keys=$key" >> "$GITHUB_OUTPUT"
           fi
       - id: release
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const tag = process.env.TAG;
@@ -103,12 +103,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@v6
         with: { version: 11 }
-      - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
@@ -146,7 +146,7 @@ jobs:
           tagName: ${{ env.TAG }}
           args: --target ${{ matrix.target }}
           # The parallel builds would race on one latest.json; `updater-manifest` writes it once.
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
       # tauri-action notarizes the .app but not the DMG around it; notarize and
       # staple the DMG too, then replace the uploaded asset.
       - name: Notarize DMG
@@ -177,7 +177,7 @@ jobs:
           - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
@@ -279,9 +279,9 @@ jobs:
   # Fails when a platform is missing, so a release never ships a manifest without it.
   updater-manifest:
     needs: [create-release, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
@@ -335,9 +335,9 @@ jobs:
 
   publish:
     needs: [create-release, build, server, plugins, updater-manifest]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:

@@ -1,6 +1,7 @@
 //! Text decoding / encoding with BOM and charset detection, and atomic writes.
 
 use crate::{LoadedText, mtime_ms};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ide_core::{IdeError, IdeResult};
 use std::fs;
@@ -167,9 +168,9 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, &'static Encoding, bool, bool) {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_owned(), UTF_8, false, false);
     }
-    let mut detector = chardetng::EncodingDetector::new();
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Allow);
     detector.feed(bytes, true);
-    let enc = detector.guess(None, true);
+    let enc = detector.guess(None, Utf8Detection::Allow);
     let (text, _) = enc.decode_without_bom_handling(bytes);
     (text.into_owned(), enc, false, false)
 }
