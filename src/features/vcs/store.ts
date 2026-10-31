@@ -313,8 +313,10 @@ export function installVcsStore(): () => void {
   });
   const offKinds = useVcs.subscribe((s, prev) => {
     if (s.kinds !== prev.kinds) syncPathCapability();
+    if (s.jjRoots !== prev.jjRoots) setContext("vcsJjAvailable", s.jjRoots.length > 0);
   });
   syncPathCapability();
+  setContext("vcsJjAvailable", useVcs.getState().jjRoots.length > 0);
   const onProject = () => {
     const project = useProject.getState().project;
     const available = !!project?.isGit;
@@ -358,6 +360,7 @@ export function installVcsStore(): () => void {
     offPath();
     offKinds();
     setContext("vcsJjPath", false);
+    setContext("vcsJjAvailable", false);
     offSettings();
     clearTimeout(timer);
     unsubProject();

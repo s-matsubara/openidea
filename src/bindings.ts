@@ -402,8 +402,13 @@ export const commands = {
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
+	vcsJjHistoryFiles: (root: string, commit: string) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_jj_history_files", { root, commit })),
+	vcsJjHistoryFileDiff: (root: string, path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_history_file_diff", { root, path, commit })),
+	vcsJjHistory: (root: string, cursor: JjHistoryCursor | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+
 	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
 	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
+	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -3742,19 +3747,6 @@ export type JdkVendor = {
 	name: string,
 };
 
-export type JvmFilePresentation = {
-	path: string,
-	presentation: JvmPresentation,
-};
-
-export type JvmPresentation = {
-	kind: JvmTypeKind | null,
-	springBoot: boolean,
-	runnable: boolean,
-};
-
-export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
-
 /**  Draft identity: an immutable anchor plus the description the user started editing. */
 export type JjDescriptionEdit = {
 	commit: string,
@@ -3770,6 +3762,36 @@ export type JjFileDiff = {
 	beforeLabel: string,
 	afterLabel: string,
 };
+
+export type JjHistoryCommit = {
+	id: string,
+	changeId: string,
+	description: string,
+	parents: string[],
+	localBookmarks: string[],
+	remoteBookmarks: string[],
+	tags: string[],
+	author: string,
+	email: string,
+	timeMs: string,
+	workingCopy: boolean,
+};
+
+/**  A pinned operation and the oldest returned frontier, scoped to one workspace. */
+export type JjHistoryCursor = {
+	root: string,
+	operation: string,
+	seen: string[],
+};
+
+export type JjHistoryPage = {
+	commits: JjHistoryCommit[],
+	next: JjHistoryCursor | null,
+};
+
+/**  Log actions are separate from Git operations and accept full row identities only. */
+export type JjLogAction = { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "moveBookmark"; name: string } | { kind: "tag"; name: string };
+
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */
 	executable?: string,
@@ -3782,6 +3804,19 @@ export type JjWorkingCopy = {
 	description: string,
 	files: FileStatus[],
 };
+
+export type JvmFilePresentation = {
+	path: string,
+	presentation: JvmPresentation,
+};
+
+export type JvmPresentation = {
+	kind: JvmTypeKind | null,
+	springBoot: boolean,
+	runnable: boolean,
+};
+
+export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = {

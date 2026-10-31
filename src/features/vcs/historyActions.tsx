@@ -610,5 +610,7 @@ export function registerHistoryActions(): () => void {
       run: () => void showApplyPatch("clipboard"),
     },
   ];
-  return registerActions(actions);
+  return registerActions(
+    actions.map((a) => (a.id.startsWith("vcs.log.") ? { ...a, when: `(${a.when ?? VCS}) && !vcsJjHistory` } : a)),
+  );
 }
