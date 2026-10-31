@@ -282,13 +282,16 @@ export function registerVcsActions(): () => void {
       title: "Rollback…",
       category: "Git",
       icon: "undo",
-      when: FILE_VCS,
+      when: `(${FILE_VCS}) || (vcsJjPath && editorTextFocus)`,
       keywords: ["revert", "discard"],
       run: ({ arg }) => {
         const explicit = argPaths(arg);
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
-        if (!explicit?.length && ed?.view.hasFocus && isJjPath(ed.ctx.path)) return;
+        if (!explicit?.length && ed?.view.hasFocus && isJjPath(ed.ctx.path)) {
+          rollbackSelectedLines(ed.view);
+          return;
+        }
         if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
         const sel = useCommit.getState().selection;
         const paths = explicit?.length ? explicit : commitWindowFocused() && sel.length ? sel : undefined;

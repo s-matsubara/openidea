@@ -137,6 +137,12 @@ export function jjFileDiffData(path: string, pair: JjFileDiff): DiffData {
   };
 }
 
+/** Parent snapshot vs the live document; deleted files have no editable document. */
+export function jjWorkingDiffData(path: string, pair: JjFileDiff, deleted = false): DiffData {
+  const data = jjFileDiffData(path, pair);
+  return deleted ? data : { ...data, right: { type: "worktree", label: "Working copy @" } };
+}
+
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
 export function workingDiffData(path: string, line?: number): DiffData {
   const st = statusOf(path);

@@ -1,3 +1,6 @@
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { hunkField, setHunksEffect } from "../gutter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isJjPath } from "../store";
 import { registerVcsActions } from "../actions";
@@ -267,16 +270,32 @@ describe("status refresh", () => {
     }
   });
 
-  it("does not roll back a focused jj buffer even if the action is invoked directly", () => {
+  it("rolls back selected jj lines without falling through to Git operations", () => {
     const dispose = registerVcsActions();
-    const dispatch = vi.fn();
-    activeEditorMock.mockReturnValue({ ctx: { path: "/jj/file" }, view: { hasFocus: true, dispatch } });
+    const view = new EditorView({ state: EditorState.create({ doc: "new\nkeep\n", extensions: [hunkField] }) });
+    view.dispatch({
+      effects: setHunksEffect.of([
+        { kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "old\n" },
+      ]),
+    });
+    activeEditorMock.mockReturnValue({
+      ctx: { path: "/jj/file" },
+      view: {
+        get state() {
+          return view.state;
+        },
+        hasFocus: true,
+        dispatch: view.dispatch.bind(view),
+      },
+    });
     useVcs.setState({ kinds: { "/jj": "jj" } });
     try {
       const action = getAction("vcs.rollback")!;
       expect(() => action.run({} as Parameters<typeof action.run>[0])).not.toThrow();
-      expect(dispatch).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe("old\nkeep\n");
+      expect(evaluateWhen(action.when, { vcsAvailable: false, vcsJjPath: true, editorTextFocus: true })).toBe(true);
     } finally {
+      view.destroy();
       activeEditorMock.mockReset();
       dispose();
     }

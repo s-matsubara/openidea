@@ -50,7 +50,7 @@ import { moveToChangelist } from "./changelistsUi";
 import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { jjFileDiffData, openDiff, withChain, workingDiffData } from "./diffInput";
+import { jjWorkingDiffData, openDiff, withChain, workingDiffData } from "./diffInput";
 import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
@@ -159,7 +159,7 @@ export function CommitToolWindow() {
   );
 }
 
-/** Read-only @ display: deliberately has no Git action menus or inclusion controls. */
+/** @ display without Git action menus or inclusion controls. */
 export function JjWorkingCopies() {
   const [diffError, setDiffError] = useState<string | null>(null);
   const roots = useVcs((s) => s.jjRoots);
@@ -200,7 +200,11 @@ export function JjWorkingCopies() {
                   onActivate={(f) => {
                     setDiffError(null);
                     void call(commands.vcsJjFileDiff(f.path, root.workingCopy!.commitId))
-                      .then((pair) => openDiff(jjFileDiffData(f.path, pair)))
+                      .then((pair) => {
+                        const current = useVcs.getState().jjRoots.find((r) => r.root === root.root);
+                        if (current !== root) return;
+                        return openDiff(jjWorkingDiffData(f.path, pair, effectiveKind(f) === "deleted"));
+                      })
                       .catch((e) => setDiffError(`${f.relPath}: ${e instanceof Error ? e.message : String(e)}`));
                   }}
                   renderItem={(f) => {
