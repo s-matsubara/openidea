@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   mirror:
+    if: github.repository == 'l0ng-ai/openidea'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

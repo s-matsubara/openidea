@@ -347,6 +347,7 @@ pub enum UpdateSource {
     Cnb,
 }
 
+const UPSTREAM_GITHUB_ENDPOINT: &str = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json";
 const CNB_ENDPOINT: &str = "https://cnb.cool/l0ng-ai/openidea/-/releases/latest/download/latest.json";
 
 fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
@@ -362,9 +363,9 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either.
+/// The CNB mirror only serves upstream releases, signed with the upstream key.
 fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
-    if official.is_empty() {
+    if !official.iter().any(|url| url == UPSTREAM_GITHUB_ENDPOINT) {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -571,6 +572,10 @@ mod tests {
         assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
         assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+        let fork = "https://github.com/s-matsubara/openidea/releases/latest/download/latest.json".to_string();
+        for source in [UpdateSource::Github, UpdateSource::Cnb] {
+            assert_eq!(source_endpoints(vec![fork.clone()], source), [fork.clone()]);
+        }
     }
 
     #[test]
