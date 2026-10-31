@@ -64,6 +64,53 @@ pub async fn vcs_jj_restore_files(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_log_action(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    commit: String,
+    change: String,
+    action: ide_vcs::JjLogAction,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_log_action(&state.host, window.label(), root, commit, change, action).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    cursor: Option<JjHistoryCursor>,
+) -> IdeResult<JjHistoryPage> {
+    ide_host::ops::vcs::vcs_jj_history(&state.host, window.label(), root, cursor).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_files(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::vcs_jj_history_files(&state.host, window.label(), root, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_history_file_diff(
+    window: Window,
+    state: State<'_, AppState>,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    ide_host::ops::vcs::vcs_jj_history_file_diff(&state.host, window.label(), root, path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_file_diff(
     window: Window,
     state: State<'_, AppState>,
