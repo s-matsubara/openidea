@@ -55,6 +55,7 @@
 /* Tabs' trailing slot may shrink to 0; keep the action buttons whole. */
 .tabs > :has(> .tabActions) {
   flex: none;
+  margin-inline-start: auto;
 }
 .tabActions {
   flex: none;

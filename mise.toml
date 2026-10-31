@@ -1,0 +1,49 @@
+[tasks.dev]
+description = "Run Application"
+run = "pnpm tauri dev"
+
+[tasks.version]
+description = "Update package version"
+usage = 'arg "<version>" help="New version"'
+run = '''
+tmp=$(mktemp)
+
+file="./src-tauri/tauri.conf.json"
+sed -E "s/\"version\": \"[^\"]+\"/\"version\": \"$usage_version\"/" "$file" > "$tmp" && cat "$tmp" > "$file"
+rm -f "$tmp"
+
+file="./package.json"
+sed -E "s/\"version\": \"[^\"]+\"/\"version\": \"$usage_version\"/" "$file" > "$tmp" && cat "$tmp" > "$file"
+rm -f "$tmp"
+
+file="./Cargo.toml"
+sed -E "s/^(version[[:space:]]*=[[:space:]]*)\"[^\"]+\"/\\1\"$usage_version\"/" "$file" > "$tmp" && cat "$tmp" > "$file"
+rm -f "$tmp"
+
+cargo update --workspace
+'''
+
+[tasks.build]
+run = '''
+pnpm install --frozen-lockfile
+pnpm tauri build --bundles app --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
+'''
+
+[tasks.open]
+run = '''
+open target/release/bundle/macos/OpenIDEA.app
+'''
+
+[tasks.update]
+run = '''
+pnpm update --latest
+cargo upgrade --incompatible allow --pinned allow
+cargo update
+'''
+
+[tasks.clean]
+run = '''
+rm -fR ./target/debug/build
+rm -fR ./target/debug/deps
+rm -fR ./target/debug/incremental
+'''
