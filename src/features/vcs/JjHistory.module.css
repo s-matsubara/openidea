@@ -1,0 +1,73 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.rootLabel {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  align-items: center;
+}
+.rootLabel select {
+  min-width: 0;
+  max-width: 100%;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  white-space: nowrap;
+  cursor: default;
+  padding-right: 8px;
+}
+.row > svg {
+  flex-shrink: 0;
+}
+.selected {
+  --log-row-bg: var(--bg-tree-selected-inactive);
+  background: var(--log-row-bg);
+}
+.subject {
+  min-width: 80px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bookmarks {
+  color: var(--text-link);
+}
+.change {
+  font-family: var(--font-mono);
+}
+.details {
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.details dd {
+  margin: 0 0 8px;
+}
+.details dt {
+  color: var(--text-muted);
+}
+.description {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.list:focus-within .selected {
+  --log-row-bg: var(--bg-tree-selected);
+}
