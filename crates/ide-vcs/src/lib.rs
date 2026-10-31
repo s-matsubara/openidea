@@ -467,7 +467,10 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
-pub use jj::{JjDescriptionEdit, JjFileDiff, JjWorkingCopy, detected_jj_executable, jj_version, set_jj_executable};
+pub use jj::{
+    JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjWorkingCopy,
+    detected_jj_executable, jj_version, set_jj_executable,
+};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
@@ -566,6 +569,18 @@ impl Repo {
             ))
         }
     }
+    pub fn jj_log_action(&self, commit: &str, change: &str, action: &JjLogAction) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::log_action(self, commit, change, action)
+    }
+
+    /// Read-only Jujutsu history pinned to one operation across pages.
+    pub fn jj_history(&self, cursor: Option<jj::JjHistoryCursor>, limit: usize) -> IdeResult<jj::JjHistoryPage> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history(self, cursor, limit)
+    }
     /// Read-only metadata and file-status snapshot of the Jujutsu working-copy commit `@`.
     pub fn jj_working_copy(&self) -> IdeResult<JjWorkingCopy> {
         self.require_execution_allowed()?;
@@ -591,6 +606,18 @@ impl Repo {
     }
 
     /// Read-only immutable content pair for a file in the selected @ snapshot.
+    pub fn jj_history_files(&self, commit: &str) -> IdeResult<Vec<FileStatus>> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_files(self, commit)
+    }
+
+    pub fn jj_history_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
+        self.require_execution_allowed()?;
+        let _scope = crate::ExecutionScope::enter(true);
+        jj::history_file_diff(self, path, commit)
+    }
+
     pub fn jj_file_diff(&self, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
         self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);

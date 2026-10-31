@@ -20,7 +20,7 @@ import {
 import { logOptions } from "./logOptions";
 import { goToRef, updateLogOptions } from "./logStore";
 
-const VCS = "vcsAvailable";
+const VCS = "vcsAvailable && !vcsJjHistory";
 
 /** A ref selected in the Branches pane. */
 export interface BranchTarget {
