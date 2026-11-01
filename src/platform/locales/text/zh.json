@@ -5350,5 +5350,15 @@
   "Searching history…": "正在搜索历史…",
   "Local bookmarks": "本地书签",
   "Remote bookmarks": "远程书签",
-  "Current working copy": "当前工作副本"
+  "Current working copy": "当前工作副本",
+  "Workspaces": "工作区",
+  "Workspace name:": "工作区名称：",
+  "Base change or revision:": "基础变更或修订：",
+  "Base change or revision": "基础变更或修订",
+  "Jujutsu repository": "Jujutsu 仓库",
+  " (current)": "（当前）",
+  "Workspace path unavailable": "工作区路径不可用",
+  "Workspace changed; refresh the list": "工作区已更改；请刷新列表",
+  "Remove Workspace": "移除工作区",
+  "Remove workspace {name} at {path}? Its folder and all contents are deleted. Jujutsu snapshots the working copy before removal.": "是否移除位于 {path} 的工作区 {name}？其文件夹及全部内容将被删除。Jujutsu 会在移除前保存工作副本快照。"
 }

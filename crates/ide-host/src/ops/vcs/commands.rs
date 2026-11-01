@@ -344,6 +344,82 @@ pub async fn vcs_jj_log_action(
     .await
 }
 
+/// Workspace commands always execute against an exact trusted project root.
+pub async fn vcs_jj_workspaces(host: &Host, window: &str, root: PathBuf) -> IdeResult<Vec<JjWorkspace>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_workspaces()
+    })
+    .await
+}
+
+pub async fn vcs_jj_add_workspace(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    name: String,
+    path: PathBuf,
+    revision: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_add_workspace(&name, &path, &revision)
+    })
+    .await
+}
+
+pub async fn vcs_jj_remove_workspace(host: &Host, window: &str, root: PathBuf, expected: JjWorkspace) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let projects = host.projects();
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        let target = expected
+            .path
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace path is unavailable"))?
+            .canonicalize()
+            .map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+        for open in &projects {
+            if std::iter::once(open.root.clone())
+                .chain(open.content_roots())
+                .any(|root| root.starts_with(&target) || target.starts_with(&root))
+            {
+                return Err(ide_core::IdeError::invalid("Close the open or attached workspace before removing it"));
+            }
+            for doc in open.documents.open_documents() {
+                if open.documents.snapshot(doc)?.path.starts_with(&target) {
+                    return Err(ide_core::IdeError::invalid("Close workspace documents before removing it"));
+                }
+            }
+        }
+        repo.jj_remove_workspace(&expected)
+    })
+    .await
+}
+
 /// History requires an exact discovered root; never fall back to the primary repository.
 pub async fn vcs_jj_history(
     host: &Host,
@@ -1167,6 +1243,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_jj_log_action", |c| async move {
         vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
             .await
+    });
+    d.add("vcs_jj_workspaces", |c| async move { vcs_jj_workspaces(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_add_workspace", |c| async move {
+        vcs_jj_add_workspace(&c.host, &c.window, c.arg("root")?, c.arg("name")?, c.arg("path")?, c.arg("revision")?)
+            .await
+    });
+    d.add("vcs_jj_remove_workspace", |c| async move {
+        vcs_jj_remove_workspace(&c.host, &c.window, c.arg("root")?, c.arg("expected")?).await
     });
     d.add(
         "vcs_jj_history",

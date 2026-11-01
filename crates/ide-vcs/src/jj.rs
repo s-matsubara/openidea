@@ -1478,3 +1478,187 @@ mod log_action_tests {
         assert_ne!(row(&repo, &exe).change_id, target.change_id);
     }
 }
+
+/// Registered workspace metadata. Older jj registrations may have no recorded root.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjWorkspace {
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub change_id: String,
+    pub commit_id: String,
+    #[serde(default)]
+    pub current: bool,
+}
+
+fn workspace_command(repo: &crate::Repo, args: &[&str]) -> IdeResult<String> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Workspaces require a Jujutsu repository"));
+    }
+    let mut cmd = Command::new(executable(None)?);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager"])
+        .args(args)
+        .stdin(Stdio::null())
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    String::from_utf8(out.stdout).map_err(|_| IdeError::invalid("invalid jj workspace output"))
+}
+
+pub(crate) fn workspaces(repo: &crate::Repo) -> IdeResult<Vec<JjWorkspace>> {
+    // root() is optional, and is only supported by jj versions which record workspace paths.
+    let template = r#"json({"name" => name, "path" => root, "changeId" => target.change_id(), "commitId" => target.commit_id()}) ++ "\n""#;
+    let output = workspace_command(repo, &["--ignore-working-copy", "workspace", "list", "-T", template])?;
+    let root = repo.root().canonicalize().map_err(|e| IdeError::invalid(e.to_string()))?;
+    output
+        .lines()
+        .map(|line| {
+            let mut row: JjWorkspace =
+                serde_json::from_str(line).map_err(|e| IdeError::invalid(format!("invalid jj workspace JSON: {e}")))?;
+            row.current = row.path.as_ref().and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == root);
+            Ok(row)
+        })
+        .collect()
+}
+
+fn valid_workspace_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        && !name.starts_with('-')
+}
+
+pub(crate) fn add_workspace(repo: &crate::Repo, name: &str, path: &Path, revision: &str) -> IdeResult<()> {
+    if !valid_workspace_name(name) || revision.trim().is_empty() || revision.contains('\0') {
+        return Err(IdeError::invalid("Enter a workspace name and base revision"));
+    }
+    if workspaces(repo)?.iter().any(|w| w.name == name) {
+        return Err(IdeError::invalid("Workspace name already exists"));
+    }
+    if !path.is_absolute()
+        || std::fs::symlink_metadata(path).is_ok()
+        || path.file_name().is_none()
+        || path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(IdeError::invalid("Choose a new absolute workspace folder"));
+    }
+    let parent = path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .ok_or_else(|| IdeError::invalid("Workspace parent folder must exist"))?;
+    let target = parent.join(path.file_name().unwrap());
+    let root = repo.root().canonicalize().map_err(|e| IdeError::invalid(e.to_string()))?;
+    if target.starts_with(&root) || root.starts_with(&target) {
+        return Err(IdeError::invalid("Workspace folder must be outside the current workspace"));
+    }
+    let path = target.to_str().ok_or_else(|| IdeError::invalid("Workspace path is not UTF-8"))?;
+    workspace_command(repo, &["workspace", "add", "--name", name, "--revision", revision, "--", path])?;
+    Ok(())
+}
+
+fn workspace_repository(root: &Path) -> IdeResult<PathBuf> {
+    let marker = root.join(".jj/repo");
+    let path = if marker.is_file() {
+        let pointer = std::fs::read_to_string(&marker).map_err(|e| IdeError::invalid(e.to_string()))?;
+        let pointer = PathBuf::from(pointer.trim());
+        if pointer.is_absolute() { pointer } else { marker.parent().unwrap().join(pointer) }
+    } else {
+        marker
+    };
+    path.canonicalize().map_err(|e| IdeError::invalid(format!("Workspace repository is unavailable: {e}")))
+}
+
+pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> IdeResult<()> {
+    if !valid_workspace_name(&expected.name) {
+        return Err(IdeError::invalid("Invalid workspace name"));
+    }
+    let rows = workspaces(repo)?;
+    let row = rows
+        .iter()
+        .find(|r| r.name == expected.name)
+        .ok_or_else(|| IdeError::invalid("Workspace no longer exists; refresh"))?;
+    if row.current || row.path.is_none() || row != expected {
+        return Err(IdeError::invalid("Workspace is current, unavailable or changed; refresh"));
+    }
+    let path = row.path.as_ref().unwrap();
+    let target = path.canonicalize().map_err(|_| IdeError::invalid("Workspace folder is unavailable; refresh"))?;
+    if &target != path || target.join(".jj/repo").is_dir() {
+        return Err(IdeError::invalid("Cannot remove the main workspace or a changed workspace path"));
+    }
+    if workspace_repository(repo.root())? != workspace_repository(&target)? {
+        return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
+    }
+    let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    if target_repo.root() != target
+        || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current && w.commit_id == row.commit_id)
+    {
+        return Err(IdeError::invalid("Workspace identity changed; refresh"));
+    }
+    // Delegate snapshotting and deletion to jj. Never force or manually delete files.
+    workspace_command(repo, &["workspace", "remove", "--", &expected.name])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    #[test]
+    fn workspace_lifecycle_snapshots_removal_and_discovers_secondary_root() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("main");
+        let out = Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap();
+        assert!(out.status.success());
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
+        let rows = repo.jj_workspaces().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].current);
+        assert_eq!(rows[0].path.as_ref(), Some(&root));
+        assert!(repo.jj_remove_workspace(&rows[0]).is_err());
+        let target = base.join("secondary with spaces");
+        for name in ["", "--help", "../escape", "two words"] {
+            assert!(repo.jj_add_workspace(name, &target, "@").is_err());
+        }
+        assert!(repo.jj_add_workspace("other", &root.join("nested"), "@").is_err());
+        assert!(repo.jj_add_workspace("other", &root, "@").is_err());
+        assert!(repo.jj_add_workspace("other", &target, "--help").is_err());
+        assert!(!target.exists());
+        #[cfg(unix)]
+        {
+            let link = base.join("dangling");
+            std::os::unix::fs::symlink(base.join("missing"), &link).unwrap();
+            assert!(repo.jj_add_workspace("other", &link, "@").is_err());
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        }
+        repo.jj_add_workspace("other", &target, "@").unwrap();
+        assert!(target.join(".jj/repo").is_file());
+        let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        assert_eq!(secondary.root(), target);
+        assert_eq!(secondary.kind(), crate::VcsKind::Jj);
+        assert!(secondary.jj_workspaces().unwrap().iter().any(|w| w.name == "other" && w.current));
+        let main = secondary.jj_workspaces().unwrap().into_iter().find(|w| w.name == "default").unwrap();
+        assert!(secondary.jj_remove_workspace(&main).is_err());
+        assert!(root.exists());
+        assert!(repo.jj_add_workspace("other", &base.join("duplicate"), "@").is_err());
+        let row = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        let mut stale = row.clone();
+        stale.commit_id = "stale".into();
+        assert!(repo.jj_remove_workspace(&stale).is_err());
+        std::fs::write(target.join("unsnapshotted.txt"), "keep my data").unwrap();
+        repo.jj_remove_workspace(&row).unwrap();
+        assert!(!target.exists());
+        let saved = workspace_command(&repo, &["file", "show", "-r", &row.change_id, "unsnapshotted.txt"]);
+        assert_eq!(saved.unwrap(), "keep my data");
+        assert_eq!(repo.jj_workspaces().unwrap().len(), 1);
+        assert!(repo.jj_remove_workspace(&row).is_err());
+        repo.set_execution_allowed(false);
+        assert!(repo.jj_workspaces().is_err());
+    }
+}
