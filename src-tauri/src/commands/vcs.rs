@@ -796,3 +796,35 @@ pub async fn vcs_compare_paths(
 ) -> IdeResult<ide_vcs::CompareResult> {
     ide_host::ops::vcs::vcs_compare_paths(&state.host, window.label(), paths, revision, repositories, request).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_workspaces(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<Vec<ide_vcs::JjWorkspace>> {
+    ide_host::ops::vcs::vcs_jj_workspaces(&state.host, window.label(), root).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_add_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    name: String,
+    path: PathBuf,
+    revision: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_add_workspace(&state.host, window.label(), root, name, path, revision).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_remove_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    expected: ide_vcs::JjWorkspace,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_remove_workspace(&state.host, window.label(), root, expected).await
+}

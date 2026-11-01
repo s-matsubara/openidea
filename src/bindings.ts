@@ -450,6 +450,9 @@ export const commands = {
 	operation: string,
 	seen: string[],
 } | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
+	vcsJjAddWorkspace: (root: string, name: string, path: string, revision: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_add_workspace", { root, name, path, revision })),
+	vcsJjRemoveWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_remove_workspace", { root, expected })),
 	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
 	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
 	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
@@ -3954,6 +3957,15 @@ export type JjWorkingCopy = {
 	commitId: string,
 	description: string,
 	files: FileStatus[],
+};
+
+/**  Registered workspace metadata. Older jj registrations may have no recorded root. */
+export type JjWorkspace = {
+	name: string,
+	path: string | null,
+	changeId: string,
+	commitId: string,
+	current?: boolean,
 };
 
 export type JvmFilePresentation = {

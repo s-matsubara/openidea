@@ -564,3 +564,99 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
     assert_eq!(std::fs::read_to_string(root.join("same.txt")).unwrap(), "after");
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_workspaces_require_trust_and_exact_project_root() {
+    let Some(exe) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
+    assert!(
+        Command::new(&exe)
+            .current_dir(&root)
+            .args(["config", "set", "--repo", "signing.behavior", "drop"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_project("restricted", &root).unwrap();
+    assert!(vcs::vcs_jj_workspaces(&host, "restricted", root.clone()).await.is_err());
+    assert!(
+        vcs::vcs_jj_add_workspace(&host, "restricted", root.clone(), "other".into(), base.join("other"), "@".into())
+            .await
+            .is_err()
+    );
+    let unavailable = ide_vcs::JjWorkspace {
+        name: "other".into(),
+        path: Some(base.join("other")),
+        change_id: String::new(),
+        commit_id: String::new(),
+        current: false,
+    };
+    assert!(vcs::vcs_jj_remove_workspace(&host, "restricted", root.clone(), unavailable).await.is_err());
+    assert!(!base.join("other").exists());
+    host.close_project("restricted");
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    assert_eq!(vcs::vcs_jj_workspaces(&host, "main", root.clone()).await.unwrap().len(), 1);
+    for wrong in [base.clone(), root.join(".jj"), base.join("outside")] {
+        assert!(vcs::vcs_jj_workspaces(&host, "main", wrong.clone()).await.is_err());
+        assert!(
+            vcs::vcs_jj_add_workspace(&host, "main", wrong, "other".into(), base.join("other"), "@".into())
+                .await
+                .is_err()
+        );
+    }
+    let target = base.join("other");
+    vcs::vcs_jj_add_workspace(&host, "main", root.clone(), "other".into(), target.clone(), "@".into()).await.unwrap();
+    let row = vcs::vcs_jj_workspaces(&host, "main", root.clone())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.name == "other")
+        .unwrap();
+    assert!(vcs::vcs_jj_remove_workspace(&host, "main", root.join(".jj"), row.clone()).await.is_err());
+    host.trust.decide(&target, true, false).unwrap();
+    host.open_project("other", &target).unwrap();
+    assert!(
+        vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Close the open or attached workspace")
+    );
+    assert!(target.exists());
+    host.close_project("other");
+    let project = host.project("main").unwrap();
+    let file = target.join("keep.txt");
+    std::fs::write(&file, "keep").unwrap();
+    let doc = project.documents.open(&file).unwrap();
+    project
+        .documents
+        .edit(doc.id, doc.version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved".into() }] })
+        .unwrap();
+    assert!(
+        vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Close workspace documents")
+    );
+    assert!(target.exists());
+    project.documents.close(doc.id);
+    vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row).await.unwrap();
+    assert!(!target.exists());
+    host.close_project("main");
+}
