@@ -97,6 +97,7 @@ import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { gitTabs, shownTab } from "./gitTabs";
 import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
+import { JjWorkspacesPanel } from "./jjWorkspaces";
 import { WorktreesPanel } from "./gitMenuDialogs";
 
 const ROW = 26;
@@ -113,7 +114,12 @@ function useGitTabs() {
   const jj = useVcs((s) => s.jjRoots.length > 0);
   const tabs = [
     ...(available ? gitTabs({ modal, combine, tab, logTabs, ...counts }) : []),
-    ...(jj ? [{ id: "jj", label: "Jujutsu" }] : []),
+    ...(jj
+      ? [
+          { id: "jj", label: "Jujutsu" },
+          { id: "jj-workspaces", label: "Workspaces" },
+        ]
+      : []),
   ];
   const shown = tabs.some((t) => t.id === tab) ? tab : available ? shownTab(tab, tabs, combine) : "jj";
   return { tabs, shown };
@@ -155,7 +161,9 @@ export function GitToolWindow() {
       id={`openidea-git-panel-${shown}`}
       aria-labelledby={`openidea-git-tab-${shown}`}
     >
-      {shown === "jj" ? (
+      {shown === "jj-workspaces" ? (
+        <JjWorkspacesPanel className={styles.worktrees} listClassName={styles.worktreeList} />
+      ) : shown === "jj" ? (
         <JjHistory />
       ) : shown === "changes" ? (
         <LocalChangesView />

@@ -2,10 +2,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { PushCommitList, PushDialogFrame } from "./pushDialog";
+import { getContext } from "@/platform/context";
+import { JjPushDialog } from "./jjPush";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
+import { Checkbox, Dialog, Input, Select, Spinner, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
@@ -117,6 +120,11 @@ export interface PushTarget {
 
 export async function showPushDialog(target: PushTarget = {}) {
   await refreshNow();
+  const state = useVcs.getState();
+  if (!target.branch && !target.revision && state.jjRoots.length && (!state.available || getContext().vcsJjPath)) {
+    openDialog((close) => <JjPushDialog onClose={close} />);
+    return;
+  }
   // Several repositories: IDEA's dialog lists each one with outgoing commits.
   const multi = useVcs.getState().roots.length > 1 && !target.branch && !target.revision;
   openDialog((close) => (multi ? <MultiPushDialog onClose={close} /> : <PushDialog target={target} onClose={close} />));
@@ -436,12 +444,40 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   };
 
   return (
-    <Dialog
+    <PushDialogFrame
       open
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
       width={commits?.length ? 860 : 620}
-      resizable="both"
+      header={
+        <>
+          {!head
+            ? tx("HEAD is detached; check out a branch to push.")
+            : trackedBranch
+              ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} → ${remote ?? trackedRemote ?? ""}/`
+              : revision
+                ? tx`${head} has no upstream: commits up to ${revision.slice(0, 8)} will be pushed as a new branch:`
+                : tx`${head} has no upstream: it will be pushed as a new branch and tracked:`}
+          {head && remotes.length > 1 && (
+            <Select<string>
+              value={remote ?? ""}
+              aria-label="Remote"
+              onChange={setRemote}
+              options={remotes.map((r) => ({ value: r, label: r }))}
+            />
+          )}
+          {head && (
+            <Input
+              aria-label="Target branch"
+              mono
+              value={targetName}
+              onChange={(e) => setTargetName(e.target.value)}
+              className={styles.targetInput}
+            />
+          )}
+          {retarget && <span className={styles.hint}> {tx("New")}</span>}
+        </>
+      }
       footerStart={
         <>
           <span title={protectedTarget ? `Force push to protected branch '${target}' is prohibited` : undefined}>
@@ -486,68 +522,20 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {!head
-          ? tx("HEAD is detached; check out a branch to push.")
-          : trackedBranch
-            ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} → ${remote ?? trackedRemote ?? ""}/`
-            : revision
-              ? tx`${head} has no upstream: commits up to ${revision.slice(0, 8)} will be pushed as a new branch:`
-              : tx`${head} has no upstream: it will be pushed as a new branch and tracked:`}
-        {head && remotes.length > 1 && (
-          <Select<string>
-            value={remote ?? ""}
-            aria-label="Remote"
-            onChange={setRemote}
-            options={remotes.map((r) => ({ value: r, label: r }))}
-          />
-        )}
-        {head && (
-          <Input
-            aria-label="Target branch"
-            mono
-            value={targetName}
-            onChange={(e) => setTargetName(e.target.value)}
-            className={styles.targetInput}
-          />
-        )}
-        {retarget && <span className={styles.hint}> {tx("New")}</span>}
-      </div>
-      <div className={styles.pushListWrap}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !commits ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
-          </div>
-        ) : (
-          <List
-            items={commits}
-            getKey={(c) => c.id}
-            activeIndex={shownCommit}
-            onActiveChange={setShownCommit}
-            rowHeight={22}
-            aria-label="Outgoing commits"
-            className={styles.boxList}
-            empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
-            renderItem={(c) => (
-              <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                <span className={styles.commitHash}>{c.shortId}</span>
-                <span className={styles.commitSubject}>{c.summary}</span>
-                <span className={styles.commitMeta}>{c.author}</span>
-                <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
-              </span>
-            )}
-          />
-        )}
-      </div>
+      <PushCommitList
+        commits={commits}
+        error={error}
+        emptyText={upstream ? tx("Everything is up to date") : tx("No commits")}
+        activeIndex={shownCommit}
+        onActiveChange={setShownCommit}
+      />
       <PushChanges
         key={pushChangesKey(repo, shownCommits)}
         repo={repo}
         commits={shownCommits}
         onShowAll={shownCommit >= 0 && (commits?.length ?? 0) > 1 ? () => setShownCommit(-1) : undefined}
       />
-    </Dialog>
+    </PushDialogFrame>
   );
 }
 
