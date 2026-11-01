@@ -344,6 +344,168 @@ pub async fn vcs_jj_log_action(
     .await
 }
 
+pub async fn vcs_jj_push_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPushOptions> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push_options()
+    })
+    .await
+}
+
+pub async fn vcs_jj_push(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    request: ide_vcs::JjPushRequest,
+) -> IdeResult<ide_vcs::JjPushPreview> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push(&request)
+    })
+    .await
+}
+
+/// Workspace commands always execute against an exact trusted project root.
+pub async fn vcs_jj_workspaces(host: &Host, window: &str, root: PathBuf) -> IdeResult<Vec<JjWorkspace>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_workspaces()
+    })
+    .await
+}
+
+pub async fn vcs_jj_add_workspace(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    name: String,
+    path: PathBuf,
+    revision: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_add_workspace(&name, &path, &revision)
+    })
+    .await
+}
+
+/// Explicit stale recovery may update files in a secondary workspace outside project roots.
+pub async fn vcs_jj_update_workspace(host: &Host, window: &str, root: PathBuf, expected: JjWorkspace) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let projects = host.projects();
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        let target = expected
+            .path
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace path is unavailable"))?
+            .canonicalize()
+            .map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+        for open in &projects {
+            for doc in open.documents.open_documents() {
+                let info = open.documents.snapshot(doc)?;
+                if info.path.starts_with(&target) && open.documents.is_dirty(doc)? {
+                    return Err(ide_core::IdeError::invalid(
+                        "Save unsaved workspace documents before updating the workspace",
+                    ));
+                }
+            }
+        }
+        let result = repo.jj_update_workspace(&expected);
+        // jj can update files before reporting an error; synchronize clean buffers either way.
+        for open in &projects {
+            let paths: Vec<_> = open
+                .documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|doc| open.documents.snapshot(doc).ok().map(|info| info.path.to_path_buf()))
+                .filter(|path| path.starts_with(&target))
+                .collect();
+            open.documents.on_disk_changed(&paths);
+            if !paths.is_empty() || open.repos().all().iter().any(|r| r.root() == root || r.root() == target) {
+                open.sink.emit(ide_core::IdeEvent::VcsChanged { root: target.clone().into() });
+            }
+        }
+        result
+    })
+    .await
+}
+
+pub async fn vcs_jj_remove_workspace(host: &Host, window: &str, root: PathBuf, expected: JjWorkspace) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let projects = host.projects();
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        let target = expected
+            .path
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace path is unavailable"))?
+            .canonicalize()
+            .map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+        for open in &projects {
+            if std::iter::once(open.root.clone())
+                .chain(open.content_roots())
+                .any(|root| root.starts_with(&target) || target.starts_with(&root))
+            {
+                return Err(ide_core::IdeError::invalid("Close the open or attached workspace before removing it"));
+            }
+            for doc in open.documents.open_documents() {
+                if open.documents.snapshot(doc)?.path.starts_with(&target) {
+                    return Err(ide_core::IdeError::invalid("Close workspace documents before removing it"));
+                }
+            }
+        }
+        repo.jj_remove_workspace(&expected)
+    })
+    .await
+}
+
 /// History requires an exact discovered root; never fall back to the primary repository.
 pub async fn vcs_jj_history(
     host: &Host,
@@ -1238,6 +1400,19 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_jj_log_action", |c| async move {
         vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
             .await
+    });
+    d.add("vcs_jj_push_options", |c| async move { vcs_jj_push_options(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_push", |c| async move { vcs_jj_push(&c.host, &c.window, c.arg("root")?, c.arg("request")?).await });
+    d.add("vcs_jj_workspaces", |c| async move { vcs_jj_workspaces(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_add_workspace", |c| async move {
+        vcs_jj_add_workspace(&c.host, &c.window, c.arg("root")?, c.arg("name")?, c.arg("path")?, c.arg("revision")?)
+            .await
+    });
+    d.add("vcs_jj_update_workspace", |c| async move {
+        vcs_jj_update_workspace(&c.host, &c.window, c.arg("root")?, c.arg("expected")?).await
+    });
+    d.add("vcs_jj_remove_workspace", |c| async move {
+        vcs_jj_remove_workspace(&c.host, &c.window, c.arg("root")?, c.arg("expected")?).await
     });
     d.add(
         "vcs_jj_history",

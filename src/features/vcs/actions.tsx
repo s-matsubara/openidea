@@ -1,3 +1,4 @@
+import { JjPushDialog } from "./jjPush";
 import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
@@ -201,7 +202,7 @@ export function registerVcsActions(): () => void {
       title: "Push…",
       category: "Git",
       icon: "git-push",
-      when: VCS,
+      when: "vcsAvailable || vcsJjAvailable",
       run: ({ arg }) => void showPushDialog(arg && typeof arg === "object" ? (arg as PushTarget) : {}),
     },
     {
@@ -431,6 +432,14 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       run: () => void checkoutRevision(),
+    },
+    {
+      id: "vcs.jjPush",
+      title: "Push Jujutsu Bookmarks or Tags…",
+      category: "Version Control",
+      icon: "git-push",
+      when: "vcsJjAvailable",
+      run: () => openDialog((close) => <JjPushDialog onClose={close} />),
     },
     {
       id: "vcs.showJjHistory",
