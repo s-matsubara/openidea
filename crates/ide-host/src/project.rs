@@ -263,7 +263,7 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
-        let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
+        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(&settings.effective(), &root))?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -614,16 +614,30 @@ fn light_watcher(
 fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStore, sink: &SharedSink) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
-    let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root));
+    let roots = repository_roots(&settings.effective(), root);
     match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
+        Ok(found) => apply_repository_scan(root, repos, settings, sink, &roots, found),
         Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// A scan started before detach must not overwrite a newer content-root scan.
+fn apply_repository_scan(
+    root: &Path,
+    repos: &RwLock<Repos>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    scanned_roots: &[PathBuf],
+    found: Repos,
+) {
+    let mut current = repos.write();
+    if repository_roots(&settings.effective(), root) != scanned_roots {
+        return;
+    }
+    if found.roots() != current.roots() {
+        *current = found;
+        drop(current);
+        sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
     }
 }
 
@@ -912,6 +926,19 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
 /// A workspace uses its root only for state, never as indexed content.
 fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
+}
+
+/// App workspace containers own state; only their members participate in VCS discovery.
+/// Ordinary project folders still discover their enclosing repository.
+fn repository_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    match ide_workspace::workspace::Workspace::load(root) {
+        Ok(Some(workspace)) => return workspace.projects,
+        Err(_) => return Vec::new(), // A damaged state manifest is never a content folder.
+        Ok(None) => {}
+    }
+    let mut roots = vec![root.to_path_buf()];
+    roots.extend(content_roots(settings, root));
+    roots
 }
 
 /// Workspace members in manifest order, or extra Project Structure directories.
