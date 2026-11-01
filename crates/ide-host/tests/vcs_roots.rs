@@ -564,3 +564,188 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
     assert_eq!(std::fs::read_to_string(root.join("same.txt")).unwrap(), "after");
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_workspaces_require_trust_and_exact_project_root() {
+    let Some(exe) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
+    assert!(
+        Command::new(&exe)
+            .current_dir(&root)
+            .args(["config", "set", "--repo", "signing.behavior", "drop"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_project("restricted", &root).unwrap();
+    assert!(vcs::vcs_jj_workspaces(&host, "restricted", root.clone()).await.is_err());
+    let push_request = ide_vcs::JjPushRequest {
+        bookmarks: vec!["main".into()],
+        tags: vec![],
+        all_tags: false,
+        remote: "origin".into(),
+        review: None,
+    };
+    assert!(vcs::vcs_jj_push_options(&host, "restricted", root.clone()).await.is_err());
+    assert!(vcs::vcs_jj_push(&host, "restricted", root.clone(), push_request.clone()).await.is_err());
+    assert!(
+        vcs::vcs_jj_add_workspace(&host, "restricted", root.clone(), "other".into(), base.join("other"), "@".into())
+            .await
+            .is_err()
+    );
+    let unavailable = ide_vcs::JjWorkspace {
+        name: "other".into(),
+        path: Some(base.join("other")),
+        change_id: String::new(),
+        commit_id: String::new(),
+        current: false,
+    };
+    assert!(vcs::vcs_jj_remove_workspace(&host, "restricted", root.clone(), unavailable).await.is_err());
+    assert!(!base.join("other").exists());
+    host.close_project("restricted");
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    assert_eq!(vcs::vcs_jj_workspaces(&host, "main", root.clone()).await.unwrap().len(), 1);
+    for wrong in [base.clone(), root.join(".jj"), base.join("outside")] {
+        assert!(vcs::vcs_jj_workspaces(&host, "main", wrong.clone()).await.is_err());
+        assert!(vcs::vcs_jj_push_options(&host, "main", wrong.clone()).await.is_err());
+        assert!(vcs::vcs_jj_push(&host, "main", wrong.clone(), push_request.clone()).await.is_err());
+        assert!(
+            vcs::vcs_jj_add_workspace(&host, "main", wrong, "other".into(), base.join("other"), "@".into())
+                .await
+                .is_err()
+        );
+    }
+    let target = base.join("other");
+    vcs::vcs_jj_add_workspace(&host, "main", root.clone(), "other".into(), target.clone(), "@".into()).await.unwrap();
+    let row = vcs::vcs_jj_workspaces(&host, "main", root.clone())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.name == "other")
+        .unwrap();
+    assert!(vcs::vcs_jj_remove_workspace(&host, "main", root.join(".jj"), row.clone()).await.is_err());
+    host.trust.decide(&target, true, false).unwrap();
+    host.open_project("other", &target).unwrap();
+    assert!(
+        vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Close the open or attached workspace")
+    );
+    assert!(target.exists());
+    host.close_project("other");
+    let project = host.project("main").unwrap();
+    let file = target.join("keep.txt");
+    std::fs::write(&file, "keep").unwrap();
+    let doc = project.documents.open(&file).unwrap();
+    project
+        .documents
+        .edit(doc.id, doc.version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved".into() }] })
+        .unwrap();
+    assert!(
+        vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Close workspace documents")
+    );
+    assert!(target.exists());
+    project.documents.close(doc.id);
+    vcs::vcs_jj_remove_workspace(&host, "main", root.clone(), row).await.unwrap();
+    assert!(!target.exists());
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jj_workspace_update_guards_all_projects_and_syncs_clean_documents() {
+    let Some(exe) = ide_vcs::detected_jj_executable() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("main");
+    let run = |args: &[&str]| {
+        let out = Command::new(&exe)
+            .current_dir(&root)
+            .args(["--config", "signing.behavior=drop", "-R"])
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
+    std::fs::write(root.join("file.txt"), "before").unwrap();
+    run(&["new"]);
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    let target = base.join("other");
+    vcs::vcs_jj_add_workspace(&host, "main", root.clone(), "other".into(), target.clone(), "@-".into()).await.unwrap();
+    let pinned = vcs::vcs_jj_workspaces(&host, "main", root.clone())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.name == "other")
+        .unwrap();
+    host.trust.decide(&target, true, false).unwrap();
+    host.open_project("other", &target).unwrap();
+    let other = host.project("other").unwrap();
+    let file = target.join("file.txt");
+    let doc = other.documents.open(&file).unwrap();
+    other
+        .documents
+        .edit(doc.id, doc.version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved".into() }] })
+        .unwrap();
+    std::fs::write(root.join("file.txt"), "after recovery with different length").unwrap();
+    run(&["restore", "--from", "@", "--into", "other@", "file.txt"]);
+    assert!(
+        vcs::vcs_jj_update_workspace(&host, "main", root.clone(), pinned.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unsaved")
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "before");
+    assert!(other.documents.snapshot(doc.id).unwrap().text.starts_with("unsaved"));
+    other.documents.close(doc.id);
+    let clean = other.documents.open(&file).unwrap();
+    assert!(vcs::vcs_jj_update_workspace(&host, "main", root.join(".jj"), pinned.clone()).await.is_err());
+    // The selected secondary is not a root of the calling project.
+    vcs::vcs_jj_update_workspace(&host, "main", root.clone(), pinned.clone()).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "after recovery with different length");
+    assert_eq!(other.documents.snapshot(clean.id).unwrap().text, "after recovery with different length");
+    let current =
+        vcs::vcs_jj_workspaces(&host, "main", root.clone()).await.unwrap().into_iter().find(|w| w.current).unwrap();
+    vcs::vcs_jj_update_workspace(&host, "main", root.clone(), current).await.unwrap();
+    host.close_project("other");
+    host.close_project("main");
+    // Trust is established at project opening; use a fresh untrusted root for Restricted Mode.
+    let restricted = base.join("restricted");
+    assert!(Command::new(&exe).args(["git", "init"]).arg(&restricted).output().unwrap().status.success());
+    host.open_project("locked", &restricted).unwrap();
+    assert!(vcs::vcs_jj_update_workspace(&host, "locked", restricted, pinned).await.is_err());
+}

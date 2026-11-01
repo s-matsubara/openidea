@@ -1320,6 +1320,144 @@ mod log_action_tests {
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
+    #[test]
+    fn push_sends_only_selected_exact_refs_and_rejects_stale_review() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "push target"]);
+        cli(&exe, repo.root(), &["config", "set", "--repo", "user.name", "Test"]);
+        cli(&exe, repo.root(), &["config", "set", "--repo", "user.email", "test@example.com"]);
+        let remote = tempfile::tempdir().unwrap();
+        let bare = remote.path().join("remote.git");
+        let out = Command::new("git").args(["init", "--bare"]).arg(&bare).output().unwrap();
+        assert!(out.status.success());
+        cli(&exe, repo.root(), &["git", "remote", "add", "--", "-remote", bare.to_str().unwrap()]);
+        for name in ["release-1", "release1", "unselected"] {
+            cli(&exe, repo.root(), &["bookmark", "create", name]);
+            cli(&exe, repo.root(), &["tag", "set", name]);
+        }
+        let refs = || {
+            let out = Command::new("git")
+                .arg("--git-dir")
+                .arg(&bare)
+                .args(["for-each-ref", "--format=%(refname)"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let mut request = JjPushRequest {
+            bookmarks: vec!["release-1".into()],
+            tags: vec![],
+            all_tags: false,
+            remote: "-remote".into(),
+            review: None,
+        };
+        let preview = push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().is_empty(), "preview must not push");
+        request.review = Some(preview.token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\n");
+        request.bookmarks.clear();
+        request.tags = vec!["release-1".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\nrefs/tags/release-1\n");
+        request.bookmarks = vec!["release1".into()];
+        request.tags = vec!["release1".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\nrefs/heads/release1\nrefs/tags/release-1\nrefs/tags/release1\n");
+        request.bookmarks.clear();
+        request.tags = vec!["unselected".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        cli(&exe, repo.root(), &["new", "-m", "new target"]);
+        cli(&exe, repo.root(), &["bookmark", "set", "unselected"]);
+        assert!(push_with(&repo, &request, &exe).unwrap_err().to_string().contains("review"));
+        assert!(!refs().contains("unselected"));
+        // A literal tag named all is distinct from selecting all tags.
+        cli(&exe, repo.root(), &["tag", "set", "all"]);
+        request.tags = vec!["all".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/tags/all\n"));
+        assert!(!refs().contains("refs/tags/unselected\n"));
+        request.tags.clear();
+        request.all_tags = true;
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        cli(&exe, repo.root(), &["tag", "set", "-r", "@-", "added-after-preview"]);
+        assert!(push_with(&repo, &request, &exe).unwrap_err().to_string().contains("review"));
+        assert!(!refs().contains("added-after-preview"));
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/tags/added-after-preview\n"));
+        assert!(refs().contains("refs/tags/unselected\n"));
+        assert!(!refs().contains("refs/heads/unselected\n"));
+        request.bookmarks = vec!["unselected".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/heads/unselected\n"));
+        request.all_tags = false;
+        request.review = None;
+        request.bookmarks.clear();
+        request.tags.clear();
+        assert!(push_with(&repo, &request, &exe).is_err());
+        request.bookmarks = vec!["unselected".into()];
+        request.remote = "*".into();
+        assert!(push_with(&repo, &request, &exe).is_err());
+        repo.set_execution_allowed(false);
+        assert!(push_options_with(&repo, &exe).is_err());
+        assert!(push_with(&repo, &request, &exe).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_passes_metacharacters_as_exact_single_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("fake-jj");
+        // No executable outside this fixture is invoked; a Git repo is enough for discovery.
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let git = Command::new("git").args(["init"]).arg(&root).output().unwrap();
+        assert!(git.status.success());
+        std::fs::create_dir(root.join(".jj")).unwrap();
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+case "$*" in
+  *"bookmark list"*) printf 'release[1]\n' ;;
+  *"tag list"*) printf 'release[1]\n' ;;
+  *"git remote list"*) printf '\"-remote\" /tmp/remote\n' ;;
+  *"op log"*) printf 'operation-id' ;;
+  *" log "*) : ;;
+  *"git push"*) printf '%s\n' "$@" > args; printf 'outgoing\n' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let request = JjPushRequest {
+            bookmarks: vec![],
+            tags: vec!["release[1]".into()],
+            all_tags: false,
+            remote: "-remote".into(),
+            review: None,
+        };
+        push_with(&repo, &request, &exe).unwrap();
+        let args = std::fs::read_to_string(root.join("args")).unwrap();
+        assert!(args.contains("--remote\nexact:\"-remote\"\n--tag\nexact:\"release[1]\"\n--dry-run\n"), "{args}");
+        assert!(!args.contains("--ignore-immutable"));
+    }
+
     fn row(repo: &crate::Repo, exe: &Path) -> JjWorkingCopy {
         snapshot(repo, exe).unwrap()
     }
@@ -1538,5 +1676,428 @@ mod log_action_tests {
         act(&repo, &exe, &target, JjLogAction::Tag { name: "immutable-tag".into() }).unwrap();
         act(&repo, &exe, &target, JjLogAction::New).unwrap();
         assert_ne!(row(&repo, &exe).change_id, target.change_id);
+    }
+}
+
+/// Registered workspace metadata. Older jj registrations may have no recorded root.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjWorkspace {
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub change_id: String,
+    pub commit_id: String,
+    #[serde(default)]
+    pub current: bool,
+}
+
+fn workspace_command(repo: &crate::Repo, args: &[&str]) -> IdeResult<String> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Workspaces require a Jujutsu repository"));
+    }
+    let mut cmd = Command::new(executable(None)?);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager"])
+        .args(args)
+        .stdin(Stdio::null())
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if !out.status.success() {
+        return Err(IdeError::unavailable(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    String::from_utf8(out.stdout).map_err(|_| IdeError::invalid("invalid jj workspace output"))
+}
+
+pub(crate) fn workspaces(repo: &crate::Repo) -> IdeResult<Vec<JjWorkspace>> {
+    // root() is optional, and is only supported by jj versions which record workspace paths.
+    let template = r#"json({"name" => name, "path" => root, "changeId" => target.change_id(), "commitId" => target.commit_id()}) ++ "\n""#;
+    let output = workspace_command(repo, &["--ignore-working-copy", "workspace", "list", "-T", template])?;
+    let root = repo.root().canonicalize().map_err(|e| IdeError::invalid(e.to_string()))?;
+    output
+        .lines()
+        .map(|line| {
+            let mut row: JjWorkspace =
+                serde_json::from_str(line).map_err(|e| IdeError::invalid(format!("invalid jj workspace JSON: {e}")))?;
+            row.current = row.path.as_ref().and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == root);
+            Ok(row)
+        })
+        .collect()
+}
+
+fn valid_workspace_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        && !name.starts_with('-')
+}
+
+pub(crate) fn add_workspace(repo: &crate::Repo, name: &str, path: &Path, revision: &str) -> IdeResult<()> {
+    if !valid_workspace_name(name) || revision.trim().is_empty() || revision.contains('\0') {
+        return Err(IdeError::invalid("Enter a workspace name and base revision"));
+    }
+    if workspaces(repo)?.iter().any(|w| w.name == name) {
+        return Err(IdeError::invalid("Workspace name already exists"));
+    }
+    if !path.is_absolute()
+        || std::fs::symlink_metadata(path).is_ok()
+        || path.file_name().is_none()
+        || path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(IdeError::invalid("Choose a new absolute workspace folder"));
+    }
+    let parent = path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .ok_or_else(|| IdeError::invalid("Workspace parent folder must exist"))?;
+    let target = parent.join(path.file_name().unwrap());
+    let root = repo.root().canonicalize().map_err(|e| IdeError::invalid(e.to_string()))?;
+    if target.starts_with(&root) || root.starts_with(&target) {
+        return Err(IdeError::invalid("Workspace folder must be outside the current workspace"));
+    }
+    let path = target.to_str().ok_or_else(|| IdeError::invalid("Workspace path is not UTF-8"))?;
+    workspace_command(repo, &["workspace", "add", "--name", name, "--revision", revision, "--", path])?;
+    Ok(())
+}
+
+fn workspace_repository(root: &Path) -> IdeResult<PathBuf> {
+    let marker = root.join(".jj/repo");
+    let path = if marker.is_file() {
+        let pointer = std::fs::read_to_string(&marker).map_err(|e| IdeError::invalid(e.to_string()))?;
+        let pointer = PathBuf::from(pointer.trim());
+        if pointer.is_absolute() { pointer } else { marker.parent().unwrap().join(pointer) }
+    } else {
+        marker
+    };
+    path.canonicalize().map_err(|e| IdeError::invalid(format!("Workspace repository is unavailable: {e}")))
+}
+
+/// Recovery pins registration identity, deliberately not its mutable commit.
+pub(crate) fn update_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> IdeResult<()> {
+    if !valid_workspace_name(&expected.name) {
+        return Err(IdeError::invalid("Invalid workspace name"));
+    }
+    let row = workspaces(repo)?
+        .into_iter()
+        .find(|w| w.name == expected.name)
+        .ok_or_else(|| IdeError::invalid("Workspace no longer exists; refresh"))?;
+    let path = row
+        .path
+        .as_ref()
+        .filter(|p| Some(*p) == expected.path.as_ref())
+        .ok_or_else(|| IdeError::invalid("Workspace path changed or unavailable; refresh"))?;
+    let target = path.canonicalize().map_err(|_| IdeError::invalid("Workspace folder is unavailable; refresh"))?;
+    if &target != path || workspace_repository(repo.root())? != workspace_repository(&target)? {
+        return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
+    }
+    let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    if target_repo.root() != target || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current) {
+        return Err(IdeError::invalid("Workspace identity changed; refresh"));
+    }
+    let path = target.to_str().ok_or_else(|| IdeError::invalid("Workspace path is not UTF-8"))?;
+    workspace_command(repo, &["-R", path, "workspace", "update-stale"])?;
+    Ok(())
+}
+
+pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> IdeResult<()> {
+    if !valid_workspace_name(&expected.name) {
+        return Err(IdeError::invalid("Invalid workspace name"));
+    }
+    let rows = workspaces(repo)?;
+    let row = rows
+        .iter()
+        .find(|r| r.name == expected.name)
+        .ok_or_else(|| IdeError::invalid("Workspace no longer exists; refresh"))?;
+    if row.current || row.path.is_none() || row != expected {
+        return Err(IdeError::invalid("Workspace is current, unavailable or changed; refresh"));
+    }
+    let path = row.path.as_ref().unwrap();
+    let target = path.canonicalize().map_err(|_| IdeError::invalid("Workspace folder is unavailable; refresh"))?;
+    if &target != path || target.join(".jj/repo").is_dir() {
+        return Err(IdeError::invalid("Cannot remove the main workspace or a changed workspace path"));
+    }
+    if workspace_repository(repo.root())? != workspace_repository(&target)? {
+        return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
+    }
+    let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    if target_repo.root() != target
+        || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current && w.commit_id == row.commit_id)
+    {
+        return Err(IdeError::invalid("Workspace identity changed; refresh"));
+    }
+    // Delegate snapshotting and deletion to jj. Never force or manually delete files.
+    workspace_command(repo, &["workspace", "remove", "--", &expected.name])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    #[test]
+    fn update_stale_recovers_pinned_workspace_and_allows_explicit_removal() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("main");
+        assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
+        let target = base.join("secondary");
+        repo.jj_add_workspace("other", &target, "@").unwrap();
+        let pinned = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        std::fs::write(root.join("updated.txt"), "updated on disk").unwrap();
+        workspace_command(&repo, &["restore", "--from", "@", "--into", "other@", "updated.txt"]).unwrap();
+        let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        let error = workspace_command(&secondary, &["status"]).unwrap_err().to_string();
+        assert!(error.contains("stale"), "{error}");
+        assert_ne!(
+            pinned.commit_id,
+            repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap().commit_id
+        );
+        let mut wrong = pinned.clone();
+        wrong.path = Some(root.clone());
+        assert!(repo.jj_update_workspace(&wrong).is_err());
+        let alien = base.join("alien");
+        assert!(Command::new(&exe).args(["git", "init"]).arg(&alien).output().unwrap().status.success());
+        let pointer = target.join(".jj/repo");
+        let original = std::fs::read(&pointer).unwrap();
+        std::fs::write(&pointer, alien.join(".jj/repo").to_str().unwrap()).unwrap();
+        assert!(repo.jj_update_workspace(&pinned).unwrap_err().to_string().contains("identity changed"));
+        std::fs::write(&pointer, original).unwrap();
+        repo.jj_update_workspace(&pinned).unwrap();
+        assert_eq!(std::fs::read_to_string(target.join("updated.txt")).unwrap(), "updated on disk");
+        let current = secondary.jj_workspaces().unwrap().into_iter().find(|w| w.current).unwrap();
+        secondary.jj_update_workspace(&current).unwrap();
+        let latest = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        repo.jj_remove_workspace(&latest).unwrap();
+        assert!(!target.exists());
+        assert!(repo.jj_update_workspace(&pinned).is_err());
+    }
+
+    #[test]
+    fn workspace_lifecycle_snapshots_removal_and_discovers_secondary_root() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("main");
+        let out = Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap();
+        assert!(out.status.success());
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
+        let rows = repo.jj_workspaces().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].current);
+        assert_eq!(rows[0].path.as_ref(), Some(&root));
+        assert!(repo.jj_remove_workspace(&rows[0]).is_err());
+        let target = base.join("secondary with spaces");
+        for name in ["", "--help", "../escape", "two words"] {
+            assert!(repo.jj_add_workspace(name, &target, "@").is_err());
+        }
+        assert!(repo.jj_add_workspace("other", &root.join("nested"), "@").is_err());
+        assert!(repo.jj_add_workspace("other", &root, "@").is_err());
+        assert!(repo.jj_add_workspace("other", &target, "--help").is_err());
+        assert!(!target.exists());
+        #[cfg(unix)]
+        {
+            let link = base.join("dangling");
+            std::os::unix::fs::symlink(base.join("missing"), &link).unwrap();
+            assert!(repo.jj_add_workspace("other", &link, "@").is_err());
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        }
+        repo.jj_add_workspace("other", &target, "@").unwrap();
+        assert!(target.join(".jj/repo").is_file());
+        let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        assert_eq!(secondary.root(), target);
+        assert_eq!(secondary.kind(), crate::VcsKind::Jj);
+        assert!(secondary.jj_workspaces().unwrap().iter().any(|w| w.name == "other" && w.current));
+        let main = secondary.jj_workspaces().unwrap().into_iter().find(|w| w.name == "default").unwrap();
+        assert!(secondary.jj_remove_workspace(&main).is_err());
+        assert!(root.exists());
+        assert!(repo.jj_add_workspace("other", &base.join("duplicate"), "@").is_err());
+        let row = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        let mut stale = row.clone();
+        stale.commit_id = "stale".into();
+        assert!(repo.jj_remove_workspace(&stale).is_err());
+        std::fs::write(target.join("unsnapshotted.txt"), "keep my data").unwrap();
+        repo.jj_remove_workspace(&row).unwrap();
+        assert!(!target.exists());
+        let saved = workspace_command(&repo, &["file", "show", "-r", &row.change_id, "unsnapshotted.txt"]);
+        assert_eq!(saved.unwrap(), "keep my data");
+        assert_eq!(repo.jj_workspaces().unwrap().len(), 1);
+        assert!(repo.jj_remove_workspace(&row).is_err());
+        repo.set_execution_allowed(false);
+        assert!(repo.jj_workspaces().is_err());
+    }
+}
+
+/// Explicit Jujutsu push choices. Conflicted/deleted refs are deliberately excluded.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjPushOptions {
+    pub bookmarks: Vec<String>,
+    pub tags: Vec<String>,
+    pub remotes: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjPushRequest {
+    pub bookmarks: Vec<String>,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub all_tags: bool,
+    pub remote: String,
+    /// None previews; Some executes only if the current preview still matches.
+    pub review: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct JjPushPreview {
+    pub summary: String,
+    pub token: String,
+    /// Selected-reference history, capped at 100; not the exact network object set.
+    pub commits: Vec<JjHistoryCommit>,
+}
+
+pub(crate) fn push_options(repo: &crate::Repo) -> IdeResult<JjPushOptions> {
+    let exe = executable(None)?;
+    push_options_with(repo, &exe)
+}
+
+fn push_remote_name(line: &str) -> Option<String> {
+    if line.starts_with('"') {
+        serde_json::Deserializer::from_str(line).into_iter::<String>().next()?.ok()
+    } else {
+        line.split_whitespace().next().map(str::to_owned)
+    }
+}
+
+fn push_options_with(repo: &crate::Repo, exe: &Path) -> IdeResult<JjPushOptions> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Push requires a Jujutsu repository"));
+    }
+    let names = |kind| -> IdeResult<Vec<String>> {
+        let bytes =
+            read_command(repo, exe, &[kind, "list", "-T", r#"if(!remote && present && !conflict, name ++ "\n")"#])?;
+        Ok(String::from_utf8_lossy(&bytes).lines().map(str::to_owned).collect())
+    };
+    let remotes = read_command(repo, exe, &["git", "remote", "list"])?;
+    Ok(JjPushOptions {
+        bookmarks: names("bookmark")?,
+        tags: names("tag")?,
+        remotes: String::from_utf8_lossy(&remotes).lines().filter_map(push_remote_name).collect(),
+    })
+}
+
+pub(crate) fn push(repo: &crate::Repo, request: &JjPushRequest) -> IdeResult<JjPushPreview> {
+    push_with(repo, request, &executable(None)?)
+}
+
+fn push_with(repo: &crate::Repo, request: &JjPushRequest, exe: &Path) -> IdeResult<JjPushPreview> {
+    let options = push_options_with(repo, exe)?;
+    if request.all_tags && !request.tags.is_empty() {
+        return Err(IdeError::invalid("Choose all tags or explicit tag names"));
+    }
+    let tags = if request.all_tags { &options.tags } else { &request.tags };
+    if request.bookmarks.is_empty() && tags.is_empty() {
+        return Err(IdeError::invalid("Select a bookmark or tag to push"));
+    }
+    if request.bookmarks.iter().any(|name| !options.bookmarks.contains(name))
+        || tags.iter().any(|name| !options.tags.contains(name))
+        || !options.remotes.contains(&request.remote)
+    {
+        return Err(IdeError::invalid("Push reference or remote changed; refresh and review again"));
+    }
+    // Pin the operation so a concurrent ref move cannot change what was reviewed.
+    let operation = read_command(repo, exe, &["op", "log", "--limit", "1", "--no-graph", "-T", "id"])?;
+    let operation = String::from_utf8_lossy(&operation).trim().to_owned();
+    let remote_config = read_command(repo, exe, &["git", "remote", "list"])?;
+    let run = |dry_run: bool| -> IdeResult<String> {
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(repo.root()).args([
+            "--color=never",
+            "--no-pager",
+            "--ignore-working-copy",
+            "--at-operation",
+            &operation,
+            "git",
+            "push",
+            "--remote",
+            &format!("exact:{}", serde_json::to_string(&request.remote).unwrap()),
+        ]);
+        for name in &request.bookmarks {
+            cmd.args(["--bookmark", &format!("exact:{}", serde_json::to_string(name).unwrap())]);
+        }
+        for name in tags {
+            cmd.args(["--tag", &format!("exact:{}", serde_json::to_string(name).unwrap())]);
+        }
+        if dry_run {
+            cmd.arg("--dry-run");
+        }
+        cmd.stdin(Stdio::null()).env("LC_ALL", "C");
+        ide_core::process::prepare(&mut cmd);
+        let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+        let output = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if !out.status.success() {
+            return Err(IdeError::unavailable(format!("jj push: {}", output.trim())));
+        }
+        Ok(output)
+    };
+    let output = run(true)?;
+    let review = format!(
+        "Operation: {operation}\nRemotes:\n{}\nBookmarks: {:?}\nTags: {:?}\nAll tags: {}\nRemote: {}\n{output}",
+        String::from_utf8_lossy(&remote_config),
+        request.bookmarks,
+        tags,
+        request.all_tags,
+        request.remote
+    );
+    if let Some(expected) = &request.review {
+        if expected != &review {
+            return Err(IdeError::invalid("Push changed; review the outgoing references again"));
+        }
+        Ok(JjPushPreview { summary: run(false)?, token: review, commits: vec![] })
+    } else {
+        let config = String::from_utf8_lossy(&remote_config);
+        let destination = config
+            .lines()
+            .find(|line| push_remote_name(line).as_deref() == Some(&request.remote))
+            .unwrap_or(&request.remote);
+        let revisions = request
+            .bookmarks
+            .iter()
+            .map(|name| format!("bookmarks(exact:{})", serde_json::to_string(name).unwrap()))
+            .chain(tags.iter().map(|name| format!("tags(exact:{})", serde_json::to_string(name).unwrap())))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let remote_pattern = serde_json::to_string(&request.remote).unwrap();
+        let revset = format!(
+            "::({revisions}) ~ ::(remote_bookmarks(remote=exact:{remote_pattern}) | remote_tags(remote=exact:{remote_pattern})) ~ root()"
+        );
+        let history = read_command(
+            repo,
+            exe,
+            &[
+                "--at-operation",
+                &operation,
+                "log",
+                "--no-graph",
+                "-r",
+                &revset,
+                "--limit",
+                "100",
+                "-T",
+                HISTORY_TEMPLATE,
+            ],
+        )?;
+        let commits = String::from_utf8_lossy(&history)
+            .lines()
+            .map(|line| {
+                serde_json::from_str(line).map_err(|e| IdeError::invalid(format!("invalid jj push history: {e}")))
+            })
+            .collect::<IdeResult<Vec<JjHistoryCommit>>>()?;
+        Ok(JjPushPreview { summary: format!("{destination}\n\n{output}"), token: review, commits })
     }
 }
