@@ -839,3 +839,23 @@ pub async fn vcs_jj_update_workspace(
 ) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_jj_update_workspace(&state.host, window.label(), root, expected).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_push_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjPushOptions> {
+    ide_host::ops::vcs::vcs_jj_push_options(&state.host, window.label(), root).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_push(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    request: ide_vcs::JjPushRequest,
+) -> IdeResult<ide_vcs::JjPushPreview> {
+    ide_host::ops::vcs::vcs_jj_push(&state.host, window.label(), root, request).await
+}

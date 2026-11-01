@@ -593,6 +593,15 @@ async fn jj_workspaces_require_trust_and_exact_project_root() {
     });
     host.open_project("restricted", &root).unwrap();
     assert!(vcs::vcs_jj_workspaces(&host, "restricted", root.clone()).await.is_err());
+    let push_request = ide_vcs::JjPushRequest {
+        bookmarks: vec!["main".into()],
+        tags: vec![],
+        all_tags: false,
+        remote: "origin".into(),
+        review: None,
+    };
+    assert!(vcs::vcs_jj_push_options(&host, "restricted", root.clone()).await.is_err());
+    assert!(vcs::vcs_jj_push(&host, "restricted", root.clone(), push_request.clone()).await.is_err());
     assert!(
         vcs::vcs_jj_add_workspace(&host, "restricted", root.clone(), "other".into(), base.join("other"), "@".into())
             .await
@@ -613,6 +622,8 @@ async fn jj_workspaces_require_trust_and_exact_project_root() {
     assert_eq!(vcs::vcs_jj_workspaces(&host, "main", root.clone()).await.unwrap().len(), 1);
     for wrong in [base.clone(), root.join(".jj"), base.join("outside")] {
         assert!(vcs::vcs_jj_workspaces(&host, "main", wrong.clone()).await.is_err());
+        assert!(vcs::vcs_jj_push_options(&host, "main", wrong.clone()).await.is_err());
+        assert!(vcs::vcs_jj_push(&host, "main", wrong.clone(), push_request.clone()).await.is_err());
         assert!(
             vcs::vcs_jj_add_workspace(&host, "main", wrong, "other".into(), base.join("other"), "@".into())
                 .await

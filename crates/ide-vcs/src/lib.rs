@@ -468,8 +468,8 @@ mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
 pub use jj::{
-    JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjWorkingCopy,
-    JjWorkspace, detected_jj_executable, jj_version, set_jj_executable,
+    JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjPushOptions,
+    JjPushPreview, JjPushRequest, JjWorkingCopy, JjWorkspace, detected_jj_executable, jj_version, set_jj_executable,
 };
 pub mod shelf;
 mod status;
@@ -580,6 +580,14 @@ impl Repo {
         self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);
         jj::history(self, cursor, limit)
+    }
+    /// Local references and remotes available for explicit Jujutsu Push.
+    pub fn jj_push_options(&self) -> IdeResult<JjPushOptions> {
+        jj::push_options(self)
+    }
+    /// Preview a push, or execute after validating the accepted review.
+    pub fn jj_push(&self, request: &JjPushRequest) -> IdeResult<JjPushPreview> {
+        jj::push(self, request)
     }
     /// Registered Jujutsu workspaces with recorded roots.
     pub fn jj_workspaces(&self) -> IdeResult<Vec<JjWorkspace>> {

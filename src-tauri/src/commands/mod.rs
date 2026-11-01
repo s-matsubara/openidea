@@ -237,6 +237,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_jj_history_files,
         vcs::vcs_jj_history_file_diff,
         vcs::vcs_jj_history,
+        vcs::vcs_jj_push_options,
+        vcs::vcs_jj_push,
         vcs::vcs_jj_workspaces,
         vcs::vcs_jj_add_workspace,
         vcs::vcs_jj_remove_workspace,

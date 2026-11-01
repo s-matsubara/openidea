@@ -450,6 +450,8 @@ export const commands = {
 	operation: string,
 	seen: string[],
 } | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjPushOptions: (root: string) => typedError<JjPushOptions, IdeError>(__TAURI_INVOKE("vcs_jj_push_options", { root })),
+	vcsJjPush: (root: string, request: JjPushRequest) => typedError<JjPushPreview, IdeError>(__TAURI_INVOKE("vcs_jj_push", { root, request })),
 	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
 	vcsJjAddWorkspace: (root: string, name: string, path: string, revision: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_add_workspace", { root, name, path, revision })),
 	vcsJjRemoveWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_remove_workspace", { root, expected })),
@@ -3946,6 +3948,29 @@ export type JjHistoryPage = {
 
 /**  Log actions are separate from Git operations and accept full row identities only. */
 export type JjLogAction = { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "tag"; name: string };
+
+/**  Explicit Jujutsu push choices. Conflicted/deleted refs are deliberately excluded. */
+export type JjPushOptions = {
+	bookmarks: string[],
+	tags: string[],
+	remotes: string[],
+};
+
+export type JjPushPreview = {
+	summary: string,
+	token: string,
+	/**  Selected-reference history, capped at 100; not the exact network object set. */
+	commits: JjHistoryCommit[],
+};
+
+export type JjPushRequest = {
+	bookmarks: string[],
+	tags: string[],
+	allTags?: boolean,
+	remote: string,
+	/**  None previews; Some executes only if the current preview still matches. */
+	review: string | null,
+};
 
 export type JjSettings = {
 	/**  Path to jj; empty = auto-detect. */

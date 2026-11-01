@@ -344,6 +344,43 @@ pub async fn vcs_jj_log_action(
     .await
 }
 
+pub async fn vcs_jj_push_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPushOptions> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push_options()
+    })
+    .await
+}
+
+pub async fn vcs_jj_push(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    request: ide_vcs::JjPushRequest,
+) -> IdeResult<ide_vcs::JjPushPreview> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push(&request)
+    })
+    .await
+}
+
 /// Workspace commands always execute against an exact trusted project root.
 pub async fn vcs_jj_workspaces(host: &Host, window: &str, root: PathBuf) -> IdeResult<Vec<JjWorkspace>> {
     host.require_trust(window)?;
@@ -1320,6 +1357,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
             .await
     });
+    d.add("vcs_jj_push_options", |c| async move { vcs_jj_push_options(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_push", |c| async move { vcs_jj_push(&c.host, &c.window, c.arg("root")?, c.arg("request")?).await });
     d.add("vcs_jj_workspaces", |c| async move { vcs_jj_workspaces(&c.host, &c.window, c.arg("root")?).await });
     d.add("vcs_jj_add_workspace", |c| async move {
         vcs_jj_add_workspace(&c.host, &c.window, c.arg("root")?, c.arg("name")?, c.arg("path")?, c.arg("revision")?)

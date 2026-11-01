@@ -1306,6 +1306,144 @@ mod log_action_tests {
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
+    #[test]
+    fn push_sends_only_selected_exact_refs_and_rejects_stale_review() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "push target"]);
+        cli(&exe, repo.root(), &["config", "set", "--repo", "user.name", "Test"]);
+        cli(&exe, repo.root(), &["config", "set", "--repo", "user.email", "test@example.com"]);
+        let remote = tempfile::tempdir().unwrap();
+        let bare = remote.path().join("remote.git");
+        let out = Command::new("git").args(["init", "--bare"]).arg(&bare).output().unwrap();
+        assert!(out.status.success());
+        cli(&exe, repo.root(), &["git", "remote", "add", "--", "-remote", bare.to_str().unwrap()]);
+        for name in ["release-1", "release1", "unselected"] {
+            cli(&exe, repo.root(), &["bookmark", "create", name]);
+            cli(&exe, repo.root(), &["tag", "set", name]);
+        }
+        let refs = || {
+            let out = Command::new("git")
+                .arg("--git-dir")
+                .arg(&bare)
+                .args(["for-each-ref", "--format=%(refname)"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let mut request = JjPushRequest {
+            bookmarks: vec!["release-1".into()],
+            tags: vec![],
+            all_tags: false,
+            remote: "-remote".into(),
+            review: None,
+        };
+        let preview = push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().is_empty(), "preview must not push");
+        request.review = Some(preview.token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\n");
+        request.bookmarks.clear();
+        request.tags = vec!["release-1".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\nrefs/tags/release-1\n");
+        request.bookmarks = vec!["release1".into()];
+        request.tags = vec!["release1".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert_eq!(refs(), "refs/heads/release-1\nrefs/heads/release1\nrefs/tags/release-1\nrefs/tags/release1\n");
+        request.bookmarks.clear();
+        request.tags = vec!["unselected".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        cli(&exe, repo.root(), &["new", "-m", "new target"]);
+        cli(&exe, repo.root(), &["bookmark", "set", "unselected"]);
+        assert!(push_with(&repo, &request, &exe).unwrap_err().to_string().contains("review"));
+        assert!(!refs().contains("unselected"));
+        // A literal tag named all is distinct from selecting all tags.
+        cli(&exe, repo.root(), &["tag", "set", "all"]);
+        request.tags = vec!["all".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/tags/all\n"));
+        assert!(!refs().contains("refs/tags/unselected\n"));
+        request.tags.clear();
+        request.all_tags = true;
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        cli(&exe, repo.root(), &["tag", "set", "-r", "@-", "added-after-preview"]);
+        assert!(push_with(&repo, &request, &exe).unwrap_err().to_string().contains("review"));
+        assert!(!refs().contains("added-after-preview"));
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/tags/added-after-preview\n"));
+        assert!(refs().contains("refs/tags/unselected\n"));
+        assert!(!refs().contains("refs/heads/unselected\n"));
+        request.bookmarks = vec!["unselected".into()];
+        request.review = None;
+        request.review = Some(push_with(&repo, &request, &exe).unwrap().token);
+        push_with(&repo, &request, &exe).unwrap();
+        assert!(refs().contains("refs/heads/unselected\n"));
+        request.all_tags = false;
+        request.review = None;
+        request.bookmarks.clear();
+        request.tags.clear();
+        assert!(push_with(&repo, &request, &exe).is_err());
+        request.bookmarks = vec!["unselected".into()];
+        request.remote = "*".into();
+        assert!(push_with(&repo, &request, &exe).is_err());
+        repo.set_execution_allowed(false);
+        assert!(push_options_with(&repo, &exe).is_err());
+        assert!(push_with(&repo, &request, &exe).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_passes_metacharacters_as_exact_single_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("fake-jj");
+        // No executable outside this fixture is invoked; a Git repo is enough for discovery.
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let git = Command::new("git").args(["init"]).arg(&root).output().unwrap();
+        assert!(git.status.success());
+        std::fs::create_dir(root.join(".jj")).unwrap();
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+case "$*" in
+  *"bookmark list"*) printf 'release[1]\n' ;;
+  *"tag list"*) printf 'release[1]\n' ;;
+  *"git remote list"*) printf '\"-remote\" /tmp/remote\n' ;;
+  *"op log"*) printf 'operation-id' ;;
+  *" log "*) : ;;
+  *"git push"*) printf '%s\n' "$@" > args; printf 'outgoing\n' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let request = JjPushRequest {
+            bookmarks: vec![],
+            tags: vec!["release[1]".into()],
+            all_tags: false,
+            remote: "-remote".into(),
+            review: None,
+        };
+        push_with(&repo, &request, &exe).unwrap();
+        let args = std::fs::read_to_string(root.join("args")).unwrap();
+        assert!(args.contains("--remote\nexact:\"-remote\"\n--tag\nexact:\"release[1]\"\n--dry-run\n"), "{args}");
+        assert!(!args.contains("--ignore-immutable"));
+    }
+
     fn row(repo: &crate::Repo, exe: &Path) -> JjWorkingCopy {
         snapshot(repo, exe).unwrap()
     }
@@ -1728,5 +1866,176 @@ mod workspace_tests {
         assert!(repo.jj_remove_workspace(&row).is_err());
         repo.set_execution_allowed(false);
         assert!(repo.jj_workspaces().is_err());
+    }
+}
+
+/// Explicit Jujutsu push choices. Conflicted/deleted refs are deliberately excluded.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjPushOptions {
+    pub bookmarks: Vec<String>,
+    pub tags: Vec<String>,
+    pub remotes: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjPushRequest {
+    pub bookmarks: Vec<String>,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub all_tags: bool,
+    pub remote: String,
+    /// None previews; Some executes only if the current preview still matches.
+    pub review: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct JjPushPreview {
+    pub summary: String,
+    pub token: String,
+    /// Selected-reference history, capped at 100; not the exact network object set.
+    pub commits: Vec<JjHistoryCommit>,
+}
+
+pub(crate) fn push_options(repo: &crate::Repo) -> IdeResult<JjPushOptions> {
+    let exe = executable(None)?;
+    push_options_with(repo, &exe)
+}
+
+fn push_remote_name(line: &str) -> Option<String> {
+    if line.starts_with('"') {
+        serde_json::Deserializer::from_str(line).into_iter::<String>().next()?.ok()
+    } else {
+        line.split_whitespace().next().map(str::to_owned)
+    }
+}
+
+fn push_options_with(repo: &crate::Repo, exe: &Path) -> IdeResult<JjPushOptions> {
+    repo.require_execution_allowed()?;
+    if repo.kind() != crate::VcsKind::Jj {
+        return Err(IdeError::invalid("Push requires a Jujutsu repository"));
+    }
+    let names = |kind| -> IdeResult<Vec<String>> {
+        let bytes =
+            read_command(repo, exe, &[kind, "list", "-T", r#"if(!remote && present && !conflict, name ++ "\n")"#])?;
+        Ok(String::from_utf8_lossy(&bytes).lines().map(str::to_owned).collect())
+    };
+    let remotes = read_command(repo, exe, &["git", "remote", "list"])?;
+    Ok(JjPushOptions {
+        bookmarks: names("bookmark")?,
+        tags: names("tag")?,
+        remotes: String::from_utf8_lossy(&remotes).lines().filter_map(push_remote_name).collect(),
+    })
+}
+
+pub(crate) fn push(repo: &crate::Repo, request: &JjPushRequest) -> IdeResult<JjPushPreview> {
+    push_with(repo, request, &executable(None)?)
+}
+
+fn push_with(repo: &crate::Repo, request: &JjPushRequest, exe: &Path) -> IdeResult<JjPushPreview> {
+    let options = push_options_with(repo, exe)?;
+    if request.all_tags && !request.tags.is_empty() {
+        return Err(IdeError::invalid("Choose all tags or explicit tag names"));
+    }
+    let tags = if request.all_tags { &options.tags } else { &request.tags };
+    if request.bookmarks.is_empty() && tags.is_empty() {
+        return Err(IdeError::invalid("Select a bookmark or tag to push"));
+    }
+    if request.bookmarks.iter().any(|name| !options.bookmarks.contains(name))
+        || tags.iter().any(|name| !options.tags.contains(name))
+        || !options.remotes.contains(&request.remote)
+    {
+        return Err(IdeError::invalid("Push reference or remote changed; refresh and review again"));
+    }
+    // Pin the operation so a concurrent ref move cannot change what was reviewed.
+    let operation = read_command(repo, exe, &["op", "log", "--limit", "1", "--no-graph", "-T", "id"])?;
+    let operation = String::from_utf8_lossy(&operation).trim().to_owned();
+    let remote_config = read_command(repo, exe, &["git", "remote", "list"])?;
+    let run = |dry_run: bool| -> IdeResult<String> {
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(repo.root()).args([
+            "--color=never",
+            "--no-pager",
+            "--ignore-working-copy",
+            "--at-operation",
+            &operation,
+            "git",
+            "push",
+            "--remote",
+            &format!("exact:{}", serde_json::to_string(&request.remote).unwrap()),
+        ]);
+        for name in &request.bookmarks {
+            cmd.args(["--bookmark", &format!("exact:{}", serde_json::to_string(name).unwrap())]);
+        }
+        for name in tags {
+            cmd.args(["--tag", &format!("exact:{}", serde_json::to_string(name).unwrap())]);
+        }
+        if dry_run {
+            cmd.arg("--dry-run");
+        }
+        cmd.stdin(Stdio::null()).env("LC_ALL", "C");
+        ide_core::process::prepare(&mut cmd);
+        let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+        let output = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if !out.status.success() {
+            return Err(IdeError::unavailable(format!("jj push: {}", output.trim())));
+        }
+        Ok(output)
+    };
+    let output = run(true)?;
+    let review = format!(
+        "Operation: {operation}\nRemotes:\n{}\nBookmarks: {:?}\nTags: {:?}\nAll tags: {}\nRemote: {}\n{output}",
+        String::from_utf8_lossy(&remote_config),
+        request.bookmarks,
+        tags,
+        request.all_tags,
+        request.remote
+    );
+    if let Some(expected) = &request.review {
+        if expected != &review {
+            return Err(IdeError::invalid("Push changed; review the outgoing references again"));
+        }
+        Ok(JjPushPreview { summary: run(false)?, token: review, commits: vec![] })
+    } else {
+        let config = String::from_utf8_lossy(&remote_config);
+        let destination = config
+            .lines()
+            .find(|line| push_remote_name(line).as_deref() == Some(&request.remote))
+            .unwrap_or(&request.remote);
+        let revisions = request
+            .bookmarks
+            .iter()
+            .map(|name| format!("bookmarks(exact:{})", serde_json::to_string(name).unwrap()))
+            .chain(tags.iter().map(|name| format!("tags(exact:{})", serde_json::to_string(name).unwrap())))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let remote_pattern = serde_json::to_string(&request.remote).unwrap();
+        let revset = format!(
+            "::({revisions}) ~ ::(remote_bookmarks(remote=exact:{remote_pattern}) | remote_tags(remote=exact:{remote_pattern})) ~ root()"
+        );
+        let history = read_command(
+            repo,
+            exe,
+            &[
+                "--at-operation",
+                &operation,
+                "log",
+                "--no-graph",
+                "-r",
+                &revset,
+                "--limit",
+                "100",
+                "-T",
+                HISTORY_TEMPLATE,
+            ],
+        )?;
+        let commits = String::from_utf8_lossy(&history)
+            .lines()
+            .map(|line| {
+                serde_json::from_str(line).map_err(|e| IdeError::invalid(format!("invalid jj push history: {e}")))
+            })
+            .collect::<IdeResult<Vec<JjHistoryCommit>>>()?;
+        Ok(JjPushPreview { summary: format!("{destination}\n\n{output}"), token: review, commits })
     }
 }
