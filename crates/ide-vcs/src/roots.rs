@@ -71,6 +71,19 @@ impl Repos {
         Ok(Self::new(repos, project_root))
     }
 
+    /// Quick lookup for content folders; never pass an app workspace's state container.
+    pub fn enclosing_roots(roots: &[PathBuf]) -> IdeResult<Self> {
+        let mut repos = Vec::new();
+        for root in roots {
+            if let Some(repo) = Repo::discover(root)?
+                && !repos.iter().any(|r: &Repo| r.root() == repo.root())
+            {
+                repos.push(repo);
+            }
+        }
+        Ok(roots.first().map(|root| Self::new(repos, root)).unwrap_or_default())
+    }
+
     /// Only the repository containing `project_root` (the quick lookup on project open).
     pub fn enclosing(project_root: &Path) -> IdeResult<Self> {
         Ok(Self::new(Repo::discover(project_root)?.into_iter().collect(), project_root))
