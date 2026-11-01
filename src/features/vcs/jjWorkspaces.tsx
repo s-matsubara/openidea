@@ -4,12 +4,12 @@ import clsx from "clsx";
 import type { JjWorkspace } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
-import { Dialog, IconButton, Input, Select, T } from "@/ui";
+import { Button, Dialog, IconButton, Input, Select, showContextMenu, T } from "@/ui";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage } from "./ops";
-import { repoName, useVcs } from "./store";
+import { refreshNow, repoName, useVcs } from "./store";
 import { defaultWorktreePath } from "./gitMenuDialogs";
 import styles from "./common.module.css";
 
@@ -38,6 +38,8 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [recovery, setRecovery] = useState<JjWorkspace | null>(null);
+  const operation = useRef(false);
   const generation = useRef(0);
   const live = useRef(true);
   useEffect(() => {
@@ -55,10 +57,14 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
       if (live.current && request === generation.current) {
         setRows(list);
         setError(null);
+        setRecovery(null);
         setSelected((name) => (list.some((w) => w.name === name) ? name : null));
       }
     } catch (e) {
-      if (live.current && request === generation.current) setError(errorMessage(e));
+      if (live.current && request === generation.current) {
+        setError(errorMessage(e));
+        setRecovery(null);
+      }
     }
   }, [root]);
   useEffect(() => {
@@ -67,7 +73,8 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
   }, [reload]);
   const current = rows.find((w) => w.name === selected);
   const open = async (row: JjWorkspace) => {
-    if (busy || !row.path) return;
+    if (!live.current || operation.current || !row.path) return;
+    operation.current = true;
     setBusy(true);
     try {
       const latest = await call(commands.vcsJjWorkspaces(root));
@@ -77,13 +84,56 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
         throw new Error(tx("Workspace changed; refresh the list"));
       await executeAction("file.openProjectPath", row.path);
     } catch (e) {
-      if (live.current) setError(errorMessage(e));
+      fail(e, row);
     } finally {
       if (live.current) setBusy(false);
+      operation.current = false;
+    }
+  };
+  const fail = (e: unknown, row?: JjWorkspace) => {
+    if (!live.current) return;
+    const message = errorMessage(e);
+    setError(message);
+    setRecovery(
+      row?.path &&
+        /(?:working copy[^\n]*stale|stale working copy)/i.test(message) &&
+        /workspace update-stale/.test(message)
+        ? row
+        : null,
+    );
+  };
+  const update = async (row: JjWorkspace) => {
+    if (!live.current || operation.current || !row.path) return;
+    operation.current = true;
+    setBusy(true);
+    setError(null);
+    setRecovery(null);
+    try {
+      // Include text changes not yet acknowledged by the backend.
+      const dirty = await Promise.all(
+        (maybeEditorService()?.dirtyDocumentIds?.() ?? []).map((doc) => call(commands.docSnapshot(doc))),
+      );
+      if (!live.current) return;
+      if (dirty.some((doc) => doc.path === row.path || doc.path.startsWith(`${row.path}/`)))
+        throw new Error(tx("Save unsaved documents before updating the workspace"));
+      await call(commands.vcsJjUpdateWorkspace(root, row));
+      if (live.current) await reload();
+    } catch (e) {
+      fail(e, row);
+    } finally {
+      try {
+        if (live.current) await refreshNow();
+      } catch (e) {
+        fail(e);
+      } finally {
+        if (live.current) setBusy(false);
+        operation.current = false;
+      }
     }
   };
   const remove = async () => {
-    if (!current || current.current || !current.path || busy) return;
+    if (!live.current || !current || current.current || !current.path || operation.current) return;
+    operation.current = true;
     setBusy(true);
     try {
       const ok = await confirmDialog({
@@ -96,9 +146,10 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
       await call(commands.vcsJjRemoveWorkspace(root, current));
       if (live.current) await reload();
     } catch (e) {
-      if (live.current) setError(errorMessage(e));
+      fail(e, current);
     } finally {
       if (live.current) setBusy(false);
+      operation.current = false;
     }
   };
   return (
@@ -147,6 +198,18 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
             className={clsx(styles.manageRow, w.name === selected && styles.manageRowSelected)}
             onClick={() => setSelected(w.name)}
             onDoubleClick={() => void open(w)}
+            onContextMenu={(e) => {
+              setSelected(w.name);
+              showContextMenu(e, [
+                {
+                  label: "Update Workspace",
+                  disabled: busy || !w.path,
+                  run: () => {
+                    if (live.current) void update(w);
+                  },
+                },
+              ]);
+            }}
           >
             <span className={styles.fileName}>
               {w.name}
@@ -161,6 +224,11 @@ function WorkspaceList({ root, listClassName }: { root: string; listClassName?: 
       {error && (
         <div className={styles.error} role="alert">
           {error}
+          {recovery && (
+            <Button disabled={busy} onClick={() => void update(recovery)}>
+              <T>Update Workspace</T>
+            </Button>
+          )}
         </div>
       )}
     </>

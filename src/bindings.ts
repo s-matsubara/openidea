@@ -453,6 +453,7 @@ export const commands = {
 	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
 	vcsJjAddWorkspace: (root: string, name: string, path: string, revision: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_add_workspace", { root, name, path, revision })),
 	vcsJjRemoveWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_remove_workspace", { root, expected })),
+	vcsJjUpdateWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_update_workspace", { root, expected })),
 	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
 	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
 	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),

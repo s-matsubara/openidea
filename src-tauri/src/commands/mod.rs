@@ -240,6 +240,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_jj_workspaces,
         vcs::vcs_jj_add_workspace,
         vcs::vcs_jj_remove_workspace,
+        vcs::vcs_jj_update_workspace,
         vcs::vcs_jj_describe,
         vcs::vcs_jj_restore_files,
         vcs::vcs_jj_log_action,

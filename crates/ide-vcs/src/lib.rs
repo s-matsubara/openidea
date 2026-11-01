@@ -588,6 +588,9 @@ impl Repo {
     pub fn jj_add_workspace(&self, name: &str, path: &Path, revision: &str) -> IdeResult<()> {
         jj::add_workspace(self, name, path, revision)
     }
+    pub fn jj_update_workspace(&self, expected: &JjWorkspace) -> IdeResult<()> {
+        jj::update_workspace(self, expected)
+    }
     pub fn jj_remove_workspace(&self, expected: &JjWorkspace) -> IdeResult<()> {
         jj::remove_workspace(self, expected)
     }

@@ -6,6 +6,11 @@ import { useVcs } from "../store";
 const list = vi.fn();
 const add = vi.fn();
 const remove = vi.fn();
+const update = vi.fn();
+const refresh = vi.fn();
+const menu = vi.fn();
+const dirty = vi.fn();
+const snapshot = vi.fn();
 const execute = vi.fn();
 const confirm = vi.fn();
 vi.mock("@/platform/ipc", async (original) => {
@@ -16,6 +21,8 @@ vi.mock("@/platform/ipc", async (original) => {
       ...real.commands,
       vcsJjWorkspaces: (...a: unknown[]) => list(...a),
       vcsJjAddWorkspace: (...a: unknown[]) => add(...a),
+      docSnapshot: (...a: unknown[]) => snapshot(...a),
+      vcsJjUpdateWorkspace: (...a: unknown[]) => update(...a),
       vcsJjRemoveWorkspace: (...a: unknown[]) => remove(...a),
     },
   };
@@ -28,12 +35,29 @@ vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
   confirmDialog: (...a: unknown[]) => confirm(...a),
 }));
+vi.mock("../store", async (original) => ({
+  ...(await original<typeof import("../store")>()),
+  refreshNow: () => refresh(),
+}));
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  showContextMenu: (...a: unknown[]) => menu(...a),
+}));
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  maybeEditorService: () => ({ dirtyDocumentIds: () => dirty() }),
+}));
 const current = { name: "default", path: "/project", changeId: "change-main", commitId: "commit-main", current: true };
 const other = { name: "other", path: "/other", changeId: "change-other", commitId: "commit-other", current: false };
 const ok = (data: unknown) => ({ status: "ok", data });
 beforeEach(() => {
   list.mockReset().mockResolvedValue(ok([current, other]));
   add.mockReset().mockResolvedValue(ok(null));
+  update.mockReset().mockResolvedValue(ok(null));
+  refresh.mockReset().mockResolvedValue(undefined);
+  menu.mockReset();
+  dirty.mockReset().mockReturnValue([]);
+  snapshot.mockReset();
   remove.mockReset().mockResolvedValue(ok(null));
   execute.mockReset().mockResolvedValue(undefined);
   confirm.mockReset().mockResolvedValue(true);
@@ -95,7 +119,7 @@ it("creates from a revision and offers the normal Open Project flow", async () =
   expect(close).toHaveBeenCalledOnce();
   expect(execute).toHaveBeenCalledWith("file.openProjectPath", "/project-feature");
 });
-it("drops a late list response after changing repository", async () => {
+it.each(["project switch", "member detach"])("drops a late list response after %s", async (reason) => {
   let done!: (v: unknown) => void;
   list.mockReturnValueOnce(
     new Promise((resolve) => {
@@ -106,7 +130,7 @@ it("drops a late list response after changing repository", async () => {
   await waitFor(() => expect(list).toHaveBeenCalledWith("/project"));
   act(() =>
     useVcs.setState({
-      root: "/new",
+      root: reason === "member detach" ? "/project" : "/new",
       jjRoots: [
         {
           root: "/new",
@@ -139,4 +163,77 @@ it("cancels creation before invoking jj", () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(close).toHaveBeenCalledOnce();
   expect(add).not.toHaveBeenCalled();
+});
+
+it("updates the right-clicked current row and refreshes status without removal", async () => {
+  render(<JjWorkspacesPanel />);
+  fireEvent.click(await screen.findByRole("option", { name: /other/ }));
+  fireEvent.contextMenu(screen.getByRole("option", { name: /default/ }));
+  const item = menu.mock.calls[0]![1][0];
+  expect(item.label).toBe("Update Workspace");
+  await act(async () => item.run());
+  await waitFor(() => expect(update).toHaveBeenCalledWith("/project", current));
+  expect(refresh).toHaveBeenCalledOnce();
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(remove).not.toHaveBeenCalled();
+});
+it("pins stale recovery to the failed removal despite changed row selection; never retries removal", async () => {
+  remove.mockRejectedValueOnce(new Error("The working copy is stale. Run jj workspace update-stale"));
+  render(<JjWorkspacesPanel />);
+  fireEvent.click(await screen.findByRole("option", { name: /other/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove Workspace" }));
+  const recover = await screen.findByRole("button", { name: "Update Workspace" });
+  fireEvent.click(screen.getByRole("option", { name: /default/ }));
+  fireEvent.click(recover);
+  await waitFor(() => expect(update).toHaveBeenCalledWith("/project", other));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(remove).toHaveBeenCalledOnce();
+});
+it("ordinary errors offer no stale recovery and retained menus cannot update after unmount", async () => {
+  remove.mockRejectedValueOnce(new Error("permission denied"));
+  const view = render(<JjWorkspacesPanel />);
+  fireEvent.click(await screen.findByRole("option", { name: /other/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove Workspace" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("permission denied");
+  expect(screen.queryByRole("button", { name: "Update Workspace" })).not.toBeInTheDocument();
+  fireEvent.contextMenu(screen.getByRole("option", { name: /other/ }));
+  const item = menu.mock.calls[0]![1][0];
+  view.unmount();
+  item.run();
+  expect(update).not.toHaveBeenCalled();
+});
+
+it("blocks affected local dirty buffers while allowing unrelated edits", async () => {
+  dirty.mockReturnValue([1]);
+  snapshot.mockResolvedValue(ok({ path: "/other/file.txt" }));
+  render(<JjWorkspacesPanel />);
+  fireEvent.contextMenu(await screen.findByRole("option", { name: /other/ }));
+  await act(async () => menu.mock.calls[0]![1][0].run());
+  expect(await screen.findByRole("alert")).toHaveTextContent("Save unsaved documents");
+  expect(update).not.toHaveBeenCalled();
+  snapshot.mockResolvedValue(ok({ path: "/project/unrelated.txt" }));
+  fireEvent.contextMenu(screen.getByRole("option", { name: /other/ }));
+  await act(async () => menu.mock.calls[1]![1][0].run());
+  await waitFor(() => expect(update).toHaveBeenCalledWith("/project", other));
+});
+it("a retained menu cannot update during removal and refresh errors release the operation guard", async () => {
+  render(<JjWorkspacesPanel />);
+  fireEvent.contextMenu(await screen.findByRole("option", { name: /other/ }));
+  const item = menu.mock.calls[0]![1][0];
+  let finish!: (value: boolean) => void;
+  confirm.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Remove Workspace" }));
+  item.run();
+  expect(update).not.toHaveBeenCalled();
+  await act(async () => finish(false));
+  refresh.mockRejectedValueOnce(new Error("refresh failed"));
+  await act(async () => item.run());
+  expect(await screen.findByRole("alert")).toHaveTextContent("refresh failed");
+  expect(screen.getByRole("button", { name: "Refresh" })).not.toBeDisabled();
+  await act(async () => item.run());
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
 });

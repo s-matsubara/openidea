@@ -828,3 +828,14 @@ pub async fn vcs_jj_remove_workspace(
 ) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_jj_remove_workspace(&state.host, window.label(), root, expected).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_update_workspace(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    expected: ide_vcs::JjWorkspace,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_jj_update_workspace(&state.host, window.label(), root, expected).await
+}
