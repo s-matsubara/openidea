@@ -1265,3 +1265,28 @@ mod workspace_edit_tests {
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }
 }
+
+#[cfg(test)]
+mod repository_scan_tests {
+    use super::*;
+    #[test]
+    fn a_scan_started_before_detach_cannot_restore_removed_members() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let kept = base.join("kept");
+        let detached = base.join("detached");
+        for path in [&kept, &detached] {
+            std::fs::create_dir_all(path.join(".jj")).unwrap();
+        }
+        let container = base.join("workspace");
+        let before = vec![kept.clone(), detached.clone()];
+        ide_workspace::workspace::Workspace::save(&container, "Test", before.clone(), true).unwrap();
+        let old_scan = Repos::discover_roots(&before, &|_| false).unwrap();
+        ide_workspace::workspace::Workspace::save(&container, "Test", vec![kept.clone()], false).unwrap();
+        let current = RwLock::new(Repos::enclosing_roots(&[kept.clone()]).unwrap());
+        let settings = SettingsStore::load(&base.join("config"), Some(&container));
+        let sink: SharedSink = Arc::new(ide_core::NullSink);
+        apply_repository_scan(&container, &current, &settings, &sink, &before, old_scan);
+        assert_eq!(current.read().roots(), vec![kept]);
+    }
+}
