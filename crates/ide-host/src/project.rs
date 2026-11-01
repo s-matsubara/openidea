@@ -216,7 +216,7 @@ impl Host {
             trusted: trusted.clone(),
         }));
 
-        let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
+        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(&settings.effective(), &root))?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -554,16 +554,30 @@ fn light_watcher(
 fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStore, sink: &SharedSink) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
-    let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root));
+    let roots = repository_roots(&settings.effective(), root);
     match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
+        Ok(found) => apply_repository_scan(root, repos, settings, sink, &roots, found),
         Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// A scan started before detach must not overwrite a newer content-root scan.
+fn apply_repository_scan(
+    root: &Path,
+    repos: &RwLock<Repos>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    scanned_roots: &[PathBuf],
+    found: Repos,
+) {
+    let mut current = repos.write();
+    if repository_roots(&settings.effective(), root) != scanned_roots {
+        return;
+    }
+    if found.roots() != current.roots() {
+        *current = found;
+        drop(current);
+        sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
     }
 }
 
@@ -879,6 +893,19 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
 }
 
+/// App workspace containers own state; only their members participate in VCS discovery.
+/// Ordinary project folders still discover their enclosing repository.
+fn repository_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    match ide_workspace::workspace::Workspace::load(root) {
+        Ok(Some(workspace)) => return workspace.projects,
+        Err(_) => return Vec::new(), // A damaged state manifest is never a content folder.
+        Ok(None) => {}
+    }
+    let mut roots = vec![root.to_path_buf()];
+    roots.extend(content_roots(settings, root));
+    roots
+}
+
 /// Workspace members in manifest order, or extra Project Structure directories.
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
@@ -1191,5 +1218,30 @@ mod workspace_edit_tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
+    }
+}
+
+#[cfg(test)]
+mod repository_scan_tests {
+    use super::*;
+    #[test]
+    fn a_scan_started_before_detach_cannot_restore_removed_members() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let kept = base.join("kept");
+        let detached = base.join("detached");
+        for path in [&kept, &detached] {
+            std::fs::create_dir_all(path.join(".jj")).unwrap();
+        }
+        let container = base.join("workspace");
+        let before = vec![kept.clone(), detached.clone()];
+        ide_workspace::workspace::Workspace::save(&container, "Test", before.clone(), true).unwrap();
+        let old_scan = Repos::discover_roots(&before, &|_| false).unwrap();
+        ide_workspace::workspace::Workspace::save(&container, "Test", vec![kept.clone()], false).unwrap();
+        let current = RwLock::new(Repos::enclosing_roots(&[kept.clone()]).unwrap());
+        let settings = SettingsStore::load(&base.join("config"), Some(&container));
+        let sink: SharedSink = Arc::new(ide_core::NullSink);
+        apply_repository_scan(&container, &current, &settings, &sink, &before, old_scan);
+        assert_eq!(current.read().roots(), vec![kept]);
     }
 }

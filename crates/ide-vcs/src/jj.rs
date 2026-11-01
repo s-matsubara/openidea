@@ -1573,6 +1573,33 @@ fn workspace_repository(root: &Path) -> IdeResult<PathBuf> {
     path.canonicalize().map_err(|e| IdeError::invalid(format!("Workspace repository is unavailable: {e}")))
 }
 
+/// Recovery pins registration identity, deliberately not its mutable commit.
+pub(crate) fn update_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> IdeResult<()> {
+    if !valid_workspace_name(&expected.name) {
+        return Err(IdeError::invalid("Invalid workspace name"));
+    }
+    let row = workspaces(repo)?
+        .into_iter()
+        .find(|w| w.name == expected.name)
+        .ok_or_else(|| IdeError::invalid("Workspace no longer exists; refresh"))?;
+    let path = row
+        .path
+        .as_ref()
+        .filter(|p| Some(*p) == expected.path.as_ref())
+        .ok_or_else(|| IdeError::invalid("Workspace path changed or unavailable; refresh"))?;
+    let target = path.canonicalize().map_err(|_| IdeError::invalid("Workspace folder is unavailable; refresh"))?;
+    if &target != path || workspace_repository(repo.root())? != workspace_repository(&target)? {
+        return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
+    }
+    let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    if target_repo.root() != target || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current) {
+        return Err(IdeError::invalid("Workspace identity changed; refresh"));
+    }
+    let path = target.to_str().ok_or_else(|| IdeError::invalid("Workspace path is not UTF-8"))?;
+    workspace_command(repo, &["-R", path, "workspace", "update-stale"])?;
+    Ok(())
+}
+
 pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> IdeResult<()> {
     if !valid_workspace_name(&expected.name) {
         return Err(IdeError::invalid("Invalid workspace name"));
@@ -1607,6 +1634,47 @@ pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> Id
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn update_stale_recovers_pinned_workspace_and_allows_explicit_removal() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("main");
+        assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
+        let target = base.join("secondary");
+        repo.jj_add_workspace("other", &target, "@").unwrap();
+        let pinned = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        std::fs::write(root.join("updated.txt"), "updated on disk").unwrap();
+        workspace_command(&repo, &["restore", "--from", "@", "--into", "other@", "updated.txt"]).unwrap();
+        let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        let error = workspace_command(&secondary, &["status"]).unwrap_err().to_string();
+        assert!(error.contains("stale"), "{error}");
+        assert_ne!(
+            pinned.commit_id,
+            repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap().commit_id
+        );
+        let mut wrong = pinned.clone();
+        wrong.path = Some(root.clone());
+        assert!(repo.jj_update_workspace(&wrong).is_err());
+        let alien = base.join("alien");
+        assert!(Command::new(&exe).args(["git", "init"]).arg(&alien).output().unwrap().status.success());
+        let pointer = target.join(".jj/repo");
+        let original = std::fs::read(&pointer).unwrap();
+        std::fs::write(&pointer, alien.join(".jj/repo").to_str().unwrap()).unwrap();
+        assert!(repo.jj_update_workspace(&pinned).unwrap_err().to_string().contains("identity changed"));
+        std::fs::write(&pointer, original).unwrap();
+        repo.jj_update_workspace(&pinned).unwrap();
+        assert_eq!(std::fs::read_to_string(target.join("updated.txt")).unwrap(), "updated on disk");
+        let current = secondary.jj_workspaces().unwrap().into_iter().find(|w| w.current).unwrap();
+        secondary.jj_update_workspace(&current).unwrap();
+        let latest = repo.jj_workspaces().unwrap().into_iter().find(|w| w.name == "other").unwrap();
+        repo.jj_remove_workspace(&latest).unwrap();
+        assert!(!target.exists());
+        assert!(repo.jj_update_workspace(&pinned).is_err());
+    }
+
     #[test]
     fn workspace_lifecycle_snapshots_removal_and_discovers_secondary_root() {
         let Some(exe) = detected_jj_executable() else { return };
