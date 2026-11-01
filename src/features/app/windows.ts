@@ -56,6 +56,7 @@ async function openHere(path: string): Promise<boolean> {
     await openProject(path);
     return true;
   } catch (e) {
+    // Trust can cancel before openProject marks opening, so the editor cannot release this decision.
     maybeEditorService()?.cancelClose?.();
     openFailed(path, e);
     return false;

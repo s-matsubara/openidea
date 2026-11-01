@@ -279,7 +279,7 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
-        let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
+        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(&settings.effective(), &root, &build_cache))?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -678,16 +678,31 @@ fn scan_repositories(
 ) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
-    let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root, build_cache));
+    let roots = repository_roots(&settings.effective(), root, build_cache);
     match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
+        Ok(found) => apply_repository_scan(root, repos, settings, sink, build_cache, &roots, found),
         Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// A scan started before detach must not overwrite a newer content-root scan.
+fn apply_repository_scan(
+    root: &Path,
+    repos: &RwLock<Repos>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    build_cache: &Path,
+    scanned_roots: &[PathBuf],
+    found: Repos,
+) {
+    let mut current = repos.write();
+    if repository_roots(&settings.effective(), root, build_cache) != scanned_roots {
+        return;
+    }
+    if found.roots() != current.roots() {
+        *current = found;
+        drop(current);
+        sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
     }
 }
 
@@ -986,8 +1001,19 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories and the
-/// Gradle project folders outside the project as of the last sync (`build_cache`).
+/// App workspace containers own state; only their members participate in VCS discovery.
+fn repository_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
+    match ide_workspace::workspace::Workspace::load(root) {
+        Ok(Some(workspace)) => return workspace.projects,
+        Err(_) => return Vec::new(),
+        Ok(None) => {}
+    }
+    let mut roots = vec![root.to_path_buf()];
+    roots.extend(content_roots(settings, root, build_cache));
+    roots
+}
+
+/// Workspace members, project structure directories, and Gradle external roots.
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         return workspace.projects;
