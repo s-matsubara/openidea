@@ -25,7 +25,11 @@ const SEP = "=======";
 const END = ">>>>>>>";
 
 const isMarker = (line: string, marker: string) =>
-  line.startsWith(marker) && (line.length === 7 || line[7] === " " || line[7] === "\r" || line[7] === "\n");
+  line.startsWith(marker) &&
+  (line.length === marker.length ||
+    line[marker.length] === " " ||
+    line[marker.length] === "\r" ||
+    line[marker.length] === "\n");
 
 /** Finds well-formed conflict blocks in `text`. */
 export function parseConflicts(text: string): ConflictBlock[] {
@@ -40,16 +44,19 @@ export function parseConflicts(text: string): ConflictBlock[] {
   }
   for (let i = 0; i < lines.length; i++) {
     const start = lines[i]!;
-    if (!isMarker(start.text, START)) continue;
+    const opening = /^(<{7,})(?: |\r|\n|$)/.exec(start.text);
+    if (!opening) continue;
+    const width = opening[1]!.length;
+    const marker = (m: string) => m[0]!.repeat(width);
     let baseAt = -1;
     let sepAt = -1;
     let endAt = -1;
     for (let j = i + 1; j < lines.length; j++) {
       const t = lines[j]!.text;
-      if (isMarker(t, START)) break;
-      if (sepAt < 0 && baseAt < 0 && isMarker(t, BASE)) baseAt = j;
-      else if (sepAt < 0 && isMarker(t, SEP)) sepAt = j;
-      else if (sepAt >= 0 && isMarker(t, END)) {
+      if (isMarker(t, marker(START))) break;
+      if (sepAt < 0 && baseAt < 0 && isMarker(t, marker(BASE))) baseAt = j;
+      else if (sepAt < 0 && isMarker(t, marker(SEP))) sepAt = j;
+      else if (sepAt >= 0 && isMarker(t, marker(END))) {
         endAt = j;
         break;
       }
@@ -64,8 +71,8 @@ export function parseConflicts(text: string): ConflictBlock[] {
       ours: slice(i + 1, oursEnd),
       base: baseAt >= 0 ? slice(baseAt + 1, sepAt) : null,
       theirs: slice(sepAt + 1, endAt),
-      oursLabel: label(start.text, START),
-      theirsLabel: label(lines[endAt]!.text, END),
+      oursLabel: label(start.text, marker(START)),
+      theirsLabel: label(lines[endAt]!.text, marker(END)),
       oursFrom: lines[i + 1]?.from ?? start.end,
       oursTo: lines[oursEnd]!.from,
       theirsFrom: lines[sepAt]!.end,
