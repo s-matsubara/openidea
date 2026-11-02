@@ -32,10 +32,15 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
-struct Shared {
+#[derive(Clone)]
+struct Root {
+    path: PathBuf,
     token: String,
+}
+
+struct Shared {
     /// URL key (`/<token>/<key>/…`) → served directory.
-    roots: RwLock<HashMap<String, PathBuf>>,
+    roots: RwLock<HashMap<String, Root>>,
 }
 
 /// The built-in web server; started on the first [`WebServer::url_for`].
@@ -52,10 +57,7 @@ impl Default for WebServer {
 
 impl WebServer {
     pub fn new() -> Self {
-        Self {
-            shared: Arc::new(Shared { token: uuid::Uuid::new_v4().simple().to_string(), roots: RwLock::default() }),
-            port: tokio::sync::OnceCell::new(),
-        }
+        Self { shared: Arc::new(Shared { roots: RwLock::default() }), port: tokio::sync::OnceCell::new() }
     }
 
     /// The URL serving `file`: under `root` (the project) when it contains the
@@ -67,8 +69,10 @@ impl WebServer {
         };
         let rel = file.strip_prefix(base).map_err(|e| IdeError::internal(e.to_string()))?;
         let port = self.port().await?;
-        let key = self.register(base);
-        let mut url = format!("http://127.0.0.1:{port}/{}/{}", self.shared.token, enc(&key));
+        // Resolve root aliases once so each actual directory has one token.
+        let canonical_base = tokio::fs::canonicalize(base).await.map_err(|e| IdeError::invalid(e.to_string()))?;
+        let (key, token) = self.register(&canonical_base);
+        let mut url = format!("http://127.0.0.1:{port}/{token}/{}", enc(&key));
         for c in rel.components() {
             url.push('/');
             url.push_str(&enc(&c.as_os_str().to_string_lossy()));
@@ -77,10 +81,10 @@ impl WebServer {
     }
 
     /// The key `dir` is served under: its name, made unique.
-    fn register(&self, dir: &Path) -> String {
+    fn register(&self, dir: &Path) -> (String, String) {
         let mut roots = self.shared.roots.write();
-        if let Some((k, _)) = roots.iter().find(|(_, d)| d.as_path() == dir) {
-            return k.clone();
+        if let Some((k, root)) = roots.iter().find(|(_, d)| d.path == dir) {
+            return (k.clone(), root.token.clone());
         }
         let name: String = dir
             .file_name()
@@ -94,8 +98,9 @@ impl WebServer {
             .map(|i| if i == 1 { name.clone() } else { format!("{name}-{i}") })
             .find(|k| !roots.contains_key(k))
             .expect("unbounded");
-        roots.insert(key.clone(), dir.to_path_buf());
-        key
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        roots.insert(key.clone(), Root { path: dir.to_path_buf(), token: token.clone() });
+        (key, token)
     }
 
     async fn port(&self) -> IdeResult<u16> {
@@ -173,12 +178,7 @@ async fn read_head(sock: &mut TcpStream) -> std::io::Result<Option<Request>> {
 }
 
 enum Response {
-    /// `path` is the resolved file to open; `mime` comes from the requested name.
-    File {
-        path: PathBuf,
-        len: u64,
-        mime: &'static str,
-    },
+    File { path: PathBuf, len: u64, content_type: &'static str },
     Redirect(String),
     Error(u16, &'static str),
 }
@@ -196,9 +196,9 @@ async fn serve(mut sock: TcpStream, shared: &Shared, port: u16) -> std::io::Resu
     };
     let mut out = String::new();
     match &response {
-        Response::File { len, mime, .. } => {
+        Response::File { content_type, len, .. } => {
             out.push_str("HTTP/1.1 200 OK\r\n");
-            out.push_str(&format!("Content-Type: {mime}\r\nContent-Length: {len}\r\n"));
+            out.push_str(&format!("Content-Type: {}\r\nContent-Length: {len}\r\n", content_type));
         }
         Response::Redirect(to) => {
             out.push_str(&format!("HTTP/1.1 301 Moved Permanently\r\nLocation: {to}\r\nContent-Length: 0\r\n"));
@@ -210,7 +210,7 @@ async fn serve(mut sock: TcpStream, shared: &Shared, port: u16) -> std::io::Resu
             ));
         }
     }
-    out.push_str("Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n");
+    out.push_str("Content-Security-Policy: connect-src 'self'\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n");
     sock.write_all(out.as_bytes()).await?;
     if !head_only {
         match response {
@@ -234,14 +234,12 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
     let path = target.split(['?', '#']).next().unwrap_or("");
     let Some(rest) = path.strip_prefix('/') else { return NOT_FOUND };
     let mut segments = rest.split('/');
-    if segments.next() != Some(shared.token.as_str()) {
-        return NOT_FOUND;
-    }
+    let Some(token) = segments.next() else { return NOT_FOUND };
     let Some(key) = segments.next().and_then(dec) else { return NOT_FOUND };
-    let Some(root) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
-    let Ok(real_root) = tokio::fs::canonicalize(&root).await else { return NOT_FOUND };
-    let mut file = root;
-    // `/<token>/<key>` names a directory too: it redirects like any other.
+    let Some(root) = shared.roots.read().get(&key).filter(|root| root.token == token).cloned() else {
+        return NOT_FOUND;
+    };
+    let mut file = root.path.clone();
     let trailing_slash = path.ends_with('/');
     for seg in segments {
         if seg.is_empty() {
@@ -252,29 +250,34 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
             _ => return NOT_FOUND,
         }
     }
-    let Some(real) = confined(&real_root, &file).await else { return NOT_FOUND };
-    let Ok(meta) = tokio::fs::metadata(&real).await else { return NOT_FOUND };
+    let content_type = content_type(&file);
+    // Segment checks alone cannot prevent symlinks from escaping the root.
+    let Ok(mut file) = tokio::fs::canonicalize(&file).await else { return NOT_FOUND };
+    if !file.starts_with(&root.path) {
+        return NOT_FOUND;
+    }
+    let Ok(meta) = tokio::fs::metadata(&file).await else { return NOT_FOUND };
     if meta.is_dir() {
         // Relative URLs in an index page resolve against the directory.
         if !trailing_slash {
             return Response::Redirect(format!("{path}/"));
         }
-        let index = file.join("index.html");
-        let Some(real_index) = confined(&real_root, &index).await else { return NOT_FOUND };
-        return match tokio::fs::metadata(&real_index).await {
-            Ok(m) if m.is_file() => Response::File { path: real_index, len: m.len(), mime: content_type(&index) },
+        file.push("index.html");
+        let Ok(file) = tokio::fs::canonicalize(&file).await else { return NOT_FOUND };
+        if !file.starts_with(&root.path) {
+            return NOT_FOUND;
+        }
+        return match tokio::fs::metadata(&file).await {
+            Ok(m) if m.is_file() => {
+                Response::File { path: file, len: m.len(), content_type: "text/html; charset=utf-8" }
+            }
             _ => NOT_FOUND,
         };
     }
-    Response::File { path: real, len: meta.len(), mime: content_type(&file) }
-}
-
-/// `path` with every symlink resolved, if it still lies inside `real_root` (already
-/// canonical). Rejecting `..` segments is not enough: a project can commit symlinks
-/// that point anywhere on disk.
-async fn confined(real_root: &Path, path: &Path) -> Option<PathBuf> {
-    let real = tokio::fs::canonicalize(path).await.ok()?;
-    real.starts_with(real_root).then_some(real)
+    if !meta.is_file() {
+        return NOT_FOUND;
+    }
+    Response::File { path: file, len: meta.len(), content_type }
 }
 
 fn dec(s: &str) -> Option<String> {
@@ -342,6 +345,7 @@ mod tests {
         assert!(url.ends_with("/my_app/web/index.html"), "{url}");
         let page = get(&url, None).await;
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("\r\nContent-Security-Policy: connect-src 'self'\r\n"));
         assert!(page.contains("text/html") && page.ends_with("<h1>hi</h1>"));
 
         let base = url.trim_end_matches("/web/index.html");
@@ -356,7 +360,8 @@ mod tests {
         assert!(get(&format!("{base}/%2e%2e/secret.txt"), None).await.starts_with("HTTP/1.1 404"));
         assert!(get(&format!("{base}/web/..%2f..%2fsecret.txt"), None).await.starts_with("HTTP/1.1 404"));
         // Wrong token, foreign Host (DNS rebinding).
-        let other = url.replacen(&server.shared.token, "0123", 1);
+        let token = url.split('/').nth(3).unwrap();
+        let other = url.replacen(token, "0123", 1);
         assert!(get(&other, None).await.starts_with("HTTP/1.1 404"));
         assert!(get(&url, Some("evil.example:80")).await.starts_with("HTTP/1.1 403"));
     }
@@ -406,10 +411,56 @@ mod tests {
         let (a, b) = (dir.path().join("x/site"), dir.path().join("y/site"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("p.html"), "a").unwrap();
+        std::fs::write(b.join("p.html"), "b").unwrap();
         let server = WebServer::new();
         let ua = server.url_for(None, &a.join("p.html")).await.unwrap();
         let ub = server.url_for(Some(&a), &b.join("p.html")).await.unwrap();
         assert!(ua.ends_with("/site/p.html") && ub.ends_with("/site-2/p.html"), "{ua} {ub}");
+        let token_a = ua.split('/').nth(3).unwrap();
+        let token_b = ub.split('/').nth(3).unwrap();
+        assert_ne!(token_a, token_b);
+        assert!(get(&ua, None).await.ends_with("a"));
+        assert!(get(&ub, None).await.ends_with("b"));
+        assert!(get(&ub.replacen(token_b, token_a, 1), None).await.starts_with("HTTP/1.1 404"));
+        assert!(get(&ua.replacen(token_a, token_b, 1), None).await.starts_with("HTTP/1.1 404"));
         assert_eq!(server.url_for(None, &a.join("q.html")).await.unwrap(), ua.replace("p.html", "q.html"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonical_paths_stay_within_the_registered_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        let outside = dir.path().join("site-private");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("page.html"), "inside").unwrap();
+        std::fs::write(root.join("payload"), "index via symlink").unwrap();
+        std::fs::create_dir(root.join("safe")).unwrap();
+        symlink(root.join("payload"), root.join("safe/index.html")).unwrap();
+        std::fs::write(outside.join("index.html"), "secret").unwrap();
+        symlink(outside.join("index.html"), root.join("escape.html")).unwrap();
+        symlink(&outside, root.join("escape-dir")).unwrap();
+        symlink(outside.join("index.html"), root.join("sub/index.html")).unwrap();
+        symlink(root.join("page.html"), root.join("internal.html")).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&root, &alias).unwrap();
+
+        let server = WebServer::new();
+        let url = server.url_for(Some(&root), &root.join("page.html")).await.unwrap();
+        assert_eq!(url, server.url_for(Some(&alias), &alias.join("page.html")).await.unwrap());
+        let base = url.trim_end_matches("/page.html");
+        for path in ["escape.html", "escape-dir", "escape-dir/", "escape-dir/index.html", "sub/"] {
+            let response = get(&format!("{base}/{path}"), None).await;
+            assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
+            assert!(!response.contains("secret"));
+        }
+        assert!(get(&format!("{base}/internal.html"), None).await.ends_with("inside"));
+        let index = get(&format!("{base}/safe/"), None).await;
+        assert!(index.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(index.ends_with("index via symlink"));
     }
 }
