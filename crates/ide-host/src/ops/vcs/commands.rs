@@ -900,8 +900,23 @@ pub async fn vcs_remote(
 /// The user's side is `ours` (sides swapped during a rebase, as in IDEA).
 pub async fn vcs_conflict_versions(host: &Host, window: &str, path: PathBuf) -> IdeResult<ide_vcs::MergeVersions> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?)))
-        .await
+    blocking(move || {
+        let repos = project.repos();
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        if repo.kind() == VcsKind::Jj {
+            project.require_trust()?;
+            let settings = project.settings.effective();
+            apply_git_executable(&settings);
+            repo.set_ignored_names(settings.ignored_names());
+            // jj's conflict reader accepts UTF-8 text only; Git index/encoding reads
+            // would enter the Git-only project guard before reaching that reader.
+            repo.merge_versions(&path, encoding_rs::UTF_8)
+        } else {
+            project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?))
+        }
+    })
+    .await
 }
 
 pub async fn vcs_diff_text(host: &Host, window: &str, path: PathBuf, staged: bool) -> IdeResult<String> {

@@ -584,6 +584,12 @@ fn conflict_versions_at(repo: &crate::Repo, path: &Path, commit: &str, exe: &Pat
     })
 }
 
+pub(crate) fn merge_versions(repo: &crate::Repo, path: &Path) -> IdeResult<crate::MergeVersions> {
+    let exe = executable(None)?;
+    let copy = snapshot(repo, &exe)?;
+    conflict_versions_at(repo, path, &copy.commit_id, &exe)
+}
+
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
@@ -602,6 +608,47 @@ mod snapshot_tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn real_jj_partial_saves_preserve_the_remaining_logical_conflict() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        jj(&exe, tmp.path(), &["git", "init"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        let root = repo.root();
+        let path = root.join("conflict.txt");
+        let text =
+            |a: &str, b: &str| format!("{a}\n{}\n{b}\n", (0..20).map(|i| format!("common{i}\n")).collect::<String>());
+        std::fs::write(&path, text("base1", "base2")).unwrap();
+        let base = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new"]);
+        std::fs::write(&path, text("left1", "left2")).unwrap();
+        let left = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &base]);
+        std::fs::write(&path, text("right1", "right2")).unwrap();
+        let right = snapshot(&repo, &exe).unwrap().commit_id;
+        jj(&exe, root, &["new", &left, &right]);
+        let disk = std::fs::read_to_string(&path).unwrap();
+        assert!(disk.contains("%%%%%%%"));
+        assert_eq!(disk.matches("<<<<<<<").count(), 2);
+        let versions = repo.merge_versions(&path, encoding_rs::UTF_8).unwrap();
+        assert!(versions.ours.unwrap().contains("left1"));
+        assert!(versions.theirs.unwrap().contains("right2"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), disk, "opening must not write");
+        // Save the normal document with just its first conflict resolved.
+        let end = disk.find("\n>>>>>>> ").unwrap();
+        let after = disk[end + 1..].find('\n').unwrap() + end + 2;
+        let partial = format!("left1\n{}", &disk[after..]);
+        std::fs::write(&path, &partial).unwrap();
+        let copy = snapshot(&repo, &exe).unwrap();
+        assert_eq!(copy.files[0].unstaged, Some(crate::ChangeKind::Conflicted));
+        let remaining = repo.merge_versions(&path, encoding_rs::UTF_8).unwrap();
+        assert!(remaining.ours.unwrap().contains("left1"));
+        assert_eq!(remaining.merged.unwrap().matches("<<<<<<<").count(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), partial);
+        std::fs::write(&path, text("left1", "right2")).unwrap();
+        assert!(snapshot(&repo, &exe).unwrap().files.iter().all(|f| f.unstaged != Some(crate::ChangeKind::Conflicted)));
     }
 
     #[test]
