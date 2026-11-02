@@ -220,7 +220,7 @@ impl HighlightQuery {
     fn accepts(&self, m: &QueryMatch<'_, '_>, text: &str) -> bool {
         self.checks[m.pattern_index].iter().all(|check| match check {
             Check::Matches { capture, regex, negate } => m
-                .captures
+                .captures()
                 .iter()
                 .filter(|c| c.index == *capture)
                 .all(|c| regex.is_match(&text[c.node.byte_range()]) != *negate),
@@ -293,7 +293,7 @@ pub(crate) fn highlights(q: &HighlightQuery, tree: &Tree, text: &str) -> Vec<u32
         if !q.accepts(m, text) {
             continue;
         }
-        for c in m.captures {
+        for c in m.captures() {
             if let Some(paint) = q.paints[c.index as usize] {
                 let r = c.node.byte_range();
                 if r.start < r.end {

@@ -1,16 +1,16 @@
 ; Adapted from nvim-treesitter queries/dart/locals.scm (Apache-2.0) for
-; tree-sitter-dart 0.2 (`class_declaration`, `function_expression`, patterns).
+; tree-sitter-dart 0.3 (`class_declaration`, `member_declaration`, patterns).
 
 ; Definitions
 (class_body
-  (class_member
+  (member_declaration
     (method_declaration
       (method_signature
         (function_signature
           name: (identifier) @local.definition.method)))))
 
 (class_body
-  (class_member
+  (member_declaration
     (declaration
       (initialized_identifier_list
         (initialized_identifier
@@ -23,7 +23,10 @@
 (formal_parameter
   name: (identifier) @local.definition.parameter)
 
-(constructor_param
+(field_formal_parameter
+  (identifier) @local.definition.parameter)
+
+(super_formal_parameter
   (identifier) @local.definition.parameter)
 
 (catch_clause
@@ -35,7 +38,7 @@
 (for_statement
   name: (identifier) @local.definition.var)
 
-(initialized_variable_definition
+(initialized_variable_declaration
   name: (identifier) @local.definition.var)
 
 (initialized_identifier
