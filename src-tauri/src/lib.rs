@@ -36,7 +36,7 @@ use windows::WindowsState;
 /// Builds the tauri-specta builder holding every command and exported type.
 /// Also used by `export_bindings` (tests) to regenerate `src/bindings.ts`.
 pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
-    commands::builder().typ::<ide_core::IdeEvent>().dangerously_cast_bigints_to_number()
+    commands::builder().disable_serde_phases().typ::<ide_core::IdeEvent>().dangerously_cast_bigints_to_number()
 }
 
 pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {

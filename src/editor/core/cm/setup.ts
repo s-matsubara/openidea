@@ -128,7 +128,10 @@ export function effectiveIndent(
   const prefs = prefsOf(settings);
   const lang = info ? prefs.codeStyle.languages[info.id] : undefined;
   const fallback = info?.indent
-    ? { tabSize: info.indent.tabSize, insertSpaces: info.indent.insertSpaces }
+    ? {
+        tabSize: info.indent.tabSize ?? settings?.tabSize ?? 4,
+        insertSpaces: info.indent.insertSpaces ?? settings?.insertSpaces ?? true,
+      }
     : { tabSize: settings?.tabSize ?? 4, insertSpaces: settings?.insertSpaces ?? true };
   let base: EffectiveIndent = {
     tabSize: lang?.tabSize ?? fallback.tabSize,

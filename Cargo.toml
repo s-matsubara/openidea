@@ -49,15 +49,15 @@ ide-plugin = { path = "crates/ide-plugin" }
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+toml = "1.1"
 toml_edit = "0.25"
-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
-specta-typescript = "0.0.12"
+specta = { version = "=2.0.0-rc.26", features = ["derive"] }
+specta-typescript = "0.0.13"
 
 # async & concurrency
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 rayon = "1"
 dashmap = "6"
 futures = "0.3"
@@ -71,16 +71,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # text & fs
 ropey = "1.6"
 encoding_rs = "0.8"
-chardetng = "0.1"
+chardetng = "1.0"
 ignore = "0.4"
 base64 = "0.22"
 globset = "0.4"
 notify = "8"
-notify-debouncer-full = "0.6"
+notify-debouncer-full = "0.7"
 trash = "5"
 blake3 = "1"
 dunce = "1"
-dirs = "6"
+dirs = "7"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # search, index, language
@@ -90,14 +90,14 @@ regex-syntax = "0.8"
 grep-matcher = "0.1"
 nucleo-matcher = "0.3"
 redb = "4"
-tree-sitter = "0.25"
+tree-sitter = "0.27"
 
 # protocols & integrations
-jupyter-zmq-client = { version = "=2.0.0", default-features = false, features = ["tokio-runtime", "ring"] }
+jupyter-zmq-client = { version = "=3.0.1", default-features = false, features = ["tokio-runtime", "ring"] }
 jupyter-protocol = "=2.0.3"
-zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime", "tcp-transport"] }
+zeromq = { version = "0.7", default-features = false, features = ["tokio-runtime", "tcp-transport"] }
 lsp-types = "0.97"
-gix = { version = "0.89", default-features = false }
+gix = { version = "0.90", default-features = false }
 portable-pty = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "socks", "gzip", "deflate", "brotli"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

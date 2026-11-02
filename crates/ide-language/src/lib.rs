@@ -87,9 +87,11 @@ pub struct FrameworkUiMode {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "kebab-case"))]
+#[serde(rename_all = "camelCase")]
 pub struct IndentConfig {
+    #[serde(alias = "tab-size")]
     pub tab_size: u32,
+    #[serde(alias = "insert-spaces")]
     pub insert_spaces: bool,
 }
 
@@ -294,4 +296,15 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IndentConfig;
+
+    #[test]
+    fn indent_config_accepts_kebab_case_and_serializes_camel_case() {
+        let config: IndentConfig = toml::from_str("tab-size = 4\ninsert-spaces = true").unwrap();
+        assert_eq!(serde_json::to_value(config).unwrap(), serde_json::json!({ "tabSize": 4, "insertSpaces": true }));
+    }
 }

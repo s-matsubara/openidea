@@ -5,7 +5,7 @@
  * (`ide-language`) detects languages with them; this module holds the shared
  * model and mirrors the name matching for the UI (file icons).
  */
-import type { LanguageInfo_Serialize as LanguageInfo } from "./ipc";
+import type { LanguageInfo } from "./ipc";
 
 export interface FileTypeAssociation {
   /** Added file name patterns (`*.foo`, `Jenkinsfile`, `Dockerfile.*`). */
