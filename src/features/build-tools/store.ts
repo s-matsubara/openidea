@@ -218,7 +218,7 @@ async function setLinked(root: string, pom: string, linked: boolean) {
   if (useProject.getState().project?.root !== root) return;
   const settings = await commands.settingsGet();
   if (useProject.getState().project?.root !== root) return;
-  const previous = settings.languages.java?.maven?.unlinkedProjects ?? [];
+  const previous = settings.languages?.java?.maven?.unlinkedProjects ?? [];
   const next = linked ? previous.filter((p) => p !== pom) : [...new Set([...previous, pom])];
   if (JSON.stringify(next) === JSON.stringify(previous)) return;
   await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(next)));

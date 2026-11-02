@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { LanguageInfo_Serialize as LanguageInfo, Settings } from "@/platform/ipc";
+import type { LanguageInfo, Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { effectivePatterns, removePattern, userFileType, validateFileTypes, wildcardMatch } from "@/platform/fileTypes";
 import { DEFAULT_SETTINGS, validateSettings } from "../model/schema";
