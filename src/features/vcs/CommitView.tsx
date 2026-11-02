@@ -61,6 +61,7 @@ import styles from "./CommitView.module.css";
 import { useProject } from "@/platform/project";
 import { confirmDialog } from "./dialogs";
 import { runOp } from "./ops";
+import { openMergeEditor } from "./conflictsUi";
 
 /** MIME type of changed files dragged between change lists (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -451,6 +452,11 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
           }
           selected={selected}
           onSelectionChange={setSelected}
+          onContextMenu={(node, _selection, e) => {
+            const file = node?.type === "file" ? node.files[0] : undefined;
+            if (!file || effectiveKind(file) !== "conflicted") return;
+            showContextMenu(e, [{ label: "Resolve Conflicts…", run: () => openMergeEditor(file.path, "jj") }]);
+          }}
           aria-label="Working-copy changes"
           empty={<span className={styles.empty}>No working-copy changes</span>}
           onActivate={(n) => {

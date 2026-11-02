@@ -5,6 +5,7 @@ import { CommitToolWindow } from "../CommitView";
 import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { useProject } from "@/platform/project";
+import { ContextMenuHost } from "@/ui";
 
 const restore = vi.fn();
 const describe = vi.fn();
@@ -323,4 +324,33 @@ it("opens inherited conflicted jj files with the conflict baseline and a live wo
     left: { type: "text", text: "base\n", label: "Conflict base (common text merged)" },
     right: { type: "worktree", label: "Working copy @" },
   });
+});
+
+it("opens a jj merge editor from the conflicted file context menu", async () => {
+  const file = {
+    path: "/jj/conflict",
+    relPath: "conflict",
+    unstaged: "conflicted" as const,
+    staged: null,
+    renamedFrom: null,
+  };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.contextMenu(screen.getByText("conflict"));
+  fireEvent.click(await screen.findByText("Resolve Conflicts…"));
+  await waitFor(() =>
+    expect(openInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "merge:jj:/jj/conflict",
+        data: { path: file.path, vcs: "jj" },
+      }),
+      { focus: true },
+    ),
+  );
+  expect(readDiff).not.toHaveBeenCalled();
 });
