@@ -296,3 +296,31 @@ it("disables description editing and save in an untrusted project", () => {
     useProject.setState({ project });
   }
 });
+
+it("opens inherited conflicted jj files with the conflict baseline and a live working document", async () => {
+  const file = {
+    path: "/jj/conflict",
+    relPath: "conflict",
+    unstaged: "conflicted" as const,
+    staged: null,
+    renamedFrom: null,
+  };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  readDiff.mockResolvedValue({
+    status: "ok",
+    data: {
+      before: "base\n",
+      after: "canonical conflict",
+      beforeLabel: "Conflict base (common text merged)",
+      afterLabel: "@ conflict",
+    },
+  });
+  render(<CommitToolWindow />);
+  fireEvent.doubleClick(screen.getByText("conflict"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(readDiff).toHaveBeenCalledWith(file.path, "commit-id");
+  expect(openInput.mock.calls[0]![0].data).toMatchObject({
+    left: { type: "text", text: "base\n", label: "Conflict base (common text merged)" },
+    right: { type: "worktree", label: "Working copy @" },
+  });
+});

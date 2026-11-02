@@ -450,9 +450,13 @@ fn file_diff_snapshot(
         .or_else(|| expected.is_none().then_some(&unchanged))
         .ok_or_else(|| IdeError::invalid("file is no longer in the Jujutsu changes list; refresh it"))?;
     if file.unstaged == Some(crate::ChangeKind::Conflicted) {
-        return Err(IdeError::unavailable(
-            "Jujutsu conflict diff is not supported yet; resolve or inspect the conflict with jj",
-        ));
+        let versions = conflict_versions_at(repo, path, commit, exe)?;
+        return Ok(JjFileDiff {
+            before: versions.base.unwrap_or_default(),
+            after: versions.merged.unwrap_or_default(),
+            before_label: "Conflict base (common text merged)".into(),
+            after_label: format!("@ {} ({})", &commit[..8], file.rel_path),
+        });
     }
     let parents: Vec<String> = serde_json::from_slice(&read_command(
         repo,
@@ -506,6 +510,77 @@ fn file_diff_snapshot(
         } else {
             format!("@ {} ({})", &commit[..8], file.rel_path)
         },
+    })
+}
+
+/// Ask jj to materialize its actual conflict as documented Git diff3 markers.
+/// This reads an immutable tree; it never rewrites working files or repo config.
+fn conflict_versions_at(repo: &crate::Repo, path: &Path, commit: &str, exe: &Path) -> IdeResult<crate::MergeVersions> {
+    let rel = path.strip_prefix(repo.root()).map_err(|_| IdeError::invalid("path outside Jujutsu repository"))?;
+    if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(IdeError::invalid("invalid Jujutsu conflict path"));
+    }
+    let fileset = format!("file:{}", serde_json::to_string(&rel.to_string_lossy()).unwrap());
+    let count: usize = serde_json::from_slice(&read_command(
+        repo,
+        exe,
+        &["file", "list", "-r", commit, "-T", "json(conflict_side_count)", "--", &fileset],
+    )?)
+    .map_err(|_| IdeError::unavailable("Cannot read Jujutsu conflict sides"))?;
+    if count != 2 {
+        return Err(IdeError::unavailable("The merge editor supports two-sided text conflicts only"));
+    }
+    let bytes = read_command(
+        repo,
+        exe,
+        &["--config", "ui.conflict-marker-style=git", "file", "show", "-r", commit, "-T", "", "--", &fileset],
+    )?;
+    if bytes.iter().any(|b| *b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
+        return Err(IdeError::unavailable("Binary conflicts are not supported"));
+    }
+    let merged =
+        String::from_utf8(bytes).map_err(|_| IdeError::unavailable("Non-UTF-8 conflicts are not supported"))?;
+    let mut sides = [String::new(), String::new(), String::new()];
+    let mut section = None;
+    let mut width = 0;
+    let mut blocks = 0;
+    for line in merged.split_inclusive('\n') {
+        let n = line.bytes().take_while(|b| *b == b'<').count();
+        if section.is_none() && n >= 7 && line.as_bytes().get(n) == Some(&b' ') {
+            width = n;
+            section = Some(0);
+            blocks += 1;
+        } else if section == Some(0) && line.starts_with(&"|".repeat(width)) {
+            section = Some(1);
+        } else if section == Some(1) && line.trim_end() == "=".repeat(width) {
+            section = Some(2);
+        } else if section == Some(2) && line.starts_with(&">".repeat(width)) {
+            if !line.ends_with('\n') {
+                for side in &mut sides {
+                    if side.ends_with('\n') {
+                        side.pop();
+                    }
+                }
+            }
+            section = None;
+        } else if let Some(i) = section {
+            sides[i].push_str(line);
+        } else {
+            for side in &mut sides {
+                side.push_str(line);
+            }
+        }
+    }
+    if blocks == 0 || section.is_some() {
+        return Err(IdeError::unavailable("Only regular two-sided text conflicts can be opened in the merge editor"));
+    }
+    let [ours, base, theirs] = sides;
+    Ok(crate::MergeVersions {
+        base: Some(base),
+        ours: Some(ours),
+        theirs: Some(theirs),
+        merged: Some(merged),
+        sides: crate::MergeSides::default(),
     })
 }
 
@@ -689,12 +764,9 @@ mod snapshot_tests {
         let conflict_right = snapshot(&repo, &exe).unwrap().commit_id;
         jj(&exe, root, &["new", &left, &conflict_right]);
         let conflict = snapshot(&repo, &exe).unwrap();
-        assert!(
-            file_diff_with(&repo, &root.join("modified"), &conflict.commit_id, &exe)
-                .unwrap_err()
-                .to_string()
-                .contains("conflict diff")
-        );
+        let diff = file_diff_with(&repo, &root.join("modified"), &conflict.commit_id, &exe).unwrap();
+        assert!(diff.after.contains("conflicting right"));
+        assert!(diff.before_label.contains("Conflict base"));
         std::fs::remove_dir_all(root.join(".jj")).unwrap();
         assert!(file_diff_with(&repo, &root.join("modified"), &conflict.commit_id, &exe).is_err());
     }
@@ -784,6 +856,19 @@ newline.txt"
             conflicted.files.iter().find(|f| f.rel_path == "conflict.txt").unwrap().unstaged,
             Some(crate::ChangeKind::Conflicted)
         );
+        let root = repo.root();
+        let disk = std::fs::read_to_string(root.join("conflict.txt")).unwrap();
+        let pair = file_diff_read(&repo, &root.join("conflict.txt"), Some(&conflicted.commit_id), &exe).unwrap();
+        assert_eq!(pair.before, "base\n");
+        assert!(pair.after.contains("left\n"));
+        assert!(pair.after.contains("right\n"));
+        assert_eq!(std::fs::read_to_string(root.join("conflict.txt")).unwrap(), disk);
+        // Empty descendants inherit logical conflicts even with no ordinary diff.
+        jj(&exe, root, &["new"]);
+        let inherited = snapshot(&repo, &exe).unwrap();
+        let pair = file_diff_read(&repo, &root.join("conflict.txt"), Some(&inherited.commit_id), &exe).unwrap();
+        assert_eq!(pair.before, "base\n");
+        assert!(pair.after.contains("|||||||"));
         std::fs::remove_dir_all(tmp.path().join(".jj")).unwrap();
         assert!(snapshot(&repo, &exe).unwrap_err().to_string().contains("jj working-copy status"));
     }
