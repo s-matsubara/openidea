@@ -7,7 +7,7 @@ import { history, historyKeymap } from "@codemirror/commands";
 import { keymap } from "@codemirror/view";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
-import { embeddedEditorExtensions } from "@/editor/api";
+import { attachDocument, type DocumentAttachment, embeddedEditorExtensions } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -23,6 +23,7 @@ import { initialResult, mergeTitles, resolutionText, type Resolution, type Resul
 import { baseName } from "./model";
 import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
+import { jjConflicts } from "./jjConflicts";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
@@ -98,15 +99,19 @@ function decorate(state: EditorState, conflicts: readonly ResultConflict[]): Dec
  * The result's unresolved conflicts, tracked as ranges holding the base text (no
  * markers), as IDEA's merge dialog shows them. Typing at a conflict's edges stays in it.
  */
-const conflictField = StateField.define<{ conflicts: ResultConflict[]; deco: DecorationSet }>({
-  create: () => ({ conflicts: [], deco: Decoration.none }),
+const conflictField = StateField.define<{ conflicts: ResultConflict[]; deco: DecorationSet; markers: boolean }>({
+  create: () => ({ conflicts: [], deco: Decoration.none, markers: false }),
   update(v, tr) {
+    if (v.markers && tr.docChanged) {
+      const conflicts = jjConflicts(tr.newDoc.toString());
+      return { conflicts, deco: decorate(tr.state, conflicts), markers: true };
+    }
     const done = new Set(tr.effects.filter((e) => e.is(resolvedConflict)).map((e) => e.value as number));
     let conflicts = v.conflicts.filter((_, i) => !done.has(i));
     if (tr.docChanged)
       conflicts = conflicts.map((c) => ({ ...c, from: tr.changes.mapPos(c.from, -1), to: tr.changes.mapPos(c.to, 1) }));
     if (!tr.docChanged && !done.size) return v;
-    return { conflicts, deco: decorate(tr.state, conflicts) };
+    return { conflicts, deco: decorate(tr.state, conflicts), markers: v.markers };
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
 });
@@ -140,7 +145,9 @@ const resultTheme = EditorView.baseTheme({
 });
 
 export function MergeEditor({ input }: { input: EditorInput }) {
-  const { path } = input.data as MergeData;
+  const { path, vcs } = input.data as MergeData;
+  const jj = vcs === "jj";
+  const [attachment, setAttachment] = useState<DocumentAttachment | null>(null);
   const [state, setState] = useState<{
     ours: string;
     theirs: string;
@@ -161,6 +168,23 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const theirsView = useRef<EditorView | null>(null);
   const txt = useTxTemplate();
   const titles = mergeTitles(state?.sides);
+
+  useEffect(() => {
+    if (!jj) return;
+    let alive = true;
+    let attached: DocumentAttachment | null = null;
+    void attachDocument(path)
+      .then((doc) => {
+        attached = doc;
+        if (alive) setAttachment(doc);
+        else doc.release();
+      })
+      .catch((e) => alive && setError(errorMessage(e)));
+    return () => {
+      alive = false;
+      attached?.release();
+    };
+  }, [path, jj]);
 
   const load = useCallback(async () => {
     try {
@@ -191,7 +215,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   }, [path]);
 
   useEffect(() => {
-    if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
+    if (!state || (jj && !attachment) || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current)
+      return;
     const side = () => [
       viewerBase({ readOnly: true }),
       lang,
@@ -202,18 +227,23 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side() });
     // Like IDEA, start from the three-way merge (non-conflicting changes applied, conflicts
     // showing the base) rather than the marker-laden working copy.
-    const start =
-      state.merged !== null ? initialResult(state.merged) : initialResult(state.working, state.sides.reversed);
+    const text = attachment?.text() ?? "";
+    const start = jj
+      ? { text, conflicts: jjConflicts(text) }
+      : state.merged !== null
+        ? initialResult(state.merged)
+        : initialResult(state.working, state.sides.reversed);
     const result = new EditorView({
       doc: start.text,
       parent: resultRef.current,
       extensions: [
-        viewerBase({ readOnly: false }),
+        viewerBase({ readOnly: attachment?.readOnly ?? false }),
+        jj ? attachment!.extension : [],
         history(),
         keymap.of(historyKeymap),
         embeddedEditorExtensions(path),
         lang,
-        conflictField.init((s) => ({ conflicts: start.conflicts, deco: decorate(s, start.conflicts) })),
+        conflictField.init((s) => ({ conflicts: start.conflicts, deco: decorate(s, start.conflicts), markers: jj })),
         resultTheme,
         EditorView.updateListener.of((u) => {
           if (u.docChanged) setLeft(u.state.field(conflictField).conflicts.length);
@@ -235,7 +265,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       oursView.current = null;
       theirsView.current = null;
     };
-  }, [state, lang, path]);
+  }, [state, lang, path, jj, attachment]);
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
@@ -327,7 +357,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || jj) return;
     e.preventDefault();
     showContextMenu(e.nativeEvent, [
       {
@@ -393,13 +423,15 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         <Button size="small" onClick={() => acceptAll("theirs")}>
           <T>Accept All Theirs</T>
         </Button>
-        <IconButton icon="refresh" title="Reload from Disk" size="small" onClick={() => void load()} />
+        {!jj && <IconButton icon="refresh" title="Reload from Disk" size="small" onClick={() => void load()} />}
         <span className={clsx(styles.status, !left && styles.statusDone)}>
           {left === 1 ? tx`${left} conflict left` : left ? tx`${left} conflicts left` : tx("All conflicts resolved")}
         </span>
-        <Button size="small" variant="primary" onClick={() => void apply()}>
-          <T>Apply</T>
-        </Button>
+        {!jj && (
+          <Button size="small" variant="primary" onClick={() => void apply()}>
+            <T>Apply</T>
+          </Button>
+        )}
       </div>
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>

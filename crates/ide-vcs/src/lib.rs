@@ -1133,6 +1133,9 @@ impl Repo {
     pub fn merge_versions(&self, path: &Path, encoding: impl Into<TextEncoding>) -> IdeResult<MergeVersions> {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if self.kind() == VcsKind::Jj {
+            return jj::merge_versions(self, path);
+        }
         let (base, ours, theirs) = self.conflict_versions(path, encoding)?;
         let sides = self.merge_sides()?;
         let (ours, theirs) = if sides.reversed { (theirs, ours) } else { (ours, theirs) };

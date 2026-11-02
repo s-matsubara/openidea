@@ -64,6 +64,7 @@ import styles from "./CommitView.module.css";
 import { useProject } from "@/platform/project";
 import { confirmDialog } from "./dialogs";
 import { runOp } from "./ops";
+import { openMergeEditor } from "./conflictsUi";
 
 /** MIME type of changed files dragged between change lists (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -454,6 +455,45 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
           }
           selected={selected}
           onSelectionChange={setSelected}
+          onContextMenu={(node, selection, e) => {
+            const file = node?.type === "file" ? node.files[0] : undefined;
+            if (!file) return;
+            const files: FileStatus[] = [];
+            const collect = (ns: ChangeNode[]) =>
+              ns.forEach((n) => {
+                if (selection.has(n.key)) files.push(...n.files);
+                else if (n.children) collect(n.children);
+              });
+            collect(nodes);
+            const targets = [...new Map(files.map((f) => [f.path, f])).values()];
+            const paths = targets.map((f) => f.path);
+            const items: MenuItem[] = [
+              {
+                label: "Show Diff",
+                run: () => {
+                  if (!current()) return;
+                  void call(commands.vcsJjFileDiff(file.path, copy.commitId))
+                    .then((pair) => {
+                      if (current())
+                        return openDiff(jjWorkingDiffData(file.path, pair, effectiveKind(file) === "deleted"));
+                    })
+                    .catch((e) => onError(`${file.relPath}: ${String(e)}`));
+                },
+              },
+              { kind: "separator" },
+            ];
+            if (targets.some((f) => effectiveKind(f) === "conflicted"))
+              items.push({
+                label: "Resolve Conflicts…",
+                run: () => {
+                  if (!current() || useProject.getState().project?.trusted === false) return;
+                  for (const f of targets) if (effectiveKind(f) === "conflicted") openMergeEditor(f.path, "jj");
+                },
+              });
+            if (targets.some((f) => effectiveKind(f) === "conflicted")) items.push({ kind: "separator" });
+            items.push({ label: "Copy Path", run: () => void navigator.clipboard?.writeText(paths.join("\n")) });
+            showContextMenu(e, items);
+          }}
           aria-label="Working-copy changes"
           empty={<span className={styles.empty}>No working-copy changes</span>}
           onActivate={(n) => {
