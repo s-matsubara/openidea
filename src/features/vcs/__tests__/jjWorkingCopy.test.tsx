@@ -5,6 +5,7 @@ import { CommitToolWindow } from "../CommitView";
 import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { useProject } from "@/platform/project";
+import { ContextMenuHost } from "@/ui";
 
 const restore = vi.fn();
 const describe = vi.fn();
@@ -323,4 +324,155 @@ it("opens inherited conflicted jj files with the conflict baseline and a live wo
     left: { type: "text", text: "base\n", label: "Conflict base (common text merged)" },
     right: { type: "worktree", label: "Working copy @" },
   });
+});
+
+it("opens a jj merge editor from the conflicted file context menu", async () => {
+  const file = {
+    path: "/jj/conflict",
+    relPath: "conflict",
+    unstaged: "conflicted" as const,
+    staged: null,
+    renamedFrom: null,
+  };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.contextMenu(screen.getByText("conflict"));
+  fireEvent.click(await screen.findByText("Resolve Conflicts…"));
+  await waitFor(() =>
+    expect(openInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "merge:jj:/jj/conflict",
+        data: { path: file.path, vcs: "jj" },
+      }),
+      { focus: true },
+    ),
+  );
+  expect(readDiff).not.toHaveBeenCalled();
+});
+
+it.each(["conflicted", "modified"] as const)(
+  "orders the %s context menu with separators and copies clicked paths",
+  async (kind) => {
+    const files = ["a", "b"].map((name) => ({
+      path: `/jj/${name}`,
+      relPath: name,
+      unstaged: kind,
+      staged: null,
+      renamedFrom: null,
+    }));
+    useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files } })] });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(
+      <>
+        <CommitToolWindow />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.mouseDown(screen.getByRole("checkbox", { name: "Select a for rollback" }), { button: 0 });
+    fireEvent.contextMenu(screen.getByText("b"));
+    const menu = await screen.findByRole("menu");
+    const rows = Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map((item) =>
+      item.getAttribute("role") === "separator" ? "separator" : item.textContent,
+    );
+    expect(rows).toEqual(
+      kind === "conflicted"
+        ? ["Show Diff", "separator", "Resolve Conflicts…", "separator", "Copy Path"]
+        : ["Show Diff", "separator", "Copy Path"],
+    );
+    expect(screen.queryByText("Rollback…")).toBeNull();
+    fireEvent.click(within(menu).getByText("Copy Path"));
+    expect(writeText).toHaveBeenCalledWith("/jj/b");
+    expect(restore).not.toHaveBeenCalled();
+  },
+);
+
+it("routes contextual Show Diff through the jj snapshot and ignores a stale response", async () => {
+  const file = { path: "/jj/a", relPath: "a", unstaged: "conflicted" as const, staged: null, renamedFrom: null };
+  const r = root({ workingCopy: { ...root().workingCopy!, files: [file] } });
+  useVcs.setState({ jjRoots: [r] });
+  let finish!: (value: unknown) => void;
+  readDiff.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.contextMenu(screen.getByText("a"));
+  fireEvent.click(await screen.findByText("Show Diff"));
+  expect(readDiff).toHaveBeenCalledWith("/jj/a", "commit-id");
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...r.workingCopy!, commitId: "new" } })] });
+  finish({ status: "ok", data: { before: "base", after: "conflict", beforeLabel: "Parent", afterLabel: "@" } });
+  await waitFor(() => expect(screen.getByText("a")).toBeInTheDocument());
+  expect(openInput).not.toHaveBeenCalled();
+});
+
+it("does not resolve from a context menu after its root is replaced", async () => {
+  const file = { path: "/jj/a", relPath: "a", unstaged: "conflicted" as const, staged: null, renamedFrom: null };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.contextMenu(screen.getByText("a"));
+  const resolve = await screen.findByText("Resolve Conflicts…");
+  useVcs.setState({ jjRoots: [] });
+  fireEvent.click(resolve);
+  expect(openInput).not.toHaveBeenCalled();
+});
+
+it("copies the selected files when opening a selected row's menu", async () => {
+  const files = ["a", "b"].map((name) => ({
+    path: `/jj/${name}`,
+    relPath: name,
+    unstaged: "modified" as const,
+    staged: null,
+    renamedFrom: null,
+  }));
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files } })] });
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.mouseDown(screen.getByText("a"), { button: 0 });
+  fireEvent.mouseDown(screen.getByText("b"), { button: 0, metaKey: true, ctrlKey: true });
+  fireEvent.contextMenu(screen.getByText("a"));
+  fireEvent.click(await screen.findByText("Copy Path"));
+  expect(writeText).toHaveBeenCalledWith("/jj/a\n/jj/b");
+});
+
+it("reports contextual diff editor-open failures", async () => {
+  const file = { path: "/jj/a", relPath: "a", unstaged: "modified" as const, staged: null, renamedFrom: null };
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files: [file] } })] });
+  readDiff.mockResolvedValue({
+    status: "ok",
+    data: { before: "base", after: "changed", beforeLabel: "Parent", afterLabel: "@" },
+  });
+  openInput.mockRejectedValueOnce(new Error("editor failed"));
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  fireEvent.contextMenu(screen.getByText("a"));
+  fireEvent.click(await screen.findByText("Show Diff"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("a: Error: editor failed");
 });
