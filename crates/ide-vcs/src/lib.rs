@@ -470,6 +470,7 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
+pub use jj::remote::{JjPullOptions, JjRemoteBookmark};
 pub use jj::{
     JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjPushOptions,
     JjPushPreview, JjPushRequest, JjWorkingCopy, JjWorkspace, detected_jj_executable, jj_version, set_jj_executable,
@@ -585,6 +586,18 @@ impl Repo {
         jj::history(self, cursor, limit)
     }
     /// Local references and remotes available for explicit Jujutsu Push.
+    pub fn jj_pull_options(&self) -> IdeResult<JjPullOptions> {
+        jj::remote::pull_options(self)
+    }
+
+    pub fn jj_fetch(&self) -> IdeResult<String> {
+        jj::remote::fetch(self)
+    }
+
+    pub fn jj_pull(&self, remote: &str, bookmark: &str) -> IdeResult<String> {
+        jj::remote::pull(self, remote, bookmark)
+    }
+
     pub fn jj_push_options(&self) -> IdeResult<JjPushOptions> {
         jj::push_options(self)
     }
