@@ -877,6 +877,61 @@ pub async fn vcs_jj_pull(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_fetch_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjFetchOptions> {
+    ide_host::ops::vcs::vcs_jj_fetch_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_fetch_selected(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    remote: String,
+    tag: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_fetch_selected(&state.host, window.label(), root, remote, tag).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_rebase_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjRebaseOptions> {
+    ide_host::ops::vcs::vcs_jj_rebase_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_rebase(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    source: Option<String>,
+    destination: String,
+    skip_emptied: bool,
+    ignore_immutable: bool,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_rebase(
+        &state.host,
+        window.label(),
+        root,
+        source,
+        destination,
+        skip_emptied,
+        ignore_immutable,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_push_options(
     state: State<'_, AppState>,
     window: tauri::Window,

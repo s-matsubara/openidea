@@ -36,7 +36,8 @@ import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
-import { runFetch } from "./ops";
+import { allRepos, runFetch, runRemote } from "./ops";
+import { showJjRemoteDialog } from "./jjUpdateDialogs";
 import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
@@ -236,7 +237,7 @@ export function registerVcsActions(): () => void {
       id: "vcs.rebase",
       title: "Rebase…",
       category: "Git",
-      when: VCS,
+      when: "vcsAvailable || vcsJjAvailable",
       keywords: ["rebase branch"],
       run: showRebaseDialog,
     },
@@ -270,7 +271,14 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "git-fetch",
       when: "vcsAvailable || vcsJjAvailable",
-      run: () => void runFetch(),
+      run: () => {
+        const fetchGit = () => void runRemote({ op: "fetch" }, undefined, allRepos());
+        if (!useVcs.getState().jjRoots.length) return void runFetch();
+        showJjRemoteDialog("fetch", openDialog, (close) => {
+          close();
+          fetchGit();
+        });
+      },
     },
     {
       id: "vcs.refresh",
