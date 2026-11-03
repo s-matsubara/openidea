@@ -10,6 +10,7 @@ import { Checkbox, Dialog, IconButton, Input, Select, T, type SelectOption } fro
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { confirmDialog, openDialog } from "./dialogs";
+import { showJjRemoteDialog } from "./jjUpdateDialogs";
 import { errorMessage, runJjPull, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -450,10 +451,14 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
 // --- Rebase -----------------------------------------------------------------
 
 export function showRebaseDialog() {
-  openDialog((close) => <RebaseDialog onClose={close} />);
+  if (!useVcs.getState().jjRoots.length) {
+    openDialog((close) => <RebaseDialog onClose={close} />);
+    return;
+  }
+  showJjRemoteDialog("rebase", openDialog, (close, selector) => <RebaseDialog onClose={close} selector={selector} />);
 }
 
-function RebaseDialog({ onClose }: { onClose: () => void }) {
+function RebaseDialog({ onClose, selector }: { onClose: () => void; selector?: React.ReactNode }) {
   const [repo] = useState(currentRepo);
   const [head] = useState(() => useVcs.getState().branch?.head ?? null);
   const branches = useBranches();
@@ -501,6 +506,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        {selector}
         <div className={styles.fieldLabel}>
           {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
         </div>

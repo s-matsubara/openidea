@@ -467,7 +467,10 @@ mod remotes;
 mod repo;
 mod roots;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
-pub use jj::remote::{JjPullOptions, JjRemoteBookmark};
+pub use jj::remote::{
+    JjFetchOptions, JjPullOptions, JjRebaseOptions, JjRebaseRevision, JjRebaseRevisionKind, JjRemoteBookmark,
+    JjRemoteTag,
+};
 pub use jj::{
     JjDescriptionEdit, JjFileDiff, JjHistoryCommit, JjHistoryCursor, JjHistoryPage, JjLogAction, JjPushOptions,
     JjPushPreview, JjPushRequest, JjWorkingCopy, JjWorkspace, detected_jj_executable, jj_version, set_jj_executable,
@@ -585,6 +588,28 @@ impl Repo {
     /// Local references and remotes available for explicit Jujutsu Push.
     pub fn jj_pull_options(&self) -> IdeResult<JjPullOptions> {
         jj::remote::pull_options(self)
+    }
+
+    pub fn jj_fetch_options(&self) -> IdeResult<JjFetchOptions> {
+        jj::remote::fetch_options(self)
+    }
+
+    pub fn jj_fetch_selected(&self, remote: &str, tag: Option<&str>) -> IdeResult<String> {
+        jj::remote::fetch_selected(self, remote, tag)
+    }
+
+    pub fn jj_rebase_options(&self) -> IdeResult<JjRebaseOptions> {
+        jj::remote::rebase_options(self)
+    }
+
+    pub fn jj_rebase(
+        &self,
+        source: Option<&str>,
+        destination: &str,
+        skip_emptied: bool,
+        ignore_immutable: bool,
+    ) -> IdeResult<String> {
+        jj::remote::rebase(self, source, destination, skip_emptied, ignore_immutable)
     }
 
     pub fn jj_fetch(&self) -> IdeResult<String> {
