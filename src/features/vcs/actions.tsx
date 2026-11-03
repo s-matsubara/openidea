@@ -34,7 +34,7 @@ import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
-import { allRepos, runRemote } from "./ops";
+import { runFetch } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
@@ -219,7 +219,7 @@ export function registerVcsActions(): () => void {
       title: "Pull…",
       category: "Git",
       icon: "git-pull",
-      when: VCS,
+      when: "vcsAvailable || vcsJjAvailable",
       run: showPullDialog,
     },
     {
@@ -267,8 +267,8 @@ export function registerVcsActions(): () => void {
       title: "Fetch",
       category: "Git",
       icon: "git-fetch",
-      when: VCS,
-      run: () => void runRemote({ op: "fetch" }, undefined, allRepos()),
+      when: "vcsAvailable || vcsJjAvailable",
+      run: () => void runFetch(),
     },
     {
       id: "vcs.refresh",

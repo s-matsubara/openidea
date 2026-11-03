@@ -344,6 +344,70 @@ pub async fn vcs_jj_log_action(
     .await
 }
 
+pub async fn vcs_jj_pull_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPullOptions> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|repo| repo.root() == root && repo.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Update root is not a project Jujutsu repository"))?;
+        repo.jj_pull_options()
+    })
+    .await
+}
+
+pub async fn vcs_jj_fetch(host: &Host, window: &str, root: PathBuf) -> IdeResult<String> {
+    vcs_jj_update_remote(host, window, root, None).await
+}
+
+pub async fn vcs_jj_pull(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    remote: String,
+    bookmark: String,
+) -> IdeResult<String> {
+    vcs_jj_update_remote(host, window, root, Some((remote, bookmark))).await
+}
+
+async fn vcs_jj_update_remote(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    target: Option<(String, String)>,
+) -> IdeResult<String> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|repo| repo.root() == root && repo.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Update root is not a project Jujutsu repository"))?;
+        for doc in project.documents.open_documents() {
+            let info = project.documents.snapshot(doc)?;
+            if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                return Err(ide_core::IdeError::invalid(
+                    "Save unsaved documents before updating the Jujutsu repository",
+                ));
+            }
+        }
+        let result = match target {
+            Some((remote, bookmark)) => repo.jj_pull(&remote, &bookmark),
+            None => repo.jj_fetch(),
+        };
+        project.documents.sync_from_disk();
+        result
+    })
+    .await
+}
+
 pub async fn vcs_jj_push_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPushOptions> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -1371,6 +1435,11 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_jj_log_action", |c| async move {
         vcs_jj_log_action(&c.host, &c.window, c.arg("root")?, c.arg("commit")?, c.arg("change")?, c.arg("action")?)
             .await
+    });
+    d.add("vcs_jj_pull_options", |c| async move { vcs_jj_pull_options(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_fetch", |c| async move { vcs_jj_fetch(&c.host, &c.window, c.arg("root")?).await });
+    d.add("vcs_jj_pull", |c| async move {
+        vcs_jj_pull(&c.host, &c.window, c.arg("root")?, c.arg("remote")?, c.arg("bookmark")?).await
     });
     d.add("vcs_jj_push_options", |c| async move { vcs_jj_push_options(&c.host, &c.window, c.arg("root")?).await });
     d.add("vcs_jj_push", |c| async move { vcs_jj_push(&c.host, &c.window, c.arg("root")?, c.arg("request")?).await });

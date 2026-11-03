@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::RwLock;
 
+pub(crate) mod remote;
+
 static CONFIGURED: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 pub fn set_jj_executable(path: Option<&Path>) {
@@ -2124,6 +2126,7 @@ fn push_options_with(repo: &crate::Repo, exe: &Path) -> IdeResult<JjPushOptions>
 }
 
 pub(crate) fn push(repo: &crate::Repo, request: &JjPushRequest) -> IdeResult<JjPushPreview> {
+    let _update = request.review.as_ref().map(|_| remote::UpdateGuard::acquire(repo)).transpose()?;
     push_with(repo, request, &executable(None)?)
 }
 

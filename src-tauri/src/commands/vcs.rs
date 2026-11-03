@@ -842,6 +842,34 @@ pub async fn vcs_jj_update_workspace(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_jj_pull_options(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+) -> IdeResult<ide_vcs::JjPullOptions> {
+    ide_host::ops::vcs::vcs_jj_pull_options(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_fetch(state: State<'_, AppState>, window: tauri::Window, root: PathBuf) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_fetch(&state.host, window.label(), root).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_jj_pull(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+    root: PathBuf,
+    remote: String,
+    bookmark: String,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_jj_pull(&state.host, window.label(), root, remote, bookmark).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_jj_push_options(
     state: State<'_, AppState>,
     window: tauri::Window,

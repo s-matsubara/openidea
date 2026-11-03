@@ -405,6 +405,9 @@ export const commands = {
 	vcsJjHistoryFiles: (root: string, commit: string) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_jj_history_files", { root, commit })),
 	vcsJjHistoryFileDiff: (root: string, path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_history_file_diff", { root, path, commit })),
 	vcsJjHistory: (root: string, cursor: JjHistoryCursor | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjPullOptions: (root: string) => typedError<JjPullOptions, IdeError>(__TAURI_INVOKE("vcs_jj_pull_options", { root })),
+	vcsJjFetch: (root: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch", { root })),
+	vcsJjPull: (root: string, remote: string, bookmark: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_pull", { root, remote, bookmark })),
 	vcsJjPushOptions: (root: string) => typedError<JjPushOptions, IdeError>(__TAURI_INVOKE("vcs_jj_push_options", { root })),
 	vcsJjPush: (root: string, request: JjPushRequest) => typedError<JjPushPreview, IdeError>(__TAURI_INVOKE("vcs_jj_push", { root, request })),
 	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
@@ -3797,6 +3800,12 @@ export type JjHistoryPage = {
 /**  Log actions are separate from Git operations and accept full row identities only. */
 export type JjLogAction = { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "moveBookmark"; name: string } | { kind: "tag"; name: string };
 
+export type JjPullOptions = {
+	remotes: string[],
+	bookmarks: JjRemoteBookmark[],
+	preferred: JjRemoteBookmark | null,
+};
+
 /**  Explicit Jujutsu push choices. Conflicted/deleted refs are deliberately excluded. */
 export type JjPushOptions = {
 	bookmarks: string[],
@@ -3818,6 +3827,11 @@ export type JjPushRequest = {
 	remote: string,
 	/**  None previews; Some executes only if the current preview still matches. */
 	review: string | null,
+};
+
+export type JjRemoteBookmark = {
+	name: string,
+	remote: string,
 };
 
 export type JjSettings = {

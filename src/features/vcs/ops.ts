@@ -142,6 +142,37 @@ export function allRepos(): Array<string | null> {
   return roots.length ? roots : [null];
 }
 
+/** Fetch every Git and Jujutsu root once, including colocated repositories. */
+export function runFetch() {
+  const { roots, jjRoots } = useVcs.getState();
+  const jj = new Set(jjRoots.map(({ root }) => root));
+  const git = jj.size ? roots.filter((root) => !jj.has(root)) : allRepos();
+  return runRemote({ op: "fetch" }, undefined, [...git, ...jj], jj);
+}
+
+export async function runJjPull(root: string, remote: string, bookmark: string) {
+  const { root: project, remoteBusy } = useVcs.getState();
+  if (remoteBusy) return;
+  useVcs.setState({ remoteBusy: tx("Pulling") });
+  try {
+    await runOp(
+      "Jujutsu Pull",
+      async () => {
+        await maybeEditorService()?.saveAll();
+        const state = useVcs.getState();
+        if (state.root !== project || !state.jjRoots.some((repo) => repo.root === root)) {
+          throw new Error(tx("The selected repository is no longer available"));
+        }
+        const output = await call(commands.vcsJjPull(root, remote, bookmark));
+        if (output) logConsole("out", output);
+      },
+      { success: tx("Pull successful") },
+    );
+  } finally {
+    useVcs.setState({ remoteBusy: null });
+  }
+}
+
 /**
  * Runs fetch / pull / push with progress in the status bar and output in the console,
  * in each of `repos` (default: the selected repository) in turn.
@@ -150,31 +181,48 @@ export async function runRemote(
   op: RemoteOp,
   detail?: string,
   repos: ReadonlyArray<string | null> = [currentRepo()],
+  jjFetchRoots: ReadonlySet<string> = new Set(),
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
     notifications().notify({ group: "vcs", level: "warning", title: "Another remote operation is in progress" });
     return false;
   }
+  const project = useVcs.getState().root;
   const [progressText, doneTitle] = REMOTE_TITLE[op.op];
   const progressTitle = tx(progressText);
   const request = nextRequestId();
   const taskId = `vcs:${request}`;
   activeRemote = request;
   useVcs.setState({ remoteBusy: progressTitle });
-  const cancel = () => void commands.cancelRequest(request);
+  let cancellable = !jjFetchRoots.size || repos.some((repo) => repo === null || !jjFetchRoots.has(repo));
+  let cancelRequested = false;
+  const cancel = () => {
+    if (!cancellable) return;
+    cancelRequested = true;
+    void commands.cancelRequest(request);
+  };
   const task = (message: string | null, fraction: number | null, done: boolean) =>
-    upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction, done, cancel });
+    upsertTaskSoon({
+      id: taskId,
+      title: progressTitle,
+      message,
+      fraction,
+      done,
+      cancel: cancellable ? cancel : undefined,
+    });
+  const showProgress = () =>
+    notifications().notify({
+      group: "vcs",
+      level: "info",
+      key: "vcs.remote",
+      title: `${progressTitle}…`,
+      body: detail,
+      sticky: true,
+      actions: cancellable ? [{ label: "Cancel", run: cancel }] : [],
+    });
   task(detail ?? null, null, false);
-  notifications().notify({
-    group: "vcs",
-    level: "info",
-    key: "vcs.remote",
-    title: `${progressTitle}…`,
-    body: detail,
-    sticky: true,
-    actions: [{ label: "Cancel", run: cancelRemote }],
-  });
-  logConsole("cmd", `git ${op.op}${detail ? ` (${detail})` : ""}`);
+  showProgress();
+  if (!jjFetchRoots.size) logConsole("cmd", `git ${op.op}${detail ? ` (${detail})` : ""}`);
   const channel = new Channel<string>();
   let lastLine = "";
   channel.onmessage = (line) => {
@@ -184,11 +232,16 @@ export async function runRemote(
     task(text || null, progressFraction(text), false);
   };
   try {
+    if (jjFetchRoots.size) await maybeEditorService()?.saveAll();
     // Every repository is tried; the failures are reported together. A pull skips the
     // repositories that have nothing to pull from (detached HEAD, e.g. submodules; no upstream).
     const failures: string[] = [];
     const updated: UpdatedRange[] = [];
     for (const repo of repos) {
+      if (cancelRequested) break;
+      if (jjFetchRoots.size && useVcs.getState().root !== project) {
+        throw new Error(tx("The selected repository is no longer available"));
+      }
       const name = repos.length > 1 && repo ? repoName(repo) : null;
       if (name) logConsole("info", name);
       if (op.op === "pull" && repos.length > 1) {
@@ -200,7 +253,19 @@ export async function runRemote(
       }
       try {
         const before = op.op === "pull" || op.op === "pullFrom" ? await headCommit(repo) : null;
-        await call(commands.vcsRemote(repo, request, op, channel));
+        if (repo && jjFetchRoots.has(repo)) {
+          if (cancellable) {
+            cancellable = false;
+            task(detail ?? null, null, false);
+            showProgress();
+          }
+          logConsole("cmd", "jj git fetch --all-remotes");
+          const output = await call(commands.vcsJjFetch(repo));
+          if (output) channel.onmessage(output);
+        } else {
+          if (jjFetchRoots.size) logConsole("cmd", "git fetch");
+          await call(commands.vcsRemote(repo, request, op, channel));
+        }
         const after = before ? await headCommit(repo) : null;
         if (before && after && before !== after) updated.push({ repo, from: before, to: after });
       } catch (e) {
@@ -209,7 +274,7 @@ export async function runRemote(
         failures.push(`${name}: ${errorMessage(e)}`);
       }
     }
-    if (failures.length) throw new Error(failures.join("\n"));
+    if (cancelRequested || failures.length) throw new Error(failures.join("\n"));
     lastRemoteError = null;
     if (op.op === "pull" || op.op === "pullFrom") await notifyUpdated(updated);
     else
@@ -222,7 +287,7 @@ export async function runRemote(
       });
     return true;
   } catch (e) {
-    const cancelled = isCancelled(e);
+    const cancelled = cancelRequested || isCancelled(e);
     lastRemoteError = cancelled ? null : errorMessage(e);
     logConsole(cancelled ? "info" : "err", cancelled ? `${doneTitle} cancelled` : errorMessage(e));
     // The user asked for it: the progress balloon just goes away.
