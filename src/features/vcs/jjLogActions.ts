@@ -1,5 +1,6 @@
 /** Jujutsu row actions, deliberately independent of Git selection/operation state. */
 import type { JjHistoryCommit, JjLogAction } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { maybeEditorService } from "@/workbench/contributions";
@@ -68,7 +69,7 @@ export function jjLogMenu(root: string, row: JjHistoryCommit, current: () => boo
               title: "Abandon Change",
               okLabel: "Abandon",
               danger: true,
-              message: `Remove change ${row.changeId}? Descendants will be rebased onto its parents. The selected change's changes will be removed.`,
+              message: tx`Remove change ${row.changeId}? Descendants will be rebased onto its parents. The selected change's changes will be removed.`,
             })
           )
             await run({ kind: "abandon" });

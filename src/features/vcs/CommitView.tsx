@@ -382,7 +382,7 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
         title: "Rollback",
         okLabel: "Rollback",
         danger: true,
-        message: `Restore ${paths.length} checked file(s) from the parent of @? Added files will be removed and deleted files restored. Unsaved documents must be saved first.`,
+        message: tx`Restore ${paths.length} checked file(s) from the parent of @? Added files will be removed and deleted files restored. Unsaved documents must be saved first.`,
       }))
     )
       return;
@@ -523,7 +523,7 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
                 <CheckMark
                   checked={count === n.files.length}
                   indeterminate={count > 0 && count < n.files.length}
-                  label={`Select ${n.label} for rollback`}
+                  label={tx`Select ${n.label} for rollback`}
                   onToggle={() =>
                     setChecked((old) => {
                       const next = new Set(old);
