@@ -417,6 +417,10 @@ export const commands = {
 	vcsJjPullOptions: (root: string) => typedError<JjPullOptions, IdeError>(__TAURI_INVOKE("vcs_jj_pull_options", { root })),
 	vcsJjFetch: (root: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch", { root })),
 	vcsJjPull: (root: string, remote: string, bookmark: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_pull", { root, remote, bookmark })),
+	vcsJjFetchOptions: (root: string) => typedError<JjFetchOptions, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_options", { root })),
+	vcsJjFetchSelected: (root: string, remote: string, tag: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_selected", { root, remote, tag })),
+	vcsJjRebaseOptions: (root: string) => typedError<JjRebaseOptions, IdeError>(__TAURI_INVOKE("vcs_jj_rebase_options", { root })),
+	vcsJjRebase: (root: string, source: string | null, destination: string, skipEmptied: boolean, ignoreImmutable: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_rebase", { root, source, destination, skipEmptied, ignoreImmutable })),
 	vcsJjPushOptions: (root: string) => typedError<JjPushOptions, IdeError>(__TAURI_INVOKE("vcs_jj_push_options", { root })),
 	vcsJjPush: (root: string, request: JjPushRequest) => typedError<JjPushPreview, IdeError>(__TAURI_INVOKE("vcs_jj_push", { root, request })),
 	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
@@ -3788,6 +3792,11 @@ export type JjDescriptionEdit = {
 	description: string,
 };
 
+export type JjFetchOptions = {
+	remotes: string[],
+	tags: JjRemoteTag[],
+};
+
 /**  Immutable text pair for the shared diff viewer. Missing sides are explicit empty text. */
 export type JjFileDiff = {
 	before: string,
@@ -3854,7 +3863,28 @@ export type JjPushRequest = {
 	review: string | null,
 };
 
+export type JjRebaseOptions = {
+	source: JjRebaseRevision,
+	destinations: JjRebaseRevision[],
+	preferred: string | null,
+	trunkLabel: string | null,
+};
+
+export type JjRebaseRevision = {
+	commitId: string,
+	label: string,
+	kind: JjRebaseRevisionKind,
+	remote: string | null,
+};
+
+export type JjRebaseRevisionKind = "revision" | "bookmark" | "tag";
+
 export type JjRemoteBookmark = {
+	name: string,
+	remote: string,
+};
+
+export type JjRemoteTag = {
 	name: string,
 	remote: string,
 };

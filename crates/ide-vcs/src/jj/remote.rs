@@ -18,6 +18,185 @@ pub struct JjPullOptions {
     pub preferred: Option<JjRemoteBookmark>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct JjRemoteTag {
+    pub name: String,
+    pub remote: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct JjFetchOptions {
+    pub remotes: Vec<String>,
+    pub tags: Vec<JjRemoteTag>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum JjRebaseRevisionKind {
+    Revision,
+    Bookmark,
+    Tag,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjRebaseRevision {
+    pub commit_id: String,
+    pub label: String,
+    pub kind: JjRebaseRevisionKind,
+    pub remote: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JjRebaseOptions {
+    pub source: JjRebaseRevision,
+    pub destinations: Vec<JjRebaseRevision>,
+    pub preferred: Option<String>,
+    pub trunk_label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RefTarget {
+    name: String,
+    remote: Option<String>,
+    commit: String,
+}
+
+fn refs(repo: &Repo, exe: &Path, kind: &str) -> IdeResult<Vec<RefTarget>> {
+    let template = r#"if(present && !conflict, json({"name" => name, "remote" => remote, "commit" => normal_target.commit_id()}) ++ "\n")"#;
+    let output = read_command(repo, exe, &[kind, "list", "--all-remotes", "-T", template])?;
+    String::from_utf8_lossy(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(|e| IdeError::invalid(format!("Invalid jj {kind} JSON: {e}"))))
+        .collect()
+}
+
+pub(crate) fn fetch_options(repo: &Repo) -> IdeResult<JjFetchOptions> {
+    require_root(repo)?;
+    let exe = executable(None)?;
+    let remotes = remotes(repo, &exe)?;
+    let tags = refs(repo, &exe, "tag")?
+        .into_iter()
+        .filter_map(|tag| {
+            let remote = tag.remote?;
+            remotes.contains(&remote).then_some(JjRemoteTag { name: tag.name, remote })
+        })
+        .collect();
+    Ok(JjFetchOptions { remotes, tags })
+}
+
+pub(crate) fn fetch_selected(repo: &Repo, remote: &str, tag: Option<&str>) -> IdeResult<String> {
+    let _update = UpdateGuard::acquire(repo)?;
+    fetch_selected_with(repo, &executable(None)?, remote, tag)
+}
+
+fn fetch_selected_with(repo: &Repo, exe: &Path, remote: &str, tag: Option<&str>) -> IdeResult<String> {
+    if !remotes(repo, exe)?.iter().any(|name| name == remote) {
+        return Err(IdeError::invalid("The selected Jujutsu remote no longer exists"));
+    }
+    let remote = exact(remote);
+    let tag = tag.map(|name| if name == "*" { name.to_owned() } else { exact(name) });
+    let mut args = vec!["git", "fetch", "--remote", &remote];
+    if let Some(tag) = tag.as_deref() {
+        args.extend(["--tag", tag]);
+    }
+    run(repo, exe, &args).map_err(|error| IdeError::new(error.kind, format!("Jujutsu Fetch failed: {}", error.message)))
+}
+
+fn revision(repo: &Repo, exe: &Path, revset: &str) -> IdeResult<JjRebaseRevision> {
+    let template = r#""{\"commitId\":" ++ json(commit_id) ++ ",\"label\":" ++ json(stringify(change_id.shortest() ++ " " ++ description.first_line())) ++ ",\"kind\":\"revision\",\"remote\":null}""#;
+    let revset = format!("exactly({revset}, 1)");
+    let output = read_command(repo, exe, &["log", "--no-graph", "-r", &revset, "-T", template])?;
+    serde_json::from_slice(&output).map_err(|e| IdeError::invalid(format!("Invalid jj revision JSON: {e}")))
+}
+
+pub(crate) fn rebase_options(repo: &Repo) -> IdeResult<JjRebaseOptions> {
+    require_root(repo)?;
+    rebase_options_with(repo, &executable(None)?)
+}
+
+fn rebase_options_with(repo: &Repo, exe: &Path) -> IdeResult<JjRebaseOptions> {
+    let remotes = remotes(repo, exe)?;
+    let source = revision(repo, exe, "@")?;
+    let trunk = revision(repo, exe, "trunk()").ok();
+    let preferred = trunk.as_ref().map(|row| row.commit_id.clone());
+    let mut destinations = Vec::new();
+    for (command, kind) in [("bookmark", JjRebaseRevisionKind::Bookmark), ("tag", JjRebaseRevisionKind::Tag)] {
+        destinations.extend(
+            refs(repo, exe, command)?
+                .into_iter()
+                .filter(|row| row.remote.as_ref().is_none_or(|remote| remotes.contains(remote)))
+                .map(|row| JjRebaseRevision {
+                    commit_id: row.commit,
+                    label: match &row.remote {
+                        Some(remote) => format!("{}@{remote}", row.name),
+                        None => row.name,
+                    },
+                    kind: kind.clone(),
+                    remote: row.remote,
+                }),
+        );
+    }
+    let trunk_label = trunk.as_ref().map(|trunk| {
+        let unique_bookmark = |remote: bool| {
+            let mut matching = destinations.iter().filter(|row| {
+                matches!(row.kind, JjRebaseRevisionKind::Bookmark)
+                    && row.commit_id == trunk.commit_id
+                    && row.remote.is_some() == remote
+            });
+            let row = matching.next()?;
+            matching.next().is_none().then_some(row.label.clone())
+        };
+        unique_bookmark(true).or_else(|| unique_bookmark(false)).unwrap_or_else(|| trunk.label.clone())
+    });
+    if let Some(trunk) = trunk {
+        if !destinations.iter().any(|row| row.commit_id == trunk.commit_id) {
+            destinations.push(trunk);
+        }
+    }
+    Ok(JjRebaseOptions { source, destinations, preferred, trunk_label })
+}
+
+pub(crate) fn rebase(
+    repo: &Repo,
+    source: Option<&str>,
+    destination: &str,
+    skip_emptied: bool,
+    ignore_immutable: bool,
+) -> IdeResult<String> {
+    let _update = UpdateGuard::acquire(repo)?;
+    rebase_with(repo, &executable(None)?, source, destination, skip_emptied, ignore_immutable)
+}
+
+fn rebase_with(
+    repo: &Repo,
+    exe: &Path,
+    source: Option<&str>,
+    destination: &str,
+    skip_emptied: bool,
+    ignore_immutable: bool,
+) -> IdeResult<String> {
+    let valid = |id: &str| matches!(id.len(), 40 | 64) && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !valid(destination) || source.is_some_and(|id| !valid(id)) {
+        return Err(IdeError::invalid("Rebase requires full Jujutsu commit IDs"));
+    }
+    let selected = source.map(|id| format!("exactly({id} & visible(), 1)"));
+    let destination = format!("exactly({destination} & visible(), 1)");
+    let mut args = vec!["rebase", "-d", &destination];
+    match &selected {
+        Some(source) => args.extend(["-s", source]),
+        None => args.extend(["-b", "@"]),
+    }
+    if skip_emptied {
+        args.push("--skip-emptied");
+    }
+    if ignore_immutable {
+        args.push("--ignore-immutable");
+    }
+    run(repo, exe, &args)
+}
+
 #[derive(serde::Deserialize)]
 struct BookmarkTarget {
     name: String,
@@ -278,6 +457,30 @@ mod tests {
         assert_eq!(commits(&repo, &exe, "@").unwrap(), source);
         assert_ne!(commits(&repo, &exe, "main@origin").unwrap(), old_target);
         cli(repo.root(), &["config", "unset", "--repo", immutable]);
+
+        // Selected Fetch imports the requested tag only, then standalone Rebase
+        // can move the current series to the tag's exact revision.
+        cli(&remote, &["new", "main", "-m", "tag destination"]);
+        cli(&remote, &["tag", "set", "release-1", "release-2"]);
+        let target_before = commits(&repo, &exe, "main@origin").unwrap();
+        fetch_selected_with(&repo, &exe, "origin", Some("release-1")).unwrap();
+        let tags = refs(&repo, &exe, "tag").unwrap();
+        let target =
+            tags.iter().find(|tag| tag.name == "release-1" && tag.remote.as_deref() == Some("origin")).unwrap();
+        assert!(tags.iter().all(|tag| tag.name != "release-2"));
+        fetch_selected_with(&repo, &exe, "origin", Some("*")).unwrap();
+        assert!(refs(&repo, &exe, "tag").unwrap().iter().any(|tag| tag.name == "release-2"));
+        assert_eq!(commits(&repo, &exe, "main@origin").unwrap(), target_before);
+        assert!(rebase_with(&repo, &exe, None, "@", false, false).is_err());
+        let options = rebase_options_with(&repo, &exe).unwrap();
+        assert_eq!(options.source.commit_id, commits(&repo, &exe, "@").unwrap()[0]);
+        assert_eq!(options.preferred.as_ref(), target_before.first());
+        assert_eq!(options.trunk_label.as_deref(), Some("main@origin"));
+        assert!(options.destinations.iter().any(|row| row.label == "release-1@origin"));
+        assert!(options.destinations.iter().all(|row| row.remote.as_deref() != Some("git")));
+        let local_parent = commits(&repo, &exe, "@-").unwrap().remove(0);
+        rebase_with(&repo, &exe, Some(&local_parent), &target.commit, false, false).unwrap();
+        assert_eq!(commits(&repo, &exe, "@--").unwrap(), [target.commit.clone()]);
 
         // An unavailable remote reports a fetch failure and leaves the current series intact.
         let source = commits(&repo, &exe, "@").unwrap();
