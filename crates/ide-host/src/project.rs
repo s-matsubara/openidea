@@ -279,7 +279,11 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
-        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(&settings.effective(), &root, &build_cache))?));
+        let repos = Arc::new(RwLock::new(Repos::enclosing_roots(&repository_roots(
+            &settings.effective(),
+            &root,
+            &build_cache,
+        ))?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -1502,7 +1506,6 @@ mod agent_worktree_tests {
         assert_eq!(agent_worktrees_dir(Path::new("/"), fallback), fallback());
     }
 }
-
 
 #[cfg(test)]
 mod repository_scan_tests {

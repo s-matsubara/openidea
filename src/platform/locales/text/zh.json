@@ -6150,5 +6150,11 @@
   "New Bookmark…": "新建书签…",
   "Restore {count} checked file(s) from the parent of @? Added files will be removed and deleted files restored. Unsaved documents must be saved first.": "是否从 @ 的父变更恢复 {count} 个已选文件？新增的文件将被移除，已删除的文件将被恢复。请先保存未保存的文档。",
   "Select {name} for rollback": "选择 {name} 以回滚",
-  "Remove change {changeId}? Descendants will be rebased onto its parents. The selected change's changes will be removed.": "是否移除变更 {changeId}？其后代将变基到其父变更上。所选变更的修改将被移除。"
+  "Remove change {changeId}? Descendants will be rebased onto its parents. The selected change's changes will be removed.": "是否移除变更 {changeId}？其后代将变基到其父变更上。所选变更的修改将被移除。",
+  "Previous Conflict": "上一个冲突",
+  "Next Conflict": "下一个冲突",
+  "Accept All Yours": "全部接受你的版本",
+  "Accept All Theirs": "全部接受他们的版本",
+  "{left} conflict left": "剩余 {left} 个冲突",
+  "{left} conflicts left": "剩余 {left} 个冲突"
 }
