@@ -34,6 +34,9 @@ The former openidea-upstream-rebase procedure is superseded.
 - Merge the upstream release using `git merge --no-ff --no-commit <upstream-tag>`.
   A jj equivalent must create a new revision with both original commits as parents;
   it must not rebase or rewrite either parent.
+- Keep the fork's removed workflows absent: Language smoke, Plugin index, and
+  CNB mirror. Do not restore their workflow files or the Release CNB mirror call
+  when importing upstream changes. Local smoke commands remain available.
 - Resolve conflicts by preserving the fork's jj support, identity, and dependency
   changes alongside upstream behavior. Review auto-merged shared code as well.
 - Regenerate lockfiles and IPC bindings with normal repository commands after

@@ -230,9 +230,8 @@ jobs:
   # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
   # writes) nothing is published and the release goes on. The index also lists
   # the community plugins of the registry (COMMUNITY_PLUGINS_INDEX; refreshed
-  # between releases by plugins-index.yml), and the release carries the
-  # openidea-plugin tool for Linux x64, which that workflow and the registry's
-  # checks run.
+  # in this release), and the release carries the openidea-plugin tool for Linux
+  # x64 used by the registry checks.
   plugins:
     needs: create-release
     name: Official plugins
@@ -367,10 +366,3 @@ jobs:
             await github.rest.repos.updateRelease({
               ...context.repo, release_id: Number(process.env.RELEASE_ID), draft: false,
             });
-
-  # The China mirror the updater's CNB source reads; a failure here leaves the GitHub release as is.
-  cnb-mirror:
-    needs: publish
-    uses: ./.github/workflows/cnb-mirror.yml
-    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
-    secrets: inherit

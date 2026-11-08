@@ -82,7 +82,7 @@ main. `openidea-upstream-rebase` is retired.
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
 - `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
-  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
+  on `fixtures/` with that language's real server installed (manual verification; the fork has no Language smoke workflow).
 - `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
   run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
 - `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
