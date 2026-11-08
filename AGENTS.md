@@ -55,6 +55,15 @@ Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per
 see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
 Unclear product decisions → `needs-decision` and stop.
 
+## Commit identity
+
+For this fork, use `17187820+s-matsubara@users.noreply.github.com` for both
+Git author and committer email and for `jj`'s `user.email`. Configure the
+repository explicitly; do not inherit a personal email from the environment.
+Before pushing, inspect all newly created fork commits for this identity.
+Keep GitHub's email privacy protection enabled. Never rewrite published commits
+or move published tags to fix identity metadata.
+
 ## Skills
 
 Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):

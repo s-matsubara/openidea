@@ -14,6 +14,11 @@ The former openidea-upstream-rebase procedure is superseded.
 - Inspect the working tree, local branches/bookmarks, remotes, and fork release tags.
   Preserve unrelated work in its existing worktree.
 - Confirm origin is s-matsubara/openidea and upstream is l0ng-ai/openidea.
+- Set repository Git `user.email` and jj `user.email` to
+  `17187820+s-matsubara@users.noreply.github.com` before creating commits.
+  Ensure both Git author and committer emails use this address; environment
+  overrides must not introduce a personal email. Keep email privacy protection
+  enabled, and inspect all new fork commits before pushing.
 - Fetch and verify the requested official release tag. When asked for the latest,
   resolve the latest non-draft, non-prerelease release from GitHub; compare its
   release page and remote tag commit. Do not merge unreleased upstream main.
