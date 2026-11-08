@@ -60,6 +60,10 @@ Unclear product decisions → `needs-decision` and stop.
 Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 `verify` drives the running app through Tauri MCP and captures screenshot evidence;
 `issue-fix` takes an issue from reproduction to one PR.
+For every upstream release import, use `openidea-upstream-merge`: merge the verified
+release into the fork tip, preserve existing jj work and tags, and create a new
+`vYYYY.x.x` fork tag when requested. Do not rebase the fork stack or force-update
+main. `openidea-upstream-rebase` is retired.
 
 ## Commands
 

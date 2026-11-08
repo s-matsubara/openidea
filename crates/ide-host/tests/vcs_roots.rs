@@ -198,6 +198,11 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     assert_eq!(old_nested_path.before, "");
     assert_eq!(old_nested_path.after, "outer historical nested path");
     for (at, text) in [(&root, "outer"), (&nested, "nested")] {
+        let url = format!("https://github.com/example/{text}.git");
+        jj(at, &["git", "remote", "add", "origin", &url]);
+        let remotes = vcs::vcs_remotes(&host, "main", Some(at.clone())).await.unwrap();
+        assert_eq!(remotes, vec![ide_vcs::Remote { name: "origin".into(), url }]);
+        assert!(vcs::vcs_remotes(&host, "main", Some(at.join("same.txt"))).await.is_err());
         let copy = roots.iter().find(|r| Path::new(r.root.as_ref()) == at).unwrap().working_copy.as_ref().unwrap();
         let pair = vcs::vcs_jj_file_diff(&host, "main", at.join("same.txt"), copy.commit_id.clone()).await.unwrap();
         assert_eq!(pair.before, text);

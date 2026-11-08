@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -127,6 +127,21 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
+/// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
+/// Linux sets the urgency hint). A focused window is never flashed: the user is already
+/// looking at it, and re-flashing it would steal attention for nothing.
+#[tauri::command]
+#[specta::specta]
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
+    if flash && window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    window
+        .request_user_attention(flash.then_some(tauri::UserAttentionType::Critical))
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[tauri::command]
 #[specta::specta]
@@ -178,6 +193,13 @@ pub fn window_open_projects(
         .collect())
 }
 
+/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    window.is_fullscreen().unwrap_or(false)
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseContext {
@@ -189,8 +211,18 @@ pub struct CloseContext {
 
 #[tauri::command]
 #[specta::specta]
-pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) -> CloseContext {
-    CloseContext { quitting: windows.quitting(), windows: windows::project_window_labels(&app).len() as u32 }
+pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
+    let all = windows::project_window_labels(&app);
+    let pending: Vec<String> = windows::sorted_labels(
+        windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
+    );
+    // Members of a tab group asking to close together are one window closing: the first of them
+    // is the last window left (it returns to the welcome screen); the others just close.
+    let count = match pending.first() {
+        Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
+        _ => all.len(),
+    };
+    CloseContext { quitting: windows.quitting(), windows: count as u32 }
 }
 
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
@@ -214,9 +246,9 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text and rebuilds it when they changed.
-/// Focusing another project window re-pushes the same shared menu; an identical
-/// config must not call `set_menu`, which redraws the macOS menu bar.
+/// Sets the menu's labels / shortcut text and updates the menu when the visible
+/// items changed. Shortcuts for actions that are not on the menu must not call
+/// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -230,7 +262,8 @@ pub fn menu_configure(
     }
 }
 
-/// Rebuilds the menu (e.g. after the recent-projects list changed).
+/// Updates the menu after the recent-projects list changed. Only the Open Recent
+/// submenu is rewritten when the rest of the menu is unchanged.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: State<'_, AppState>) {

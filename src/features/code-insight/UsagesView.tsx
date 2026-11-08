@@ -415,7 +415,7 @@ function UsagesPreview({ node }: { node: Node | null }) {
   const highlights = useMemo(() => {
     const group = usage && search?.groups.find((g) => g.path === usage.path);
     return (group?.usages ?? []).map((u) => ({ line: u.line, ranges: [[u.col, u.endCol] as const] }));
-  }, [usage, search?.groups]);
+  }, [usage, search]);
   return (
     <SourcePreview
       path={usage?.path ?? null}

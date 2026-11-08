@@ -2,6 +2,8 @@ import type { FileStatus, JjDescriptionEdit, VcsRoot } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { macStroke, normalizeBinding, strokeOf } from "@/platform/keymap";
+import { copyChangedFiles } from "./changeCopy";
 import { useProject } from "@/platform/project";
 import {
   Button,
@@ -304,7 +306,11 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
       <div
         className={jjStyles.jjFiles}
         onKeyDownCapture={(e) => {
-          if (e.key !== " " || e.metaKey || e.ctrlKey || !selected.size) return;
+          if (!selected.size) return;
+          const stroke = strokeOf(e.nativeEvent);
+          const binding = stroke && normalizeBinding(macStroke(stroke));
+          const copyKind = binding === "Meta+C" ? "name" : binding === "Shift+Meta+C" ? "absolute" : null;
+          if (!copyKind && (e.key !== " " || e.metaKey || e.ctrlKey)) return;
           e.preventDefault();
           e.stopPropagation();
           const files: FileStatus[] = [];
@@ -314,6 +320,10 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
               else if (n.children) collect(n.children);
             });
           collect(nodes);
+          if (copyKind) {
+            copyChangedFiles(files, copyKind);
+            return;
+          }
           setChecked((old) => {
             const next = new Set(old);
             const all = files.every((f) => old.has(f.path));
@@ -344,7 +354,6 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
           onSelectionChange={setSelected}
           onContextMenu={(node, selection, e) => {
             const file = node?.type === "file" ? node.files[0] : undefined;
-            if (!file) return;
             const files: FileStatus[] = [];
             const collect = (ns: ChangeNode[]) =>
               ns.forEach((n) => {
@@ -353,22 +362,24 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
               });
             collect(nodes);
             const targets = [...new Map(files.map((f) => [f.path, f])).values()];
-            const paths = targets.map((f) => f.path);
-            const items: MenuItem[] = [
-              {
-                label: "Show Diff",
-                run: () => {
-                  if (!current()) return;
-                  void call(commands.vcsJjFileDiff(file.path, copy.commitId))
-                    .then((pair) => {
-                      if (current())
-                        return openDiff(jjWorkingDiffData(file.path, pair, effectiveKind(file) === "deleted"));
-                    })
-                    .catch((e) => onError(`${file.relPath}: ${String(e)}`));
-                },
-              },
-              { kind: "separator" },
-            ];
+            if (!targets.length) return;
+            const items: MenuItem[] = file
+              ? [
+                  {
+                    label: "Show Diff",
+                    run: () => {
+                      if (!current()) return;
+                      void call(commands.vcsJjFileDiff(file.path, copy.commitId))
+                        .then((pair) => {
+                          if (current())
+                            return openDiff(jjWorkingDiffData(file.path, pair, effectiveKind(file) === "deleted"));
+                        })
+                        .catch((e) => onError(`${file.relPath}: ${String(e)}`));
+                    },
+                  },
+                  { kind: "separator" },
+                ]
+              : [];
             if (targets.some((f) => effectiveKind(f) === "conflicted"))
               items.push({
                 label: "Resolve Conflicts…",
@@ -378,7 +389,10 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
                 },
               });
             if (targets.some((f) => effectiveKind(f) === "conflicted")) items.push({ kind: "separator" });
-            items.push({ label: "Copy Path", run: () => void navigator.clipboard?.writeText(paths.join("\n")) });
+            items.push(
+              { label: "Copy Path", icon: "copy", run: () => copyChangedFiles(targets, "absolute") },
+              { label: "Copy File Name", icon: "copy", run: () => copyChangedFiles(targets, "name") },
+            );
             showContextMenu(e, items);
           }}
           aria-label="Working-copy changes"

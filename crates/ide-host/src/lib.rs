@@ -14,6 +14,7 @@ mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -223,6 +224,8 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
@@ -248,7 +251,7 @@ impl Host {
             vec![project.notebooks.clone()],
             project.kotlin_bridge.iter().cloned().collect(),
             Some(project.lsp.clone()),
-            Some((self.debugger.clone(), window.to_owned())),
+            Some((self.debugger.clone(), window.to_owned(), project.root.clone())),
             Some(project),
         ))
     }
@@ -261,7 +264,7 @@ impl Host {
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
-        debug: Option<(Arc<ide_dap::DebugManager>, String)>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String, std::path::PathBuf)>,
         retired: Option<Arc<Project>>,
     ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
@@ -286,8 +289,9 @@ impl Host {
                 if let Some(lsp) = lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, key)) = debug {
+                if let Some((debug, key, root)) = debug {
                     debug.stop_key(&key).await;
+                    debug.stop_under(&root).await;
                 }
             });
             if let Some(retired) = retired {
@@ -372,6 +376,10 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        }
+        for project in &projects {
+            project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }

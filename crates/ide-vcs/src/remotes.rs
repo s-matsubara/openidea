@@ -41,6 +41,9 @@ impl Repo {
     /// Configured remotes with their fetch URLs.
     pub fn remotes(&self) -> IdeResult<Vec<Remote>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if self.kind() == crate::VcsKind::Jj {
+            return crate::jj::git_remotes(self);
+        }
         let out = cli::run(self.root(), &["remote", "-v"], None)?;
         Ok(parse_remotes(&out.stdout_str()))
     }

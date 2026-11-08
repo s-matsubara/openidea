@@ -1,3 +1,4 @@
+import { useGitLogChecks } from "@/workbench/contributions";
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { FileStatus, JjHistoryCommit, JjHistoryPage, VcsRoot } from "@/bindings";
@@ -79,7 +80,8 @@ beforeEach(() => {
   historyDiff.mockReset();
   historyLineStats.mockReset();
   openInput.mockReset();
-  useLogOptions.setState({ diffPreview: false, showLineStats: false });
+  useLogOptions.setState({ diffPreview: false, showLineStats: false, showGitHubChecks: false });
+  useGitLogChecks.setState({ cell: null });
   rootsRequest.mockReset();
   gitLog.mockReset();
   useVcs.setState({
@@ -459,4 +461,23 @@ it("copies the full change identity while preserving full descriptions and compa
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it("shows GitHub checks for commit IDs in the selected jj root only when enabled", async () => {
+  const id = "a".repeat(40);
+  history.mockResolvedValue(ok([commit(id, { changeId: "stable-change-id" })]));
+  useGitLogChecks.setState({
+    cell: ({ root, revision }) => (
+      <span data-testid="jj-check">
+        {root}:{revision}
+      </span>
+    ),
+  });
+  render(<JjToolWindow />);
+  await screen.findByRole("button", { name: "Copy Change ID" });
+  expect(screen.queryByTestId("jj-check")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "GitHub Commit Checks" }));
+  expect(await screen.findByTestId("jj-check")).toHaveTextContent(`/one:${id}`);
+  fireEvent.click(screen.getByRole("button", { name: "GitHub Commit Checks" }));
+  expect(screen.queryByTestId("jj-check")).toBeNull();
 });

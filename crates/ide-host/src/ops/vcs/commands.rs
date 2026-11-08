@@ -1098,12 +1098,15 @@ pub async fn vcs_create_branch(
     name: String,
     start: Option<String>,
     checkout: bool,
+    overwrite: Option<bool>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let recorded = checkout.then_some("Git checkout");
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), recorded, |r| r.create_branch(&name, start.as_deref(), checkout))
+        project.with_repo_recorded(repo.as_deref(), recorded, |r| {
+            r.create_branch_with_overwrite(&name, start.as_deref(), checkout, overwrite.unwrap_or(false))
+        })
     })
     .await
 }
@@ -1543,8 +1546,22 @@ pub async fn vcs_rebase_with(
 }
 
 pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Remote>> {
-    let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.remotes())).await
+    let access = LogAccess::new(host, window, repo.as_deref());
+    blocking(move || {
+        // GitHub checks can read an explicitly selected jj root, without enabling
+        // the Git mutation routes that remain guarded by require_git().
+        if let (Some(project), Some(root)) = (&access.project, repo.as_deref()) {
+            let repos = project.repos();
+            if let Some(repo) = repos.at_root(root).filter(|repo| repo.kind() == VcsKind::Jj) {
+                if project.is_trusted() {
+                    apply_git_executable(&project.settings.effective());
+                }
+                return repo.remotes();
+            }
+        }
+        access.with_log_repo_at(repo.as_deref(), |r| r.remotes())
+    })
+    .await
 }
 
 pub async fn vcs_edit_remote(host: &Host, window: &str, repo: Option<PathBuf>, edit: RemoteEdit) -> IdeResult<()> {
@@ -1952,7 +1969,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_checkout(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?, c.arg("create")?, c.arg("options")?).await
     });
     d.add("vcs_create_branch", |c| async move {
-        vcs_create_branch(&c.host, &c.window, c.arg("repo")?, c.arg("name")?, c.arg("start")?, c.arg("checkout")?).await
+        vcs_create_branch(
+            &c.host,
+            &c.window,
+            c.arg("repo")?,
+            c.arg("name")?,
+            c.arg("start")?,
+            c.arg("checkout")?,
+            c.arg("overwrite")?,
+        )
+        .await
     });
     d.add(
         "vcs_undo_commit",

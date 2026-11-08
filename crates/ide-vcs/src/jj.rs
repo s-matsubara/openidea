@@ -113,6 +113,27 @@ struct SnapshotFile {
     conflict: bool,
 }
 
+/// Read remotes through jj, including non-colocated and linked workspaces.
+pub(crate) fn git_remotes(repo: &crate::Repo) -> IdeResult<Vec<crate::Remote>> {
+    let bytes = read_command(repo, &executable(None)?, &["git", "remote", "list"])?;
+    let text = String::from_utf8(bytes).map_err(|_| IdeError::invalid("Jujutsu remotes are not UTF-8"))?;
+    text.lines()
+        .map(|line| {
+            let (name, url) = if line.starts_with('"') {
+                let mut values = serde_json::Deserializer::from_str(line).into_iter::<String>();
+                let name =
+                    values.next().and_then(Result::ok).ok_or_else(|| IdeError::invalid("Invalid jj remote name"))?;
+                (name, line[values.byte_offset()..].trim_start())
+            } else {
+                let (name, url) =
+                    line.split_once(char::is_whitespace).ok_or_else(|| IdeError::invalid("Invalid jj remote"))?;
+                (name.to_owned(), url.trim_start())
+            };
+            Ok(crate::Remote { name, url: url.to_owned() })
+        })
+        .collect()
+}
+
 pub(crate) fn working_copy(repo: &crate::Repo) -> IdeResult<JjWorkingCopy> {
     repo.require_execution_allowed()?;
     snapshot(repo, &executable(None)?)
@@ -1676,7 +1697,7 @@ mod log_action_tests {
 case "$*" in
   *"bookmark list"*) printf 'release[1]\n' ;;
   *"tag list"*) printf 'release[1]\n' ;;
-  *"git remote list"*) printf '\"-remote\" /tmp/remote\n' ;;
+  *"git remote list"*) printf '"-remote" /tmp/remote\n' ;;
   *"op log"*) printf 'operation-id' ;;
   *" log "*) : ;;
   *"git push"*) printf '%s\n' "$@" > args; printf 'outgoing\n' ;;
@@ -2067,7 +2088,9 @@ pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> Id
     {
         return Err(IdeError::invalid("Workspace identity changed; refresh"));
     }
-    // Delegate snapshotting and deletion to jj. Never force or manually delete files.
+    // Snapshot the target workspace before removal; removing it from another workspace
+    // does not reliably retain files written since its last snapshot.
+    workspace_command(&target_repo, &["status"])?;
     workspace_command(repo, &["workspace", "remove", "--", &expected.name])?;
     Ok(())
 }
@@ -2114,6 +2137,30 @@ mod workspace_tests {
         repo.jj_remove_workspace(&latest).unwrap();
         assert!(!target.exists());
         assert!(repo.jj_update_workspace(&pinned).is_err());
+    }
+
+    #[test]
+    fn remotes_use_the_jj_backend_in_non_colocated_and_linked_workspaces() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("main with spaces");
+        assert!(
+            Command::new(&exe).args(["git", "init", "--no-colocate"]).arg(&root).output().unwrap().status.success()
+        );
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        workspace_command(&repo, &["git", "remote", "add", "origin", "https://github.com/example/fork.git"]).unwrap();
+        assert!(!root.join(".git").exists());
+        let remotes = repo.remotes().unwrap();
+        assert_eq!(
+            remotes,
+            vec![crate::Remote { name: "origin".into(), url: "https://github.com/example/fork.git".into() }]
+        );
+        let linked = tmp.path().join("linked");
+        repo.jj_add_workspace("linked", &linked, "@").unwrap();
+        let secondary = crate::Repo::discover(&linked).unwrap().unwrap();
+        assert_eq!(secondary.remotes().unwrap(), remotes);
+        secondary.set_execution_allowed(false);
+        assert!(secondary.remotes().is_err());
     }
 
     #[test]

@@ -431,8 +431,8 @@ it.each(["conflicted", "modified"] as const)(
     );
     expect(rows).toEqual(
       kind === "conflicted"
-        ? ["Show Diff", "separator", "Resolve Conflicts…", "separator", "Copy Path"]
-        : ["Show Diff", "separator", "Copy Path"],
+        ? ["Show Diff", "separator", "Resolve Conflicts…", "separator", "Copy Path", "Copy File Name"]
+        : ["Show Diff", "separator", "Copy Path", "Copy File Name"],
     );
     expect(screen.queryByText("Rollback…")).toBeNull();
     fireEvent.click(within(menu).getByText("Copy Path"));
@@ -524,4 +524,45 @@ it("reports contextual diff editor-open failures", async () => {
   fireEvent.contextMenu(screen.getByText("a"));
   fireEvent.click(await screen.findByText("Show Diff"));
   expect(await screen.findByRole("alert")).toHaveTextContent("a: Error: editor failed");
+});
+
+it("copies jj file names and paths from the keyboard and directory menu", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  useVcs.setState({
+    jjRoots: [
+      root({
+        workingCopy: {
+          ...root().workingCopy!,
+          files: ["a.txt", "b.txt"].map((name) => ({
+            path: `/jj/src/${name}`,
+            relPath: `src/${name}`,
+            unstaged: "modified",
+            staged: null,
+            renamedFrom: null,
+          })),
+        },
+      }),
+    ],
+  });
+  render(
+    <>
+      <CommitToolWindow />
+      <ContextMenuHost />
+    </>,
+  );
+  const row = (await screen.findByText("a.txt")).closest('[role="treeitem"]')!;
+  act(() => fireEvent.mouseDown(row));
+  act(() => fireEvent.keyDown(row, { key: "c", code: "KeyC", metaKey: true }));
+  expect(writeText).toHaveBeenLastCalledWith("a.txt");
+  act(() => fireEvent.keyDown(row, { key: "C", code: "KeyC", metaKey: true, shiftKey: true }));
+  expect(writeText).toHaveBeenLastCalledWith("/jj/src/a.txt");
+  const directory = screen.getByText("src").closest('[role="treeitem"]')!;
+  act(() => fireEvent.contextMenu(directory));
+  fireEvent.click(await screen.findByText("Copy File Name"));
+  expect(writeText).toHaveBeenLastCalledWith("a.txt\nb.txt");
+  act(() => fireEvent.contextMenu(directory));
+  fireEvent.click(await screen.findByText("Copy Path"));
+  expect(writeText).toHaveBeenLastCalledWith("/jj/src/a.txt\n/jj/src/b.txt");
+  expect(restore).not.toHaveBeenCalled();
 });

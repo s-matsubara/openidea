@@ -1,6 +1,7 @@
 /** Jujutsu history and its selected change details. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileLineStats, FileStatus, JjHistoryCommit, JjHistoryPage } from "@/bindings";
+import { useGitLogChecks } from "@/workbench/contributions";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import {
@@ -71,6 +72,8 @@ function History({
   query: string;
   setQuery: (query: string) => void;
 }) {
+  const ChecksCell = useGitLogChecks((s) => s.cell);
+  const showChecks = useLogOptions((s) => s.showGitHubChecks);
   const [page, setPage] = useState<JjHistoryPage>({ commits: [], next: null });
   const [selected, select] = useState<string | null>(null);
   const [loading, setLoading] = useState(!unavailable);
@@ -191,6 +194,15 @@ function History({
               )}
               {loading && <Spinner size={12} />}
               <span className={styles.grow} />
+              {ChecksCell && (
+                <IconButton
+                  icon="success"
+                  title="GitHub Commit Checks"
+                  size="small"
+                  pressed={showChecks}
+                  onClick={() => setLogOptions({ showGitHubChecks: !showChecks })}
+                />
+              )}
               <IconButton
                 icon="refresh"
                 title="Refresh Jujutsu history"
@@ -260,6 +272,7 @@ function History({
                     </span>
                     <JjRefs commit={c} />
                   </span>
+                  {showChecks && ChecksCell && <ChecksCell root={root} revision={c.id} />}
                   <span className={`${styles.colAuthor} ${styles.muted}`} title={`${c.author} <${c.email}>`}>
                     {c.author}
                   </span>
