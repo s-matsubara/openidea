@@ -79,6 +79,7 @@ async fn jj_roots_reject_git_operations_before_mutation() {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -115,6 +116,7 @@ async fn jj_version_does_not_spawn_configured_executable_in_restricted_project()
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -173,6 +175,7 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -393,6 +396,7 @@ async fn jj_log_actions_guard_trust_exact_root_and_unsaved_documents() {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -590,6 +594,7 @@ async fn jj_workspaces_require_trust_and_exact_project_root() {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -700,6 +705,7 @@ async fn jj_workspace_update_guards_all_projects_and_syncs_clean_documents() {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),

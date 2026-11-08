@@ -189,6 +189,7 @@ async fn attached_workspace_vcs_uses_members_not_the_state_container_ancestor() 
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: state_home.join("data"),
+        local_data_dir: state_home.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
