@@ -1,0 +1,74 @@
+name: Diagnose Linux arm64
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to diagnose
+        default: v2026.2.4
+        required: true
+      build_jobs:
+        description: Cargo parallel jobs (empty preserves default)
+        required: false
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: diagnose-linux-arm64
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      REQUESTED_BUILD_JOBS: ${{ inputs.build_jobs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pnpm/action-setup@v6
+        with: { version: 11 }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-unknown-linux-gnu }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-unknown-linux-gnu
+          save-if: false
+      - name: Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      - name: Build with live resource diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$REQUESTED_BUILD_JOBS" ]; then
+            [[ "$REQUESTED_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || exit 2
+            export CARGO_BUILD_JOBS="$REQUESTED_BUILD_JOBS"
+          fi
+          git rev-parse HEAD
+          uname -a
+          rustc --version
+          ulimit -a
+          monitor() {
+            while true; do
+              date -u +'%Y-%m-%dT%H:%M:%SZ'
+              free -m
+              df -h / "$RUNNER_TEMP"
+              ps -eo pid,ppid,comm,pcpu,rss --sort=-rss | head -n 16 || true
+              for f in /proc/pressure/memory /proc/pressure/io /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max; do
+                if [ -r "$f" ]; then echo "$f"; cat "$f"; fi
+              done
+              sudo -n dmesg --ctime 2>/dev/null | grep -Ei 'out of memory|oom-kill|killed process|no space|I/O error' | tail -n 12 || true
+              sleep 30
+            done
+          }
+          monitor &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          # Exercise the same release compiler/target without publishing or packaging.
+          pnpm exec tauri build --target aarch64-unknown-linux-gnu --no-bundle
