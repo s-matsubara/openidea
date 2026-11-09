@@ -22,6 +22,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_LTO: thin
       REQUESTED_BUILD_JOBS: ${{ inputs.build_jobs }}
     steps:
       - uses: actions/checkout@v7
@@ -53,6 +54,7 @@ jobs:
           git rev-parse HEAD
           uname -a
           rustc --version
+          echo "Release LTO override: $CARGO_PROFILE_RELEASE_LTO"
           ulimit -a
           monitor() {
             while true; do
