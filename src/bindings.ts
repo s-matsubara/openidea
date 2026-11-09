@@ -8,6 +8,12 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
+	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
+	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
+	mcpSetFocusedEditor: (editor: FocusedEditor | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
+	mcpReportProblems: (reset: boolean, files: FileProblems[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_report_problems", { reset, files })),
 	/**  Devices `adb` knows about, online ones first. */
 	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
 	/**
@@ -31,6 +37,7 @@ export const commands = {
 	projectTrustAddLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_add_location", { path })),
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceDiscoverProjects: (request: RequestId, folders: string[]) => typedError<ProjectDiscovery, IdeError>(__TAURI_INVOKE("workspace_discover_projects", { request, folders })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
@@ -203,6 +210,12 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
+	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
+	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
+	 *  None when the clipboard holds no image, and always on other platforms.
+	 */
+	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
+	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
@@ -369,6 +382,9 @@ export const commands = {
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	/**  Validates a query (e.g. regex syntax) while the user types. */
 	searchValidate: (query: SearchQuery) => typedError<null, IdeError>(__TAURI_INVOKE("search_validate", { query })),
+	pluginLanguageVisuals: (doc: DocId) => typedError<PluginLanguageVisuals, IdeError>(__TAURI_INVOKE("plugin_language_visuals", { doc })),
+	pluginColorPresentations: (doc: DocId, plugin: string, color: ColorInfo) => typedError<string[], IdeError>(__TAURI_INVOKE("plugin_color_presentations", { doc, plugin, color })),
+	pluginFormatters: () => typedError<FormatterChoice[], IdeError>(__TAURI_INVOKE("plugin_formatters")),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
 	/**  Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing. */
 	lspInlineCompletion: (request: RequestId, doc: DocId, pos: Pos, automatic: boolean) => typedError<InlineCompletionItem[], IdeError>(__TAURI_INVOKE("lsp_inline_completion", { request, doc, pos, automatic })),
@@ -703,15 +719,15 @@ export const commands = {
 	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
-	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
+	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, build: boolean, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, build, request })),
+	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
-	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module })),
+	javaBuildWorkspace: (module: string, request: RequestId | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
@@ -853,6 +869,8 @@ export const commands = {
 	windowStartDrag: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_start_drag")),
 	/**  What this window was opened for (taken once). */
 	windowTakeLaunch: () => __TAURI_INVOKE<Launch | null>("window_take_launch"),
+	/**  Release the opening window's reservation after navigation or cancellation. */
+	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
@@ -861,8 +879,8 @@ export const commands = {
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
 	/**
-	 *  Sets the menu's labels / shortcut text and updates the menu when the visible
-	 *  items changed. Shortcuts for actions that are not on the menu must not call
+	 *  Sets the menu's labels / accelerators and updates the menu when the visible
+	 *  items changed. Accelerators of actions that are not on the menu must not call
 	 *  `set_menu`, which redraws the macOS menu bar.
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
@@ -879,14 +897,15 @@ export const commands = {
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
 	appLogLocation: () => typedError<LogLocation, IdeError>(__TAURI_INVOKE("app_log_location")),
+	/**  Installs the `openidea` command for this user. */
+	appCliInstall: () => typedError<CliInstallation, IdeError>(__TAURI_INVOKE("app_cli_install")),
+	/**  Removes the installed `openidea` command; returns the links removed. */
+	appCliUninstall: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("app_cli_uninstall")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
 	appCheckUpdate: (source: UpdateSource) => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update", { source })),
-	/**
-	 *  The background check made once per process when the first window starts;
-	 *  later calls (other windows) and debug builds get `None`. Failures are logged,
-	 *  not reported: the user didn't ask for this check.
-	 */
-	appStartupUpdateCheck: (source: UpdateSource) => __TAURI_INVOKE<UpdateInfo | null>("app_startup_update_check", { source }),
+	appUpdateWindowReady: (ready: boolean, systemLocale: string) => typedError<null, IdeError>(__TAURI_INVOKE("app_update_window_ready", { ready, systemLocale })),
+	appUpdateStatus: () => typedError<UpdateStatus, IdeError>(__TAURI_INVOKE("app_update_status")),
+	appUpdateAnnouncement: (version: string, automatic: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("app_update_announcement", { version, automatic })),
 	/**
 	 *  Downloads and installs the available update, streaming progress to `on_progress`.
 	 *  Cancellable through `request` until the download completes; the UI then restarts
@@ -911,6 +930,8 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	/**  A loopback port that is free right now, for a debug agent the launch line starts. */
+	debugFreePort: () => typedError<number, IdeError>(__TAURI_INVOKE("debug_free_port")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -978,13 +999,15 @@ export const commands = {
 	/**  Re-reads a plugin from disk (after rebuilding a dev plugin). */
 	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
 	/**  Runs a plugin command in the context of this window's project and focused editor. */
-	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: PluginEditor | null, paths: string[] | null, settingsScope: SettingsScope | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope })),
+	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: PluginEditor | null, paths: string[] | null, settingsScope: SettingsScope | null, commandChain: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
-	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
+	pluginPostEvents: (events: WorkbenchEvent[], editor: PluginEditor | null) => __TAURI_INVOKE<void>("plugin_post_events", { events, editor }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
 	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	/**  Project-scoped decoration snapshots; the window filters to its current root. */
+	pluginDecorationSets: () => __TAURI_INVOKE<{ [key in string]: DecorationSet[] }>("plugin_decoration_sets"),
 	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
 	pluginContextKeys: () => __TAURI_INVOKE<PluginContextKey[]>("plugin_context_keys"),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
@@ -999,6 +1022,26 @@ export const commands = {
 	 *  longer waits.
 	 */
 	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	/**  The invoking window's reply to a plugin command request. */
+	pluginAnswerCommand: (requestId: string, answer: CommandAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_command", { requestId, answer })),
+	/**  Reports exactly one completion from the operation's launching window. */
+	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
+	/**  Revalidates a plugin run's executable before debugging, including reruns. */
+	pluginPrepareDebugRun: (config: RunConfig) => typedError<RunConfig, IdeError>(__TAURI_INVOKE("plugin_prepare_debug_run", { config })),
+	/**  Starts only the pinned command recorded for this window's terminal operation. */
+	pluginTerminalSessionSpawn: (operation: string, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_terminal_session_spawn", { operation, cols, rows, onOutput })),
+	/**  Marks a keyed tab closed before ending its process. */
+	pluginTerminalSessionClose: (operation: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_terminal_session_close", { operation })),
+	/**  Parses one batch of an owned test configuration's output. */
+	pluginParseTestResults: (config: string, chunk: string) => typedError<PluginTestEvent[] | null, IdeError>(__TAURI_INVOKE("plugin_parse_test_results", { config, chunk })),
+	/**  Selects test-tree paths in an owned plugin test configuration. */
+	pluginSelectTests: (config: string, tests: string[][]) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("plugin_select_tests", { config, tests })),
+	/**  Dispatches a wasm content editor action through the owning plugin's event handler. */
+	pluginContentTabAction: (pluginId: string, action: ContentTabAction) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_content_tab_action", { pluginId, action })),
+	/**  Re-approves a plugin's executable, globally or for this window's project. */
+	pluginChooseProgram: (pluginId: string, capability: string, scope: SettingsScope, path: string | null) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_choose_program", { pluginId, capability, scope, path })),
+	/**  The currently approved executable in the selected scope, after revalidating its pin. */
+	pluginProgram: (pluginId: string, program: string, scope: SettingsScope) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("plugin_program", { pluginId, program, scope })),
 	/**
 	 *  Runs plugins' before-commit checks on what `selection` commits, until
 	 *  `request` is cancelled.
@@ -1045,6 +1088,8 @@ export const commands = {
 	pluginNavigationGoto: (doc: DocId, pos: Pos) => typedError<NavigationResult | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
 	pluginEndpoints: (pluginId: string) => typedError<PluginEndpoint[], IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId })),
+	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
+	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -1107,6 +1152,12 @@ export const commands = {
 	dockerRemove: (endpoint: DockerEndpoint, object: DockerObject, ids: string[], force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("docker_remove", { endpoint, object, ids, force })),
 	/**  Pretty-printed `docker inspect` JSON. */
 	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
+	/**  Layers of an image (`docker image history`). */
+	dockerImageHistory: (endpoint: DockerEndpoint, id: string) => typedError<DockerImageLayer[], IdeError>(__TAURI_INVOKE("docker_image_history", { endpoint, id })),
+	/**  Processes running inside a container (`docker top`). */
+	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**  One-shot resource usage snapshot of a running container (`docker stats --no-stream`). */
+	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Streams a container's log lines until it stops or the request is cancelled. */
 	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
@@ -1340,10 +1391,13 @@ export type AgentCommand = {
 	description: string,
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
+	source?: AgentCommandSource,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
 export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
+export type AgentCommandSource = "command" | "skill";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
@@ -1673,6 +1727,7 @@ export type AndroidDevice = {
 export type AppInfo = {
 	version: string,
 	platform: string,
+	windowsBuildNumber: number | null,
 	configDir: IpcPath,
 	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
 	wayland: boolean,
@@ -1743,6 +1798,8 @@ export type AppearanceSettings = {
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
 	mainMenuStyle?: string,
+	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+	mainMenuAlt?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -1750,6 +1807,9 @@ export type AppearanceSettings = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+	showMainToolbar?: boolean,
+	showStatusBar?: boolean,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.
@@ -1970,6 +2030,22 @@ export type BuildModel = {
 	gradle?: GradleModel[],
 };
 
+/**  How a Java launch builds the project before starting (IDEA's Before launch › Build). */
+export type BuildPolicy = 
+/**  Build the way this project's backend does it: incremental when possible. */
+"automatic" | 
+/**  Incremental build (IDEA's "Build"/Make). */
+"make" | 
+/**  Clean the output, then build (IDEA's Rebuild). */
+"rebuild" | 
+/**  Do not build; still resolve the module, JDK and classpath. */
+"noBuild" | 
+/**
+ *  Incremental build; a project with compile errors may still start with its last
+ *  successfully compiled classes (IDEA's "Build, no error check").
+ */
+"makeAndContinueOnErrors";
+
 export type BuildResult = {
 	system: BuildSystem,
 	title: string,
@@ -2136,6 +2212,11 @@ export type ClearCachesResult = {
 	rssAfterBytes: number | null,
 };
 
+export type CliInstallation = {
+	path: IpcPath,
+	pathDirectory: IpcPath | null,
+};
+
 export type CloseContext = {
 	/**  Quit is in progress (exit was already confirmed). */
 	quitting: boolean,
@@ -2206,11 +2287,23 @@ export type CodeStyleSettings = {
 	formatterTagsRegexp?: boolean,
 };
 
+/**  ColorInfo data. */
+export type ColorInfo = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+};
+
 export type Command = {
 	title: string,
 	command: string,
 	arguments: string[],
 };
+
+/**  The invoking window's response to a command request. */
+export type CommandAnswer = { kind: "value"; value?: string | null } | { kind: "notFound" } | { kind: "failed"; value: string };
 
 export type CommandForm = {
 	command: Command,
@@ -2467,6 +2560,53 @@ export type ConsoleSettings = {
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
 
+/**  ContentAction data exchanged with the IDE. */
+export type ContentAction = {
+	id: string,
+	label: string,
+	icon: string | null,
+	primary: boolean,
+	save: boolean,
+};
+
+/**  ContentDiff data exchanged with the IDE. */
+export type ContentDiff = {
+	left: string,
+	right: string,
+	leftLabel: string | null,
+	rightLabel: string | null,
+	title: string | null,
+};
+
+/**  ContentTab data exchanged with the IDE. */
+export type ContentTab = {
+	key: string,
+	title: string,
+	fileName: string | null,
+	language: string | null,
+	content: string,
+	readOnly: boolean,
+	actions: ContentAction[],
+};
+
+/**  ContentTabAction data exchanged with the IDE. */
+export type ContentTabAction = {
+	requestId: string,
+	key: string,
+	action: string,
+	content: string,
+};
+
+/**  ContentTabReply data exchanged with the IDE. */
+export type ContentTabReply = {
+	content: string | null,
+	saved: boolean | null,
+	readOnly: boolean | null,
+	status: string | null,
+	error: string | null,
+	diff: ContentDiff | null,
+};
+
 /**  Number of declarations of one extension point. */
 export type ContributionCount = {
 	point: string,
@@ -2592,6 +2732,10 @@ export type DataSource = {
 	 *  so not written to it.
 	 */
 	global?: boolean,
+	/**  Plugin id owning this source; absent for user-managed sources. */
+	pluginOwner?: string | null,
+	/**  Id private to the owner, never used as a connection target. */
+	pluginSourceId?: string | null,
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */
@@ -2780,7 +2924,7 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines and sequences (the tree's `routines` / `sequences` folders). */
+/**  A schema's routines (procedures and functions) and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
 	sequences: DbSequenceInfo[],
@@ -2920,6 +3064,24 @@ export type DebuggerSettings = {
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
 	python?: PythonDebuggerSettings,
+};
+
+/**  An editor decoration. */
+export type Decoration = {
+	range: Range,
+	style: string,
+	hover: string | null,
+	after: string | null,
+};
+
+/**  A plugin-owned editor or project-tree decoration set for one file. */
+export type DecorationSet = {
+	root: IpcPath,
+	path: IpcPath,
+	setId: string,
+	tree: boolean,
+	items: Decoration[],
+	file: FileDecoration | null,
 };
 
 /**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
@@ -3074,6 +3236,12 @@ export type DirectoryHistory = {
 	deleted: IpcPath[],
 };
 
+export type DiscoveredProject = {
+	path: IpcPath,
+	root: IpcPath,
+	relative_path: string,
+};
+
 /**  Checking out remote `origin/x` while local `x` has commits `origin/x` lacks. */
 export type DivergedLocal = 
 /**  Rebase local `x` onto `origin/x` (IDEA "Rebase onto Remote"). */
@@ -3117,6 +3285,22 @@ export type DockerContainer = {
 	composeWorkingDir: string | null,
 	/**  `com.docker.compose.project.config_files` label (comma-separated in docker). */
 	composeFiles: string[],
+	/**  Mounted volume names or host paths reported by `docker ps` (`Mounts`). */
+	mounts?: string[],
+	/**  Connected network names reported by `docker ps` (`Networks`). */
+	networks?: string[],
+	/**  User and tool labels assigned to the container. */
+	labels?: { [key in string]: string },
+};
+
+/**  Live resource metrics returned by `docker stats --no-stream --no-trunc --format '{{json .}}'`. */
+export type DockerContainerStats = {
+	cpuPerc: string,
+	memUsage: string,
+	memPerc: string,
+	netIo: string,
+	blockIo: string,
+	pids: string,
 };
 
 /**  Which daemon a docker command talks to. */
@@ -3151,6 +3335,16 @@ export type DockerImage = {
 	createdSince: string,
 };
 
+/**  One layer in `docker image history --no-trunc --format '{{json .}}'`. */
+export type DockerImageLayer = {
+	id: string,
+	createdBy: string,
+	size: string,
+	createdSince: string,
+	createdAt: string,
+	comment: string,
+};
+
 /**  A line of `docker logs` output. */
 export type DockerLogLine = {
 	stderr: boolean,
@@ -3163,9 +3357,19 @@ export type DockerNetwork = {
 	driver: string,
 	scope: string,
 	composeProject: string | null,
+	createdAt?: string,
+	ipv6?: boolean,
+	internal?: boolean,
+	labels?: { [key in string]: string },
 };
 
 export type DockerObject = "container" | "image" | "volume" | "network";
+
+/**  Process table returned by `docker top <container>`. */
+export type DockerProcessList = {
+	titles: string[],
+	processes: string[][],
+};
 
 /**  A registry to log in to (Docker Hub, GHCR, a private one). The password is stored separately. */
 export type DockerRegistry = {
@@ -3201,6 +3405,8 @@ export type DockerVolume = {
 	driver: string,
 	mountpoint: string,
 	composeProject: string | null,
+	scope?: string,
+	labels?: { [key in string]: string },
 };
 
 /**  What the UI needs to show an opened document. */
@@ -3281,6 +3487,8 @@ export type DynamicItem = {
 	action: string,
 	arg: string | null,
 	label: string,
+	/**  Drawn with a check mark in this state; `None` for a plain item. */
+	checked?: boolean | null,
 };
 
 /**  Editor › General › Appearance. */
@@ -3462,7 +3670,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -3570,6 +3778,13 @@ export type FileCoverage = {
 	branchesCovered: number,
 };
 
+/**  A tree decoration. */
+export type FileDecoration = {
+	badge: string | null,
+	style: string,
+	tooltip: string | null,
+};
+
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
 /**  LSP TextDocumentEdit version; null/unversioned edits use content preconditions. */
 version?: number | null } | { kind: "create"; path: IpcPath; overwrite: boolean } | { kind: "rename"; from: IpcPath; to: IpcPath } | { kind: "delete"; path: IpcPath; recursive: boolean };
@@ -3636,7 +3851,7 @@ export type FileLineStats = {
 export type FileMarkers = {
 	path: string,
 	version: number | null,
-	markers: NavigationResult[],
+	markers: IndexedMarker[],
 };
 
 export type FileMatch = {
@@ -3675,6 +3890,11 @@ export type FileProbe = {
 	binary: boolean,
 	/**  Above the read-only threshold: the text editor would open it read-only. */
 	tooLarge: boolean,
+};
+
+export type FileProblems = {
+	path: IpcPath,
+	items: Diagnostic[],
 };
 
 /**  A path written in a document: an HTML URL attribute, a CSS `url()` / `@import`. */
@@ -3745,6 +3965,13 @@ export type FilesChanged = {
 	removed: string[],
 };
 
+export type FocusedEditor = {
+	path: IpcPath,
+	/**  Zero-based lines and UTF-16 columns, end exclusive. */
+	selection: Range,
+	selectedText: string,
+};
+
 export type FoldKind = "region" | "comment" | "imports";
 
 export type FoldRange = {
@@ -3790,6 +4017,12 @@ export type FormatOptions = {
 	onSave?: boolean,
 	/**  External formatter to run whatever the settings select. */
 	tool?: ExternalFormatter | null,
+};
+
+export type FormatterChoice = {
+	id: string,
+	name: string,
+	languages: string[],
 };
 
 /**  A port of the remote host reachable on this machine at `localhost:local_port`. */
@@ -3841,6 +4074,7 @@ export type GeneralSettings = {
 	projectName?: string,
 	/**  Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`. */
 	updateSource?: string,
+	autoCheckUpdates?: boolean,
 };
 
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
@@ -4065,6 +4299,15 @@ export type GradleTask = {
 	description: string | null,
 };
 
+/**  GutterAction data. */
+export type GutterAction = {
+	line: number,
+	icon: string | null,
+	tooltip: string,
+	command: string,
+	argument: string | null,
+};
+
 /**  HEAD before and after a history rewrite, for its Undo. */
 export type HeadChange = {
 	before: string,
@@ -4253,6 +4496,8 @@ export type IdeError = {
 };
 
 export type IdeEvent = 
+/**  Project data source settings changed; reload the Database tree. */
+{ type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
@@ -4305,7 +4550,7 @@ cancellable: boolean } |
  *  A setting was written (any window); the windows it concerns (all for a
  *  global value, the project's for a project value) re-read their effective settings.
  */
-{ type: "settingsChanged"; key: string } | 
+{ type: "settingsChanged"; key: string } | { type: "updateStatusChanged"; status: UpdateStatus } | { type: "updateAvailable"; update: UpdateInfo } | 
 /**
  *  The project's source / test / resource / excluded roots changed (build files
  *  changed or folders were marked); the UI re-reads them with `project_roots`.
@@ -4393,6 +4638,20 @@ export type IndexStatus = {
 	symbols: number,
 };
 
+export type IndexedMarker = {
+	range: Range,
+	targets: Location[],
+	pluginId: string,
+	/**  The `[[contributes.markerIcons]]` id whose `markers` prefix matches the marker's key. */
+	icon: string | null,
+};
+
+/**  Injection data. */
+export type Injection = {
+	range: Range,
+	language: string,
+};
+
 export type InlayHint = {
 	position: Pos,
 	label: string,
@@ -4453,6 +4712,13 @@ export type InlineCompletionSettings = {
 	onlyOnPause?: boolean,
 	pauseMs?: number,
 	disabledLanguages?: string[],
+};
+
+/**  The focused editor's input mode and optional visual sub-mode. */
+export type InputMode = {
+	path: string,
+	mode: string,
+	sub: string | null,
 };
 
 export type InspectEvent = 
@@ -4674,6 +4940,8 @@ export type JavaSettings = {
 	 *  (VS Code's `java.jdt.ls.vmargs`).
 	 */
 	jdtlsVmArgs?: string,
+	/**  Share one JDT LS across builds in an ordinary project window; other windows remain separate. */
+	jdtlsShared?: boolean,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
 	/**  Build Tools › Gradle. */
@@ -4763,7 +5031,7 @@ export type JjHistoryPage = {
 };
 
 /**  Log actions are separate from Git operations and accept full row identities only. */
-export type JjLogAction = { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "moveBookmark"; name: string } | { kind: "tag"; name: string };
+export type JjLogAction = { kind: "describe"; description: string } | { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "moveBookmark"; name: string } | { kind: "tag"; name: string };
 
 export type JjPullOptions = {
 	remotes: string[],
@@ -4933,7 +5201,15 @@ export type LanguageServerSettings = {
 	codeActionKinds?: string[] | null,
 };
 
+export type LanguageServerTarget = {
+	target?: string,
+	/**  Empty selects the first configured server for the language. */
+	server?: string,
+};
+
 export type LanguagesSettings = {
+	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
+	pluginFormatters?: { [key in string]: string },
 	python?: PythonSettings,
 	node?: NodeSettings,
 	php?: PhpSettings,
@@ -4969,6 +5245,8 @@ export type Launch = {
 	comparison?: ComparisonLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 };
@@ -4998,7 +5276,7 @@ export type LaunchConfig = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
 	kind: string,
 	roots: LibraryRoot[],
 };
@@ -5294,11 +5572,15 @@ export type MavenPlugin = {
 };
 
 export type MavenProfile = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	id: string,
 	activeByDefault: boolean,
 };
 
 export type MavenProject = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	/**  Project-relative, `/`-separated (`pom.xml`, `core/pom.xml`). */
 	pom: string,
 	/**  Project-relative directory; `""` = the project root. */
@@ -5341,6 +5623,8 @@ export type MavenSettings = {
 	home?: string,
 	/**  User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`. */
 	userSettings?: string,
+	/**  Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`. */
+	toolchains?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
 	/**
@@ -5358,7 +5642,33 @@ export type MavenSettings = {
 	 *  multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
 	 */
 	threads?: string,
+	/**  Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings. */
+	activeProfiles?: string,
 };
+
+/**  Tools › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings = {
+	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	enabled?: boolean,
+};
+
+/**  What Settings › Tools › MCP Server shows. */
+export type McpServerStatus = {
+	running: boolean,
+	/**  Why it isn't running though turned on. */
+	error: string | null,
+	port: number | null,
+	/**  The window's local project, which the URL and command below are for. */
+	project: IpcPath | null,
+	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	url: string | null,
+	/**  Bearer token of `url` (changes with every run). */
+	token: string | null,
+	/**  The stdio bridge: this executable and its arguments. */
+	stdioCommand: string[],
+};
+
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
@@ -5366,15 +5676,20 @@ export type MemoryCategory =
 /**  Debug adapters, Run processes, terminal shells and other children. */
 "process";
 
-/**  Localised labels and displayed shortcuts, pushed by the frontend. */
+/**  Localised labels and keymap accelerators, pushed by the frontend. */
 export type MenuConfig = {
 	locale: string,
 	/**  `menu.<id>` → label (ids of submenus, actions and `native.*` roles). */
 	labels: { [key in string]: string },
-	/**  Action id → display shortcut from the JS keymap, e.g. `⇧⌘O`. */
-	shortcuts: { [key in string]: string },
+	/**
+	 *  Action id → native accelerator of its first keymap binding, e.g. `Shift+Meta+O`.
+	 *  Absent when that binding has no native form (chord, double modifier).
+	 */
+	accelerators: { [key in string]: string },
 	/**  [`Entry::Dynamic`] slot → its items, already localised. */
 	dynamic?: { [key in string]: DynamicItem[] },
+	/**  Ids of the toggle actions currently on. */
+	checked?: string[],
 };
 
 /**
@@ -5382,8 +5697,13 @@ export type MenuConfig = {
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
 export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
-/**  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label. */
-{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null } | 
+/**
+ *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+ *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+ *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
+ *  source [`MenuConfig::checked`] is built from for the native menu.
+ */
+{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null } | 
 /**  A disabled placeholder such as "No Recent Projects". */
 { kind: "placeholder"; id: string; label: string } | { kind: "separator" };
 
@@ -5499,6 +5819,8 @@ export type NodeAt = {
 export type NodeSettings = {
 	/**  `node` executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**  Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local. */
+	runTarget?: string,
 	/**  `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`. */
 	packageManager?: string,
 };
@@ -5696,6 +6018,8 @@ export type PhpLevelSource =
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**  Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local. */
+	runTarget?: string,
 	/**
 	 *  PHP version the language server checks the code against (`7.4`); empty = from
 	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
@@ -5781,8 +6105,26 @@ export type PluginEndpoint = {
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
+/**  Project target registrations or remembered prompt answers changed. */
+{ type: "runTargetsChanged" } | 
+/**  A window-owned operation; an empty request id queues an asynchronous run. */
+{ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest } | 
+/**  Reply to a content action in this window. */
+{ type: "contentTabReply"; pluginId: string; requestId: string; reply: ContentTabReply } | 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
+/**  Complete replacement of one plugin's project-scoped decorations. */
+{ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] } | 
+/**  Open a file in the invoking window. */
+{ type: "editorOpen"; path: IpcPath; selection: Range | null } | 
+/**  Change selection or scrolling only in this window's already open editor. */
+{ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean } | 
+/**  A bounded output channel snapshot, or withdrawal when the plugin stops. */
+{ type: "outputChanged"; pluginId: string; channel: string; text: string | null } | 
+/**  Reveal a read-only Output tab in the receiving window. */
+{ type: "revealOutput"; pluginId: string; channel: string; text: string } | 
+/**  Execute an action through the receiving window and answer over IPC. */
+{ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] } | 
 /**  Cached document associations were disposed (reload, disable or failure). */
 { type: "documentIndexesChanged" } | 
 /**
@@ -5799,6 +6141,8 @@ export type PluginEvent =
 actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
+/**  An override in the receiving window; removal exposes the global item. */
+{ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -5891,10 +6235,37 @@ export type PluginInfo = {
 	previousVersion: string | null,
 };
 
+/**
+ *  Commands of this module the remote server answers.
+ *  Versioned plugin visuals, refreshed after the editor synchronizes its buffer.
+ */
+export type PluginLanguageVisuals = {
+	version: number,
+	injections: Injection[],
+	colors: ([string, ColorInfo])[],
+	gutterActions: ([string, GutterAction])[],
+};
+
+export type PluginLocation = {
+	path: string,
+	range: Range,
+};
+
 /**  A line a view's `process` body printed. */
 export type PluginOutputLine = {
 	stderr: boolean,
 	text: string,
+};
+
+/**  A plugin-owned argv wrapper for project runs (API 1.4). */
+export type PluginRunTarget = {
+	id: string,
+	name: string,
+	program: string,
+	args: string[],
+	workdirArgs: string[],
+	containerRoot: string | null,
+	commands: ([string, string[]])[],
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */
@@ -5943,10 +6314,27 @@ export type PluginStatus =
 
 /**  A plugin's status bar item. */
 export type PluginStatusItem = {
+	/**  Whether this item overrides the global item in the requesting window. */
+	window: boolean,
 	pluginId: string,
 	id: string,
 	item: StatusItem,
 };
+
+/**  A test update, carried by the optional test-results export. */
+export type PluginTestEvent = {
+	type: "suiteStarted",
+} & TestStart | {
+	type: "testStarted",
+} & TestStart | {
+	type: "passed",
+} & TestPassed | {
+	type: "failed",
+} & TestFailed | {
+	type: "skipped",
+} & TestSkipped | {
+	type: "output",
+} & TestOutput | { type: "other"; kind: string; data: string };
 
 /**  A newer version of an installed plugin in the marketplace. */
 export type PluginUpdate = {
@@ -6160,6 +6548,13 @@ export type ProfilerInstall = {
 	cwd: IpcPath | null,
 };
 
+export type ProjectDiscovery = {
+	/**  Selected projects and folders with no discovered projects retain the direct-add behaviour. */
+	direct: IpcPath[],
+	projects: DiscoveredProject[],
+	truncated: boolean,
+};
+
 export type ProjectFileSet = 
 /**  "Project Files": everything not excluded. */
 "all" | 
@@ -6172,6 +6567,7 @@ export type ProjectInfo = {
 	trusted: boolean,
 	root: IpcPath,
 	name: string,
+	displayName?: string,
 	isGit: boolean,
 	settings: Settings,
 	workspace?: Workspace | null,
@@ -6398,6 +6794,15 @@ export type ReferencesIncomplete =
 "filesSkipped" | 
 /**  A native query failed; indexed anchors are still available. */
 "serverFailed";
+
+export type RegisteredRunTarget = {
+	/**  Opaque selector id, namespaced by the host. */
+	id: string,
+	pluginId: string,
+	pluginName: string,
+	target: PluginRunTarget,
+	prompt: boolean,
+};
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -6654,6 +7059,14 @@ export type RunConfig = {
 	allowParallel?: boolean,
 } & RunExtras;
 
+/**  RunExited data exchanged with the IDE. */
+export type RunExited = {
+	id: string,
+	config: string,
+	status: number | null,
+	killed: boolean,
+};
+
 export type RunExtras = {
 	/**
 	 *  Owning module, independent of the working directory; also supplies a JVM application's classpath.
@@ -6675,6 +7088,8 @@ export type RunExtras = {
 	/**  "Save console output to file" (overwritten on each run). */
 	outputFile?: string | null,
 	beforeLaunch?: BeforeLaunchTask[],
+	/**  Before launch build for JVM launches; unset keeps the project's default (incremental). */
+	buildPolicy?: BuildPolicy | null,
 	/**  Compound configurations: ids of the configurations started together. */
 	compound?: string[],
 	showOnStdout?: boolean,
@@ -6727,6 +7142,8 @@ export type RunInfo = {
 
 /**  Run/Debug configuration behaviour. */
 export type RunSettings = {
+	/**  Target for configurations without an explicit target. Empty = local. */
+	defaultTarget?: string,
 	confirmRerun?: boolean,
 	/**  Ask before closing a Run tab whose process is still running. */
 	confirmTerminate?: boolean,
@@ -6996,6 +7413,8 @@ export type Settings = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings },
+	/**  Project language id → server and plugin target. Empty target uses the host. */
+	languageServerTargets?: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -7009,6 +7428,8 @@ export type Settings = {
 	cmake?: CMakeSettings,
 	/**  Tools › Agents › Chat. */
 	agents?: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -7390,7 +7811,7 @@ export type SyntaxErrors = {
 };
 
 /**  Highlight classes sent to the UI, which maps each onto a Lezer tag. */
-export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation";
+export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter";
 
 /**  Highlighted ranges of a whole document, packed like LSP semantic tokens. */
 export type SyntaxHighlights = {
@@ -7425,6 +7846,14 @@ export type TableSort = {
 
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
+
+/**  TerminalExited data exchanged with the IDE. */
+export type TerminalExited = {
+	id: string,
+	key: string,
+	status: number | null,
+	closed: boolean,
+};
 
 /**  An integrated terminal session. */
 export type TerminalId = number;
@@ -7494,6 +7923,42 @@ export type TestCaseReport = {
 };
 
 export type TestCaseStatus = "passed" | "failed" | "skipped";
+
+/**  Incremental test tree data. */
+export type TestFailed = {
+	id: string,
+	durationMs: number | null,
+	message: string,
+	expected: string | null,
+	actual: string | null,
+	location: PluginLocation | null,
+};
+
+/**  Incremental test tree data. */
+export type TestOutput = {
+	id: string,
+	text: string,
+};
+
+/**  Incremental test tree data. */
+export type TestPassed = {
+	id: string,
+	durationMs: number | null,
+};
+
+/**  Incremental test tree data. */
+export type TestSkipped = {
+	id: string,
+	reason: string | null,
+};
+
+/**  Incremental test tree data. */
+export type TestStart = {
+	id: string,
+	parent: string | null,
+	name: string,
+	location: PluginLocation | null,
+};
 
 /**  Editor › Color Scheme override of one text attribute. */
 export type TextAttributesOverride = {
@@ -7683,7 +8148,6 @@ export type UnityProjectInfo = {
 };
 
 export type UpdateCheck = {
-	/**  False when no update endpoint is configured (no request was made). */
 	enabled: boolean,
 	update: UpdateInfo | null,
 };
@@ -7702,12 +8166,13 @@ export type UpdateProgress =
 /**  Download done; the new version is being written over this one. */
 { type: "installing" };
 
-/**  Where updates are downloaded from (System Settings › Updates). */
-export type UpdateSource = 
-/**  The GitHub releases named in tauri.conf.json. */
-"github" | 
-/**  The CNB mirror of the same releases, for networks where GitHub is slow. */
-"cnb";
+export type UpdateSource = "github" | "cnb";
+
+export type UpdateStatus = {
+	/**  Unix milliseconds of the last successful check in this process. */
+	lastChecked: number | null,
+	checking: boolean,
+};
 
 export type Variable = {
 	name: string,
@@ -7909,6 +8374,13 @@ export type WebReferenceKind =
 /**  `var(--name)`: the custom property's declarations. */
 "cssVariable";
 
+/**  A request that the invoking window acknowledges through plugin_answer_command. */
+export type WindowRequest = 
+/**  Connect and introspect using the normal Database action in this window. */
+{ kind: "databaseConnect"; id: string } | 
+/**  Open and acknowledge validation by the shared content editor. */
+{ kind: "contentTab"; tab: ContentTab } | { kind: "run"; operation: string; config: RunConfig; debug: boolean } | { kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath };
+
 export type WindowTab = {
 	label: string,
 	name: string,
@@ -7917,7 +8389,7 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value?: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+export type WorkbenchEvent = { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value?: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

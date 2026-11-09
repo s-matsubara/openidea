@@ -1462,6 +1462,7 @@ mod history_tests {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum JjLogAction {
+    Describe { description: String },
     New,
     Edit,
     Abandon,
@@ -1530,7 +1531,9 @@ fn log_action_with(repo: &crate::Repo, commit: &str, change: &str, action: &JjLo
     }
     // Bookmark move accepts patterns; keep the entered name literal.
     let bookmark_pattern = name.map(|name| format!("exact:{name}"));
+    let exact_revision = format!("exactly({revision}, 1)");
     let args: Vec<&str> = match action {
+        JjLogAction::Describe { .. } => vec!["--ignore-working-copy", "describe", "-r", &exact_revision, "--stdin"],
         JjLogAction::New => vec!["new", "--", &revision],
         JjLogAction::Edit => vec!["edit", "--", &revision],
         JjLogAction::Abandon => vec!["abandon", "--", &revision],
@@ -1544,10 +1547,21 @@ fn log_action_with(repo: &crate::Repo, commit: &str, change: &str, action: &JjLo
     cmd.current_dir(repo.root())
         .args(["--color=never", "--no-pager"])
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if matches!(action, JjLogAction::Describe { .. }) { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env("LC_ALL", "C");
     ide_core::process::prepare(&mut cmd);
-    let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    if let JjLogAction::Describe { description } = action {
+        use std::io::Write;
+        if let Err(error) = child.stdin.take().unwrap().write_all(description.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.into());
+        }
+    }
+    let out = child.wait_with_output()?;
     if !out.status.success() {
         return Err(IdeError::unavailable(format!("jj action: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
@@ -1809,6 +1823,23 @@ esac
         let error =
             restore_files_with(&repo, &conflict.commit_id, &[repo.root().join("file")], &exe).unwrap_err().to_string();
         assert!(error.contains("conflicts"), "{error}");
+    }
+
+    #[test]
+    fn describe_history_preserves_multiline_text_and_rejects_stale_identity() {
+        let Some((_tmp, repo, exe)) = fixture() else { return };
+        cli(&exe, repo.root(), &["describe", "-m", "old subject\n\nold body"]);
+        let parent = row(&repo, &exe);
+        cli(&exe, repo.root(), &["new"]);
+        let working = row(&repo, &exe);
+        let description = "new subject\n\nbody with --flags and Unicode 日本語\n";
+        act(&repo, &exe, &parent, JjLogAction::Describe { description: description.into() }).unwrap();
+        assert_eq!(
+            read_command(&repo, &exe, &["log", "-G", "-r", &parent.change_id, "-T", "description"]).unwrap(),
+            description.as_bytes()
+        );
+        assert_eq!(row(&repo, &exe).change_id, working.change_id);
+        assert!(act(&repo, &exe, &parent, JjLogAction::Describe { description: "stale".into() }).is_err());
     }
 
     #[test]

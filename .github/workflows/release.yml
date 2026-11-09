@@ -148,7 +148,7 @@ jobs:
           tagName: ${{ env.TAG }}
           args: --target ${{ matrix.target }}
           # The parallel builds would race on one latest.json; `updater-manifest` writes it once.
-          includeUpdaterJson: false
+          uploadUpdaterJson: false
       # tauri-action notarizes the .app but not the DMG around it; notarize and
       # staple the DMG too, then replace the uploaded asset.
       - name: Notarize DMG

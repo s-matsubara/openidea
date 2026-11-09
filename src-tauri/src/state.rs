@@ -15,11 +15,14 @@ pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
     pub startup: Startup,
+    pub updates: crate::updates::Updates,
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
     pub plugins: Arc<ide_host::plugins::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
     pub web: ide_web::WebServer,
+    /// Tools › MCP Server: built-in IDE tools for agents.
+    pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
@@ -97,10 +100,12 @@ impl AppState {
         }));
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
+            updates: Default::default(),
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             web: ide_web::WebServer::new(),
+            mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
             startup: Startup {
@@ -139,14 +144,22 @@ impl AppState {
         // A local project replaces a remote one in this window.
         self.remote_dev.disconnect(window);
         let project = self.host.open_project(window, root)?;
-        let branch = project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head);
-        self.recent.touch(&project.root, branch)?;
-        let display_name = project.settings.effective().general.project_name;
-        if !display_name.trim().is_empty() {
-            self.recent.rename(&project.root, Some(display_name.trim()))?;
-        }
-        crate::jump_list::refresh(&self.app, self.recent.list());
+        self.record_project(&project)?;
         Ok(project)
+    }
+
+    pub fn record_project(&self, project: &Project) -> IdeResult<()> {
+        let info = ide_host::ops::project::info(project);
+        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+        let branch = if attached {
+            None
+        } else {
+            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+        };
+        self.recent.touch(&project.root, branch)?;
+        self.recent.rename(&project.root, Some(&info.display_name))?;
+        crate::jump_list::refresh(&self.app, self.recent.list());
+        Ok(())
     }
 
     /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.

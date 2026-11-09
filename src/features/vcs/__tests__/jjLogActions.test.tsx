@@ -1,3 +1,4 @@
+import { promptInput } from "@/workbench/inputDialogs";
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { JjHistoryCommit } from "@/bindings";
@@ -36,6 +37,7 @@ vi.mock("@/ui", async (original) => ({
   copyText: mocks.copy,
   showContextMenu: mocks.menu,
 }));
+vi.mock("@/workbench/inputDialogs", () => ({ promptInput: vi.fn() }));
 vi.mock("../dialogs", () => ({ confirmDialog: mocks.confirm, promptText: mocks.prompt }));
 vi.mock("../store", async (original) => ({
   ...(await original<typeof import("../store")>()),
@@ -87,6 +89,7 @@ it("groups actions with separators, copies full metadata, and dispatches indepen
     "separator",
     "New Change",
     "Edit Change",
+    "Edit Description…",
     "separator",
     "Abandon Change…",
     "separator",
@@ -253,5 +256,49 @@ it("prompts for an existing bookmark and rejects a stale move dialog", async () 
   });
   run(menu, "Move Bookmark…");
   await Promise.resolve();
+  expect(mocks.action).not.toHaveBeenCalled();
+});
+
+it("edits the full description and keeps whitespace using the selected jj row identity", async () => {
+  vi.mocked(promptInput).mockResolvedValue("new subject\n\nnew body\n");
+  run(
+    jjLogMenu("/two", row, () => true, mocks.reload),
+    "Edit Description…",
+  );
+  await waitFor(() =>
+    expect(mocks.action).toHaveBeenCalledWith("/two", row.id, row.changeId, {
+      kind: "describe",
+      description: "new subject\n\nnew body\n",
+    }),
+  );
+  expect(promptInput).toHaveBeenCalledWith(
+    expect.objectContaining({ initial: row.description, multiline: true, keepWhitespace: true }),
+  );
+});
+
+it.each([null, row.description])(
+  "does not change a description after cancellation or unchanged input",
+  async (value) => {
+    vi.mocked(promptInput).mockResolvedValue(value);
+    run(
+      jjLogMenu("/two", row, () => true, mocks.reload),
+      "Edit Description…",
+    );
+    await waitFor(() => expect(promptInput).toHaveBeenCalled());
+    expect(mocks.action).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects a description edit when the selected row becomes stale while the dialog is open", async () => {
+  let current = true;
+  vi.mocked(promptInput).mockImplementation(async () => {
+    current = false;
+    return "changed";
+  });
+  run(
+    jjLogMenu("/two", row, () => current, mocks.reload),
+    "Edit Description…",
+  );
+  await waitFor(() => expect(promptInput).toHaveBeenCalled());
   expect(mocks.action).not.toHaveBeenCalled();
 });

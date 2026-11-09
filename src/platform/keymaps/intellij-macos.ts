@@ -3,6 +3,7 @@
  * contract between features (which register actions) and keymaps.
  */
 export const intellijMacos: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": ["Meta+O"],
@@ -322,10 +323,10 @@ export const intellijMacos: Record<string, string[]> = {
   "view.resetZoom": ["Ctrl+Alt+0"],
   "editor.increaseFontSize": ["Alt+Shift+."],
   "editor.decreaseFontSize": ["Alt+Shift+,"],
-  // Diff viewer (after Debug: F7 / ⇧F7 / F4 there win while a diff is focused)
+  // Diff viewer (after Debug: F7 / ⇧F7 / F4 / ⌘↓ there win while a diff is focused)
   "diff.nextDifference": ["F7"],
   "diff.prevDifference": ["Shift+F7"],
-  "diff.jumpToSource": ["F4"],
+  "diff.jumpToSource": ["F4", "Meta+Down"],
   "diff.applyLeftSide": ["Ctrl+Meta+Right"],
   "diff.applyRightSide": ["Ctrl+Meta+Left"],
   "diff.nextFile": ["Ctrl+Shift+Right"],

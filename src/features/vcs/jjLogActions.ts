@@ -2,6 +2,7 @@
 import type { JjHistoryCommit, JjLogAction } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { promptInput } from "@/workbench/inputDialogs";
 import { useProject } from "@/platform/project";
 import { maybeEditorService } from "@/workbench/contributions";
 import { copyText, type MenuItem } from "@/ui";
@@ -57,6 +58,23 @@ export function jjLogMenu(root: string, row: JjHistoryCommit, current: () => boo
     { kind: "separator" },
     { label: "New Change", disabled, run: () => void run({ kind: "new" }) },
     { label: "Edit Change", disabled, run: () => void run({ kind: "edit" }) },
+    {
+      label: "Edit Description…",
+      disabled,
+      run: () =>
+        void (async () => {
+          if (!enabled()) return;
+          const description = await promptInput({
+            title: "Edit Description",
+            initial: row.description,
+            multiline: true,
+            keepWhitespace: true,
+            validate: () => null,
+          });
+          if (description !== null && description !== row.description && enabled())
+            await run({ kind: "describe", description });
+        })(),
+    },
     { kind: "separator" },
     {
       label: "Abandon Change…",
