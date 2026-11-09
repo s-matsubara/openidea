@@ -37,6 +37,8 @@ The former openidea-upstream-rebase procedure is superseded.
 - Keep the fork's removed workflows absent: Language smoke, Plugin index, and
   CNB mirror. Do not restore their workflow files or the Release CNB mirror call
   when importing upstream changes. Local smoke commands remain available.
+- Preserve the Release Linux arm64 Thin LTO override. Fat LTO exhausted the
+  standard runner's RAM and swap; the isolated Thin LTO build completed successfully.
 - Resolve conflicts by preserving the fork's jj support, identity, and dependency
   changes alongside upstream behavior. Review auto-merged shared code as well.
 - Regenerate lockfiles and IPC bindings with normal repository commands after
