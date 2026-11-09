@@ -4152,7 +4152,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4176,7 +4176,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4190,7 +4190,7 @@ dependencies = [
 
 [[package]]
 name = "ide-android"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "serde",
@@ -4201,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "dirs 7.0.0",
@@ -4217,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dirs 7.0.0",
  "serde",
@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4258,7 +4258,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4272,7 +4272,7 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "futures",
  "ide-core",
@@ -4295,7 +4295,7 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "bb8",
  "blake3",
@@ -4325,7 +4325,7 @@ dependencies = [
 
 [[package]]
 name = "ide-docker"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "serde",
@@ -4338,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4370,7 +4370,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4383,7 +4383,7 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4450,7 +4450,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "parking_lot 0.13.0",
@@ -4468,7 +4468,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "criterion 0.8.2",
@@ -4490,7 +4490,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4507,7 +4507,7 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "criterion 0.8.2",
@@ -4563,7 +4563,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "futures",
@@ -4589,7 +4589,7 @@ dependencies = [
 
 [[package]]
 name = "ide-mcp"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "bytes",
  "dunce",
@@ -4608,7 +4608,7 @@ dependencies = [
 
 [[package]]
 name = "ide-notebook"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "futures",
  "ide-core",
@@ -4631,7 +4631,7 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "dunce",
@@ -4654,7 +4654,7 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4667,7 +4667,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "globset",
@@ -4686,7 +4686,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4710,7 +4710,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4730,7 +4730,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "criterion 0.8.2",
  "globset",
@@ -4750,7 +4750,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "parking_lot 0.13.0",
@@ -4763,7 +4763,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "dirs 7.0.0",
  "flate2",
@@ -4784,7 +4784,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4799,7 +4799,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "libc",
@@ -4812,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "criterion 0.8.2",
  "ide-core",
@@ -4825,7 +4825,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "flate2",
  "hex",
@@ -4846,7 +4846,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "dunce",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "ide-core",
  "open",
@@ -4907,7 +4907,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "blake3",
  "dunce",
@@ -6484,7 +6484,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "2026.2.4"
+version = "2026.2.5"
 dependencies = [
  "base64 0.22.1",
  "blake3",
