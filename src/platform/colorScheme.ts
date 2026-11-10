@@ -60,7 +60,13 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
-  { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
+  {
+    id: "selection",
+    name: "Selected text",
+    path: ["General", "Editor"],
+    fg: "--fg-editor-selection",
+    bg: "--bg-editor-selection",
+  },
   {
     id: "selectionInactive",
     name: "Selection background (inactive)",
@@ -371,7 +377,8 @@ export function overrideDeclarations(
     if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
-    if (setOrCleared(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
+    if (setOrCleared(o.foreground) && attr.fg)
+      out.push([attr.fg, attr.id === "selection" && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground]);
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && setOrCleared(o.effectColor)) {

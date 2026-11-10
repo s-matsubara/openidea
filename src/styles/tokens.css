@@ -179,6 +179,7 @@ html {
   --border-indent-guide: #323438;
   --border-indent-guide-active: #4e5157;
   --border-right-margin: #323438;
+  --fg-editor-selection: currentColor;
   --bg-editor-selection: #214283;
   --bg-editor-selection-inactive: #1d3460;
   --bg-text-search-result: #114957;

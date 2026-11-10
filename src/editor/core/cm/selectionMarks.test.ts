@@ -25,12 +25,13 @@ describe("selectionMarks", () => {
   it.each([
     ["default", (e: Extension) => e],
     ["high (Lezer highlighter)", Prec.high],
+    ["highest (semantic highlighting)", Prec.highest],
     ["lowest", Prec.lowest],
   ])("paints selected text inside a %s-precedence background mark", (_, prec) => {
     // The reporter's case: a light-scheme warning background over `request.app.state.credits`.
     const v = view(DOC, EditorSelection.single(7, DOC.length), [
-      backgroundMark("cm-lintRange-warning", 7, DOC.length, prec),
       selectionMarks,
+      backgroundMark("cm-lintRange-warning", 7, DOC.length, prec),
     ]);
     const selected = [...v.contentDOM.querySelectorAll(".cm-openidea-selected")];
     expect(selected.map((e) => e.textContent).join("")).toBe(DOC.slice(7));

@@ -38,6 +38,7 @@ const plugin = ViewPlugin.fromClass(
 const theme = EditorView.baseTheme({
   ".cm-openidea-selected": {
     backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
+    color: "var(--fg-editor-selection, currentColor)",
   },
   "&.cm-focused .cm-openidea-selected": {
     backgroundColor: "var(--editor-selection, var(--bg-editor-selection))",
