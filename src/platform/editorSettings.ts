@@ -109,6 +109,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     whitespaceLeading: true,
     whitespaceInner: true,
     whitespaceTrailing: true,
+    whitespaceSelectionOnly: false,
     indentGuides: true,
     rainbowIndentGuides: false,
     hardWrapGuides: true,

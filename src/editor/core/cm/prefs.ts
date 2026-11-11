@@ -130,18 +130,27 @@ const wrapIndent = ViewPlugin.fromClass(
 const spaceMark = Decoration.mark({ class: "cm-highlightSpace" });
 const tabMark = Decoration.mark({ class: "cm-highlightTab" });
 
-/** Show whitespaces with IDEA's Leading / Inner / Trailing filters. */
-export function whitespaceMarks(o: { leading: boolean; inner: boolean; trailing: boolean }): Extension {
+/** Show whitespace markers by line position or only inside the selection. */
+export function whitespaceMarks(o: {
+  leading: boolean;
+  inner: boolean;
+  trailing: boolean;
+  selectionOnly: boolean;
+}): Extension {
   const decorator = new MatchDecorator({
     regexp: /[ \t]/g,
     decorate: (add, from, to, match, view) => {
-      const line = view.state.doc.lineAt(from);
-      const col = from - line.from;
-      const lead = line.text.length - line.text.trimStart().length;
-      const trail = line.text.trimEnd().length;
-      const kind = col < lead ? "leading" : col >= trail ? "trailing" : "inner";
-      // Whitespace-only lines count as leading.
-      if (lead === line.length ? !o.leading && !o.trailing : !o[kind]) return;
+      if (o.selectionOnly) {
+        if (!view.state.selection.ranges.some((range) => range.from <= from && to <= range.to)) return;
+      } else {
+        const line = view.state.doc.lineAt(from);
+        const col = from - line.from;
+        const lead = line.text.length - line.text.trimStart().length;
+        const trail = line.text.trimEnd().length;
+        const kind = col < lead ? "leading" : col >= trail ? "trailing" : "inner";
+        // Whitespace-only lines count as leading.
+        if (lead === line.length ? !o.leading && !o.trailing : !o[kind]) return;
+      }
       add(from, to, match[0] === "\t" ? tabMark : spaceMark);
     },
   });
@@ -152,7 +161,10 @@ export function whitespaceMarks(o: { leading: boolean; inner: boolean; trailing:
         this.decorations = decorator.createDeco(view);
       }
       update(u: ViewUpdate) {
-        this.decorations = decorator.updateDeco(u, this.decorations);
+        this.decorations =
+          o.selectionOnly && (u.selectionSet || u.docChanged)
+            ? decorator.createDeco(u.view)
+            : decorator.updateDeco(u, this.decorations);
       }
     },
     { decorations: (v) => v.decorations },
@@ -565,7 +577,12 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (o.showWhitespace) {
     const a = prefs.appearance;
     out.push(
-      whitespaceMarks({ leading: a.whitespaceLeading, inner: a.whitespaceInner, trailing: a.whitespaceTrailing }),
+      whitespaceMarks({
+        leading: a.whitespaceLeading,
+        inner: a.whitespaceInner,
+        trailing: a.whitespaceTrailing,
+        selectionOnly: a.whitespaceSelectionOnly,
+      }),
     );
   }
   if (prefs.appearance.hardWrapGuides && !o.distractionFree)

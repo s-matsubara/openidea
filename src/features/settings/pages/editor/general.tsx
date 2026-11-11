@@ -272,6 +272,7 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceLeading`, label: "Leading" },
             { t: "check", key: `${P}.appearance.whitespaceInner`, label: "Inner" },
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
+            { t: "check", key: `${P}.appearance.whitespaceSelectionOnly`, label: "Selection only" },
           ],
         },
         {

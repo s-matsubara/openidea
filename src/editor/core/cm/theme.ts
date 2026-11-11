@@ -20,7 +20,7 @@ export const findLocals = {
 export const findStyles = {
   ".cm-openidea-findMatch": {
     backgroundColor: "var(--editor-search)",
-    color: "var(--fg-search-match, inherit)",
+    color: "var(--fg-editor-search-match, var(--fg-search-match, inherit))",
     borderRadius: "2px",
   },
   ".cm-openidea-findExcluded": {
@@ -32,7 +32,7 @@ export const findStyles = {
   },
   ".cm-openidea-findMatch-current": {
     backgroundColor: "var(--editor-search-current)",
-    color: "var(--fg-search-match, inherit)",
+    color: "var(--fg-editor-search-match-current, var(--fg-search-match, inherit))",
     outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
   },
 };
@@ -317,7 +317,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-rainbow-bracket-unmatched, .cm-rainbow-bracket-unmatched *": { color: "var(--syn-invalid)" },
 
   // Whitespace rendering
-  ".cm-highlightSpace": {
+  ".cm-highlightSpace, .cm-highlightSpace .cm-openidea-selected": {
     backgroundImage: "radial-gradient(circle at 50% 55%, var(--fg-whitespace, var(--fg-faint)) 11%, transparent 12%)",
     backgroundPosition: "center",
   },

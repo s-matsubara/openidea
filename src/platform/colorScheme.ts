@@ -111,11 +111,18 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fg: "--fg-fold-placeholder",
     bg: "--bg-fold-placeholder",
   },
-  { id: "searchResult", name: "Search result", path: ["General", "Search Results"], bg: "--bg-search-match" },
+  {
+    id: "searchResult",
+    name: "Search result",
+    path: ["General", "Search Results"],
+    fg: "--fg-editor-search-match",
+    bg: "--bg-search-match",
+  },
   {
     id: "searchResultCurrent",
     name: "Current search result",
     path: ["General", "Search Results"],
+    fg: "--fg-editor-search-match-current",
     bg: "--bg-search-match-current",
   },
   { id: "error", name: "Error", path: ["General", "Errors and Warnings"], effect: "--wave-error" },
@@ -379,11 +386,11 @@ export function overrideDeclarations(
     if (attr.language !== language) continue;
     const o = overrides[attr.id] ?? (attr.id === "selectionForeground" ? overrides.selection : undefined);
     if (!o) continue;
-    if (setOrCleared(o.foreground) && attr.fg)
-      out.push([
-        attr.fg,
-        attr.id === "selectionForeground" && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground,
-      ]);
+    if (setOrCleared(o.foreground) && attr.fg) {
+      const keepsTextVisible =
+        attr.id === "selectionForeground" || attr.id === "searchResult" || attr.id === "searchResultCurrent";
+      out.push([attr.fg, keepsTextVisible && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground]);
+    }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && setOrCleared(o.effectColor)) {

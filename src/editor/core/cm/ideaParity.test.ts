@@ -14,7 +14,8 @@ import {
   selectAllOccurrences,
   unselectOccurrence,
 } from "./editing";
-import { caretExtension, pasteReindentFilter } from "./prefs";
+import { caretExtension, pasteReindentFilter, whitespaceMarks } from "./prefs";
+import { selectionMarks } from "./selectionMarks";
 import { closesStringAt, skipClosingQuote } from "./smartKeys";
 import {
   collapseAllEffects,
@@ -54,6 +55,21 @@ function make(text: string, extensions: Extension = []) {
   views.push(view);
   return view;
 }
+
+it("shows spaces and tabs only within the selected ranges and updates as the selection moves", () => {
+  const view = make(" [a ]b[\tc] ", [
+    selectionMarks,
+    whitespaceMarks({ leading: true, inner: true, trailing: true, selectionOnly: true }),
+  ]);
+  const spaces = () => view.contentDOM.querySelectorAll(".cm-highlightSpace").length;
+  const tabs = () => view.contentDOM.querySelectorAll(".cm-highlightTab").length;
+  expect([spaces(), tabs()]).toEqual([1, 1]);
+  expect(view.contentDOM.querySelector(".cm-highlightSpace .cm-openidea-selected")?.textContent).toBe(" ");
+  view.dispatch({ selection: EditorSelection.range(0, 1) });
+  expect([spaces(), tabs()]).toEqual([1, 0]);
+  view.dispatch({ selection: EditorSelection.cursor(1) });
+  expect([spaces(), tabs()]).toEqual([0, 0]);
+});
 
 function show(view: EditorView): string {
   const { doc, selection } = view.state;

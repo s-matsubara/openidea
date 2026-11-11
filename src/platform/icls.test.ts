@@ -131,9 +131,10 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.selection).toEqual({ background: "#406040" });
     expect(scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
     expect(scheme.attributes.gutter?.background).toBe("#142018");
-    expect(scheme.attributes.searchResult?.background).toBe("#6a5530");
+    expect(scheme.attributes.searchResult).toEqual({ background: "#6a5530", foreground: "#f0e080" });
+    expect(scheme.attributes.searchResultCurrent?.foreground).toBe("#d8ebd8");
     expect(scheme.attributes.error).toEqual({ effect: "wave", effectColor: "#ff6655" });
-    expect([applied, skipped]).toEqual([17, 2]);
+    expect([applied, skipped]).toEqual([19, 2]);
   });
 
   it("maps WebStorm's JavaScript and TypeScript keys, TypeScript first, then JavaScript, then defaults", () => {
@@ -399,6 +400,8 @@ describe(".icls schemes", () => {
       const css = schemeCss(id, overrides, root, customs);
       expect(css).toContain("--bg-editor: #18281e !important");
       expect(css).toContain("--fg-editor-selection: #ffffff !important");
+      expect(css).toContain("--fg-editor-search-match: #f0e080 !important");
+      expect(css).toContain("--fg-editor-search-match-current: #d8ebd8 !important");
       expect(css.indexOf("--syn-keyword: #abcdef")).toBeGreaterThan(css.indexOf("--syn-keyword: #aadd88"));
       expect(css).toContain('.cm-editor[data-language="Java"]');
       expect(effectiveScheme("theme-default", root, customs)).toBe(theme);

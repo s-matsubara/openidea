@@ -391,6 +391,8 @@ html {
   --bg-search-match: #ba9752;
   --bg-search-match-current: #f2c55c;
   --fg-search-match: #191a1c;
+  --fg-editor-search-match: var(--fg-search-match);
+  --fg-editor-search-match-current: var(--fg-search-match);
   --bg-dialog: #191a1c;
   --bg-popup-inline: #26282c;
   --bg-popup-advertiser: #26282c;
