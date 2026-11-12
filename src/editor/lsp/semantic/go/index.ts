@@ -54,9 +54,14 @@ const goSemantics: LanguageSemantics = {
       const index = classes.indexOf("cm-sem-namespace");
       if (index !== -1) classes[index] = packageClass;
     }
-    if (type === "type" && !classes.includes("cm-sem-declaration") && !classes.includes("cm-sem-builtin")) {
-      const index = classes.indexOf("cm-sem-type");
-      if (index !== -1) classes[index] = "cm-sem-go-type-reference";
+    const builtin = modifiers.includes("defaultLibrary");
+    if (type === "function" && builtin) classes.push("cm-sem-go-builtin-function");
+    if (type === "type") {
+      if (builtin) classes.push("cm-sem-go-builtin-type");
+      else if (!classes.includes("cm-sem-declaration")) {
+        const index = classes.indexOf("cm-sem-type");
+        if (index !== -1) classes[index] = "cm-sem-go-type-reference";
+      }
     }
     if (type === "property") {
       if (kind === "call") {

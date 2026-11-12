@@ -56,9 +56,18 @@ describe("Go semantic tokens", () => {
     }
   });
 
-  it.each(["declaration", "definition", "defaultLibrary"])("keeps %s types on the shared type color", (modifier) => {
+  it.each(["declaration", "definition"])("keeps %s types on the shared type color", (modifier) => {
     const tokens = { tokenTypes: ["type"], tokenModifiers: [modifier], data: [0, 0, 4, 0, 1] };
     expect(semanticRanges(doc, tokens, false, "go")[0]?.className.split(" ")[0]).toBe("cm-sem-type");
+  });
+
+  it.each([
+    ["function", "cm-sem-go-builtin-function"],
+    ["type", "cm-sem-go-builtin-type"],
+  ])("separates built-in %s tokens from other Go and non-Go tokens", (type, expected) => {
+    const tokens = { tokenTypes: [type], tokenModifiers: ["defaultLibrary"], data: [0, 0, 4, 0, 1] };
+    expect(semanticRanges(doc, tokens, false, "go")[0]?.className.split(" ")).toContain(expected);
+    expect(semanticRanges(doc, tokens, false, "java")[0]?.className.split(" ")).not.toContain(expected);
   });
 
   it("highlights Go package declarations, import aliases, and qualified references", async () => {

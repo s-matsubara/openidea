@@ -235,6 +235,16 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     fallbackToken: "type",
   },
   {
+    ...syn("go.builtinFunction", "Built-in function", ["Go", "Identifiers"], "go-builtin-function"),
+    language: "Go",
+    fallbackToken: "builtin",
+  },
+  {
+    ...syn("go.builtinType", "Built-in type", ["Go", "Classes"], "go-builtin-type"),
+    language: "Go",
+    fallbackToken: "builtin",
+  },
+  {
     ...syn("go.exportedField", "Exported struct field", ["Go", "Identifiers"], "go-exported-field"),
     language: "Go",
     fallbackToken: "property",

@@ -20,6 +20,22 @@ const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorS
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("imports separate Go built-in function and type colors, including inherited attributes", () => {
+    const { scheme } = parseIcls(`<scheme name="Go built-ins"><attributes>
+      <option name="DEFAULT_CLASS_REFERENCE"><value><option name="FOREGROUND" value="c6c8d0"/></value></option>
+      <option name="GO_BUILTIN_TYPE_REFERENCE" baseAttributes="DEFAULT_CLASS_REFERENCE"/>
+      <option name="GO_BUILTIN_FUNCTION_CALL"><value><option name="FOREGROUND" value="cc7832"/></value></option>
+      </attributes></scheme>`);
+    const customs = { "custom-go": scheme };
+    const css = schemeCss("custom-go", undefined, null, customs);
+    const go = css.split('.cm-editor[data-language="Go"] {\n')[1];
+    expect(go).toContain("--syn-go-builtin-function: #cc7832 !important");
+    expect(go).toContain("--syn-go-builtin-type: #c6c8d0 !important");
+    expect(css.split("}")[0]).not.toContain("--syn-go-builtin-");
+    const exported = parseIcls(exportIcls("custom-go", customs)).scheme;
+    expect(exported.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("imports and exports GO_PACKAGE as a Go-only color", () => {
     const { scheme } = parseIcls(`<scheme name="Go packages"><attributes>
       <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="b4be82"/></value></option>

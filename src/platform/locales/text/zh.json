@@ -195,6 +195,8 @@
   "Predefined symbol": "预定义符号",
   "Class name": "类名",
   "Type reference": "类型引用",
+  "Built-in function": "内置函数",
+  "Built-in type": "内置类型",
   "Number": "数字",
   "String": "字符串",
   "String text": "字符串文本",

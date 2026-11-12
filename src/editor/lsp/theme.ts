@@ -411,6 +411,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
   ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
   ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
+  ".cm-sem-go-builtin-function": semanticStyle("go-builtin-function", "builtin"),
+  ".cm-sem-go-builtin-type": semanticStyle("go-builtin-type", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
     color: "var(--syn-static-property, var(--syn-property))",

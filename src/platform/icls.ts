@@ -71,6 +71,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   REGEXP: "regexp",
   GO_PACKAGE: "go.packageReference",
   GO_TYPE_REFERENCE: "go.typeReference",
+  GO_BUILTIN_FUNCTION_CALL: "go.builtinFunction",
+  GO_BUILTIN_TYPE_REFERENCE: "go.builtinType",
   "OPENIDEA_go.packageReference": "go.packageReference",
   GO_STRUCT_EXPORTED_MEMBER: "go.exportedField",
   GO_STRUCT_LOCAL_MEMBER: "go.unexportedField",
