@@ -48,6 +48,44 @@ async function editor(extensions: Extension[]) {
 }
 
 describe("semantic decorations vs the syntax highlighter", () => {
+  it("styles Go local declarations and uses separately from package variables, constants, and calls", async () => {
+    const go = await languages.find((language) => language.name === "Go")!.load();
+    const doc = Text.of([
+      "package p",
+      "var global = 1",
+      "const limit = 2",
+      "func f() {",
+      "  local := 1; var (grouped = 0); callable := func() {}",
+      "  for index := range []int{0} { _ = index }",
+      "  _, _ = local, global; _ = limit; callable()",
+      "}",
+    ]);
+    const tree = go.language.parser.parse(doc.toString());
+    const line = doc.line(7);
+    const tokens = [
+      ["local", 0],
+      ["global", 1],
+      ["limit", 2],
+      ["callable", 0],
+    ] as const;
+    const data = tokens.flatMap(([name, mods]) => [6, line.text.indexOf(name), name.length, 0, mods]);
+    const ranges = semanticRanges(
+      doc,
+      { data, tokenTypes: ["variable"], tokenModifiers: ["static", "readonly"] },
+      false,
+      "go",
+      tree,
+    );
+    const local = ranges.filter((r) => r.className === "cm-sem-go-local-variable");
+    expect(local.map((r) => doc.sliceString(r.from, r.to))).toEqual(["local", "grouped", "callable", "index", "local"]);
+    expect(
+      ranges.some((r) => r.className.includes("cm-sem-global") && doc.sliceString(r.from, r.to) === "global"),
+    ).toBe(true);
+    expect(
+      ranges.some((r) => r.className.includes("cm-sem-constant") && doc.sliceString(r.from, r.to) === "limit"),
+    ).toBe(true);
+  });
+
   it("separates Go field declarations and references without recolouring calls", async () => {
     const go = await languages.find((language) => language.name === "Go")!.load();
     const doc = Text.of([

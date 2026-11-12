@@ -22,6 +22,8 @@ beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")))
 describe(".icls schemes", () => {
   it("keeps Go fields and JSON keys and keywords scoped without changing common colours", () => {
     const { scheme } = parseIcls(`<scheme name="Iceberg" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_IDENTIFIER"><value><option name="FOREGROUND" value="84a0c6"/></value></option>
+      <option name="DEFAULT_LOCAL_VARIABLE"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>
       <option name="DEFAULT_INSTANCE_FIELD"><value><option name="FOREGROUND" value="8e7eba"/></value></option>
       <option name="DEFAULT_FUNCTION_CALL"><value><option name="FOREGROUND" value="84a0c6"/></value></option>
       <option name="GO_STRUCT_EXPORTED_MEMBER"><value><option name="FOREGROUND" value="9bb8dc"/><option name="FONT_TYPE" value="2"/></value></option>
@@ -34,16 +36,19 @@ describe(".icls schemes", () => {
     const scope = (selector: string) => css.split(`${selector} {\n`)[1]?.split("}")[0];
     expect(scope(":root")).toContain("--syn-property: #8e7eba !important");
     expect(scope(":root")).toContain("--syn-function-call: #84a0c6 !important");
+    expect(scope(":root")).toContain("--syn-variable: #84a0c6 !important");
     expect(scope(":root")).not.toContain("--syn-property: #728eba");
     const go = scope('.cm-editor[data-language="Go"]');
     expect(go).toContain("--syn-go-exported-field: #9bb8dc !important");
     expect(go).toContain("--syn-go-unexported-field: #ada0d3 !important");
     expect(go).toContain("--syn-go-unexported-field-italic: italic !important");
+    expect(go).toContain("--syn-go-local-variable: #ada0d3 !important");
+    expect(go).toContain("--syn-go-local-variable-italic: italic !important");
     const json = scope('.cm-editor[data-language="JSON"]');
     expect(json).toContain("--syn-property: #728eba !important");
     expect(json).toContain("--syn-keyword: #8e7eba !important");
     const exported = parseIcls(exportIcls("custom-iceberg", customs)).scheme;
-    for (const id of ["go.exportedField", "go.unexportedField", "json.propertyKey", "json.keyword"])
+    for (const id of ["go.localVariable", "go.exportedField", "go.unexportedField", "json.propertyKey", "json.keyword"])
       expect(exported.attributes[id]).toEqual(scheme.attributes[id]);
   });
 

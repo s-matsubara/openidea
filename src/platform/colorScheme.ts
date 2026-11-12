@@ -210,6 +210,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     BASE_ATTRIBUTES.filter((a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id)).map((a) => ({
       ...a,
       id: `${id}.${a.id}`,
+      name: id === "go" && a.id === "identifier" ? "Identifiers › Identifier" : a.name,
       path: [language, ...a.path.slice(1)],
       language,
     })),
@@ -220,6 +221,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
   ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  {
+    ...syn("go.localVariable", "Local variable", ["Go", "Identifiers"], "go-local-variable"),
+    language: "Go",
+    fallbackToken: "variable",
+  },
   {
     ...syn("go.exportedField", "Exported struct field", ["Go", "Identifiers"], "go-exported-field"),
     language: "Go",

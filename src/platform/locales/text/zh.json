@@ -286,6 +286,7 @@
   "F-string": "F 字符串",
   "Nested function definition": "嵌套函数定义",
   "Local variable": "局部变量",
+  "Identifier": "标识符",
   "Global variable": "全局变量",
   "Instance attribute": "实例属性",
   "Class attribute": "类属性",

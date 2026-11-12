@@ -748,7 +748,7 @@ const SAMPLES: Record<string, CodeSample> = {
         [" {", "go.operator"],
       ],
       [
-        ["    message", "go.identifier"],
+        ["    message", "go.localVariable"],
         [" := ", "go.operator"],
         ["fmt", "go.packageReference"],
         [".", "go.operator"],
@@ -765,7 +765,7 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [
         ["    return ", "go.keyword"],
-        ["message", "go.identifier"],
+        ["message", "go.localVariable"],
       ],
       [["}", "go.operator"]],
     ],

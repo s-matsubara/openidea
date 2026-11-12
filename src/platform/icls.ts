@@ -17,7 +17,7 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   DEFAULT_TEXT: "text",
   DEFAULT_KEYWORD: "keyword",
   DEFAULT_IDENTIFIER: "identifier",
-  DEFAULT_LOCAL_VARIABLE: "identifier",
+  DEFAULT_LOCAL_VARIABLE: "go.localVariable",
   DEFAULT_PARAMETER: "parameter",
   DEFAULT_GLOBAL_VARIABLE: "globalVariable",
   DEFAULT_CONSTANT: "constant",
@@ -247,12 +247,12 @@ const precedence = (name: string) => {
   const language = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
   return (language < 0 ? LANGUAGE_PRECEDENCE.length : language) * KEY_ORDER.size + KEY_ORDER.get(name)!;
 };
-const targets = (name: string): string[] =>
-  Object.hasOwn(ATTRIBUTE_NAMES, name)
-    ? ALSO_CALLS.has(name)
-      ? [ATTRIBUTE_NAMES[name]!, "functionCall"]
-      : [ATTRIBUTE_NAMES[name]!]
-    : [];
+function targets(name: string): string[] {
+  if (!Object.hasOwn(ATTRIBUTE_NAMES, name)) return [];
+  const id = ATTRIBUTE_NAMES[name]!;
+  if (name === "DEFAULT_LOCAL_VARIABLE") return [id, "identifier"];
+  return ALSO_CALLS.has(name) ? [id, "functionCall"] : [id];
+}
 
 // IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the
 // bold dotted line (4, 5) become an underline.
