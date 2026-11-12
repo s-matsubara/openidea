@@ -20,6 +20,21 @@ const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorS
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("imports and exports GO_PACKAGE as a Go-only color", () => {
+    const { scheme } = parseIcls(`<scheme name="Go packages"><attributes>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="b4be82"/></value></option>
+      <option name="OPENIDEA_go.packageReference"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="GO_PACKAGE"><value><option name="FOREGROUND" value="afbf7e"/></value></option>
+      </attributes></scheme>`);
+    const customs = { "custom-go": scheme };
+    expect(scheme.attributes["go.packageReference"]?.foreground).toBe("#afbf7e");
+    expect(scheme.attributes.packageReference).toBeUndefined();
+    expect(scheme.attributes.string?.foreground).toBe("#b4be82");
+    const css = schemeCss("custom-go", undefined, null, customs);
+    expect(css.split('.cm-editor[data-language="Go"] {\n')[1]).toContain("--syn-go-package: #afbf7e !important");
+    expect(exportIcls("custom-go", customs)).toContain('name="GO_PACKAGE"');
+  });
+
   it("keeps Go fields and JSON keys and keywords scoped without changing common colours", () => {
     const { scheme } = parseIcls(`<scheme name="Iceberg" parent_scheme="Darcula"><attributes>
       <option name="DEFAULT_IDENTIFIER"><value><option name="FOREGROUND" value="84a0c6"/></value></option>

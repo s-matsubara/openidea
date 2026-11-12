@@ -2,6 +2,7 @@ import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange }
 import type { SyntaxNode } from "@lezer/common";
 
 const localVariableClass = "cm-sem-go-local-variable";
+const packageClass = "cm-sem-go-package";
 
 function fieldClass(name: string): string {
   return /^\p{Lu}/u.test(name) ? "cm-sem-go-exported-field" : "cm-sem-go-unexported-field";
@@ -37,7 +38,10 @@ const goSemantics: LanguageSemantics = {
     const ranges: SemanticRange[] = [];
     tree.iterate({
       enter({ name, node, from, to }) {
-        if (name === "FieldName" && node.parent?.name === "FieldDecl")
+        const parent = node.parent?.name;
+        if (name === "DefName" && (parent === "PackageClause" || parent === "ImportSpec")) {
+          if (doc.sliceString(from, to) !== "_") ranges.push({ from, to, className: packageClass, source: "fallback" });
+        } else if (name === "FieldName" && parent === "FieldDecl")
           ranges.push({ from, to, className: fieldClass(doc.sliceString(from, to)), source: "fallback" });
         else if (name === "DefName" && isLocalDeclaration(node) && doc.sliceString(from, to) !== "_")
           ranges.push({ from, to, className: localVariableClass, source: "fallback" });
@@ -46,6 +50,10 @@ const goSemantics: LanguageSemantics = {
     return ranges;
   },
   tokenClasses({ type, text, modifiers, kind, classes }) {
+    if (type === "namespace" && !text.startsWith("go:")) {
+      const index = classes.indexOf("cm-sem-namespace");
+      if (index !== -1) classes[index] = packageClass;
+    }
     if (type === "property") {
       if (kind === "call") {
         const index = classes.indexOf("cm-sem-property");

@@ -211,6 +211,9 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
       ...a,
       id: `${id}.${a.id}`,
       name: id === "go" && a.id === "identifier" ? "Identifiers › Identifier" : a.name,
+      ...(id === "go" && a.id === "packageReference"
+        ? { token: "go-package", fg: "--syn-go-package", fallbackToken: "string" }
+        : {}),
       path: [language, ...a.path.slice(1)],
       language,
     })),

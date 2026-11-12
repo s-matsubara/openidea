@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
+import { languages } from "@codemirror/language-data";
 import { semanticRanges } from "../index";
 
 const doc = Text.of(["name"]);
@@ -41,10 +42,9 @@ describe("Go semantic tokens", () => {
     );
   });
 
-  it("retains package, field and function roles from the common decoder", () => {
+  it("retains field and function roles from the common decoder", () => {
     for (const [type, expected] of [
-      ["namespace", "cm-sem-namespace"],
-      ["property", "cm-sem-property"],
+      ["property", "cm-sem-property cm-sem-go-unexported-field"],
       ["function", "cm-sem-function"],
       ["type", "cm-sem-type"],
       ["typeParameter", "cm-sem-typeParameter"],
@@ -54,6 +54,51 @@ describe("Go semantic tokens", () => {
           ?.className,
       ).toBe(expected);
     }
+  });
+
+  it("highlights Go package declarations, import aliases, and qualified references", async () => {
+    const go = await languages.find((language) => language.name === "Go")!.load();
+    const doc = Text.of([
+      "package main",
+      'import ("machine"; "machine/usb/hid/keyboard"; "time"; fmtAlias "fmt"; _ "embed")',
+      "var _ machine.Pin",
+      "func main() { keyboard.Port(); time.Sleep(0); fmtAlias.Println() }",
+      "//go:generate command",
+    ]);
+    const tree = go.language.parser.parse(doc.toString());
+    const tokenTypes = ["namespace", "type", "function"];
+    const tokens = [
+      [2, "machine", 0],
+      [2, "Pin", 1],
+      [3, "keyboard", 0],
+      [3, "Port", 2],
+      [3, "time", 0],
+      [3, "Sleep", 2],
+      [3, "fmtAlias", 0],
+      [3, "Println", 2],
+      [4, "go:generate", 0],
+    ] as const;
+    const data = tokens.flatMap(([line, word, type]) => [
+      line,
+      doc.line(line + 1).text.indexOf(word),
+      word.length,
+      type,
+      0,
+    ]);
+    const ranges = semanticRanges(doc, { data, tokenTypes, tokenModifiers: [] }, false, "go", tree);
+    expect(ranges.map(({ from, to, className }) => [doc.sliceString(from, to), className])).toEqual([
+      ["main", "cm-sem-go-package"],
+      ["fmtAlias", "cm-sem-go-package"],
+      ["machine", "cm-sem-go-package"],
+      ["Pin", "cm-sem-type"],
+      ["keyboard", "cm-sem-go-package"],
+      ["Port", "cm-sem-function"],
+      ["time", "cm-sem-go-package"],
+      ["Sleep", "cm-sem-function"],
+      ["fmtAlias", "cm-sem-go-package"],
+      ["Println", "cm-sem-function"],
+      ["go:generate", "cm-sem-namespace"],
+    ]);
   });
 
   it("leaves branch labels and missing server tokens to syntax highlighting", () => {

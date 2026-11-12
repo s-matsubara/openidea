@@ -395,6 +395,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-macro": semanticStyle("annotation", "annotation"),
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
+  ".cm-sem-go-package": semanticStyle("go-package", "string"),
   ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
   ".cm-sem-variable": semanticStyle("variable", "variable"),
   ".cm-sem-go-local-variable": semanticStyle("go-local-variable", "variable"),

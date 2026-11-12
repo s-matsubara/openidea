@@ -105,6 +105,7 @@ describe("semantic decorations vs the syntax highlighter", () => {
       tree,
     );
     expect(ranges.map(({ from, to, className }) => [doc.sliceString(from, to), className.split(" ").at(-1)])).toEqual([
+      ["p", "cm-sem-go-package"],
       ["Éxported", "cm-sem-go-exported-field"],
       ["unexported", "cm-sem-go-unexported-field"],
       ["Callback", "cm-sem-go-exported-field"],
