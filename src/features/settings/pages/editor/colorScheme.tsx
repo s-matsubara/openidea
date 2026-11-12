@@ -149,7 +149,7 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   const bold = attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit";
   const effect = attr.defaultEffect === "underline" ? "underline" : "none";
   return {
-    color: `var(--syn-${t})`,
+    color: attr.fallbackToken ? `var(--syn-${t}, var(--syn-${attr.fallbackToken}))` : `var(--syn-${t})`,
     fontWeight: `var(--syn-${t}-bold, ${bold})` as CSSProperties["fontWeight"],
     fontStyle: `var(--syn-${t}-italic, ${italic})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,
@@ -725,8 +725,12 @@ const SAMPLES: Record<string, CodeSample> = {
         ["{", "go.operator"],
       ],
       [
-        ["    Name", "go.field"],
+        ["    Name", "go.exportedField"],
         [" string", "go.predefined"],
+      ],
+      [
+        ["    count", "go.unexportedField"],
+        [" int", "go.predefined"],
       ],
       [["}", "go.operator"]],
       [
@@ -756,7 +760,7 @@ const SAMPLES: Record<string, CodeSample> = {
         [", ", "go.operator"],
         ["g", "go.parameter"],
         [".", "go.operator"],
-        ["Name", "go.field"],
+        ["Name", "go.exportedField"],
         [")", "go.operator"],
       ],
       [
@@ -764,6 +768,23 @@ const SAMPLES: Record<string, CodeSample> = {
         ["message", "go.identifier"],
       ],
       [["}", "go.operator"]],
+    ],
+  },
+  JSON: {
+    code: [
+      [["{", "text"]],
+      [
+        ['    "enabled"', "json.propertyKey"],
+        [": ", "text"],
+        ["true", "json.keyword"],
+        [",", "text"],
+      ],
+      [
+        ['    "value"', "json.propertyKey"],
+        [": ", "text"],
+        ["null", "json.keyword"],
+      ],
+      [["}", "text"]],
     ],
   },
   Kotlin: {

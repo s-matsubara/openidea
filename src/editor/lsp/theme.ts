@@ -398,6 +398,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
   ".cm-sem-variable": semanticStyle("variable", "variable"),
   ".cm-sem-property": semanticStyle("property", "property"),
+  ".cm-sem-go-exported-field": semanticStyle("go-exported-field", "property"),
+  ".cm-sem-go-unexported-field": semanticStyle("go-unexported-field", "property"),
   ".cm-sem-parameter": semanticStyle("param", "variable"),
   ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
   ".cm-sem-self": semanticStyle("self", "keyword"),

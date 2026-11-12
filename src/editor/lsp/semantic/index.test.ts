@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { EditorState, Prec, Text, type Extension } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
 import { openideaHighlightStyle } from "../../core/cm/highlight";
 import { setSyntaxHighlights, syntaxHighlightField } from "../../core/cm/syntaxHighlight";
 
@@ -16,7 +17,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspSemanticTokens } };
 });
 
-const { semanticExtension } = await import("./index");
+const { semanticExtension, semanticRanges } = await import("./index");
 const { lspDoc } = await import("../lsp");
 
 const views: EditorView[] = [];
@@ -47,6 +48,35 @@ async function editor(extensions: Extension[]) {
 }
 
 describe("semantic decorations vs the syntax highlighter", () => {
+  it("separates Go field declarations and references without recolouring calls", async () => {
+    const go = await languages.find((language) => language.name === "Go")!.load();
+    const doc = Text.of([
+      "package p",
+      "type T struct { Éxported, unexported int; Callback func() }",
+      "func f(t T) { _, _ = t.Éxported, t.unexported; t.Callback(); t.Method() }",
+    ]);
+    const tree = go.language.parser.parse(doc.toString());
+    const line = doc.line(3);
+    const names = ["Éxported", "unexported", "Callback", "Method"];
+    const data = names.flatMap((name, i) => [2, line.text.indexOf(name), name.length, i === 3 ? 1 : 0, 0]);
+    const ranges = semanticRanges(
+      doc,
+      { data, tokenTypes: ["property", "method"], tokenModifiers: [] },
+      false,
+      "go",
+      tree,
+    );
+    expect(ranges.map(({ from, to, className }) => [doc.sliceString(from, to), className.split(" ").at(-1)])).toEqual([
+      ["Éxported", "cm-sem-go-exported-field"],
+      ["unexported", "cm-sem-go-unexported-field"],
+      ["Callback", "cm-sem-go-exported-field"],
+      ["Éxported", "cm-sem-go-exported-field"],
+      ["unexported", "cm-sem-go-unexported-field"],
+      ["Callback", "cm-sem-function"],
+      ["Method", "cm-sem-function"],
+    ]);
+  });
+
   it("keeps semantic roles inside supplemental backend syntax marks", async () => {
     vi.useFakeTimers();
     const view = await editor([syntaxHighlightField, syntaxHighlighting(openideaHighlightStyle), semanticExtension()]);

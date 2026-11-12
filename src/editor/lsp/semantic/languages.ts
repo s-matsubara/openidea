@@ -19,6 +19,7 @@ export interface SemanticRange {
 /** A server token, with the classes the generic mapping already produced. */
 export interface SemanticToken {
   type: string;
+  text: string;
   modifiers: readonly string[];
   /** Kind from the language's own `symbolKinds` classification, when present. */
   kind: string | undefined;

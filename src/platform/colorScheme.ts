@@ -29,6 +29,8 @@ export interface AttributeDef {
   effect?: string;
   /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
   token?: string;
+  /** Token used in the preview when this language-specific colour is unset. */
+  fallbackToken?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
   defaultBold?: boolean;
@@ -218,7 +220,21 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
   ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  {
+    ...syn("go.exportedField", "Exported struct field", ["Go", "Identifiers"], "go-exported-field"),
+    language: "Go",
+    fallbackToken: "property",
+  },
+  {
+    ...syn("go.unexportedField", "Unexported struct field", ["Go", "Identifiers"], "go-unexported-field"),
+    language: "Go",
+    fallbackToken: "property",
+  },
+  { ...syn("json.propertyKey", "Property key", ["JSON"], "property"), language: "JSON" },
+  { ...syn("json.keyword", "Keyword", ["JSON"], "keyword"), language: "JSON" },
 ];
+
+const SCOPED_LANGUAGES = new Set(ATTRIBUTES.flatMap((attr) => (attr.language ? [attr.language] : [])));
 
 // --- scheme base values ------------------------------------------------------
 
@@ -551,7 +567,7 @@ export function schemeCss(
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
-  for (const language of Object.values(SCHEME_LANGUAGES)) {
+  for (const language of SCOPED_LANGUAGES) {
     const languageBody = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),
