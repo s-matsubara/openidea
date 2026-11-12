@@ -221,6 +221,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         "term_",
         "settings_",
         "project_trust_",
+        // New Project writes only where the user chose and runs no code of an open project.
+        "scaffold_",
         "ssh_",
         "git_credential",
     ]
@@ -247,6 +249,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clipboard_has_files"
             | "clipboard_image"
             | "clipboard_set_file_list"
+            | "clipboard_write_text"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
@@ -290,6 +293,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_files_named"
             | "find_dirs"
             | "find_symbols"
             | "mark_recent"
@@ -333,6 +337,11 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_list"
             | "agent_registry_install"
             | "agent_registry_remove"
+            | "agent_mcp_list"
+            | "agent_mcp_save"
+            | "agent_mcp_set_enabled"
+            | "agent_mcp_remove"
+            | "agent_mcp_import"
             | "coverage_import"
             | "system_font_families"
             | "user_font_data"
@@ -418,6 +427,7 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
             | "plugin_set_enabled"
             | "plugin_grant"
             | "plugin_set_capability"
+            | "plugin_revoke_net_host"
             | "plugin_choose_program"
             | "plugin_program"
             | "plugin_roll_back"
@@ -451,5 +461,13 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_mode_allows_clipboard_write_text() {
+        assert!(super::restricted_command_allowed("clipboard_write_text"));
     }
 }

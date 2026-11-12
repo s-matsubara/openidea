@@ -127,6 +127,13 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Fills the work area without the platform zoom animation. Returns whether it is filled now.
+#[tauri::command]
+#[specta::specta]
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
+    crate::window_zoom::toggle(&window)
+}
+
 /// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 /// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 /// Linux sets the urgency hint). A focused window is never flashed: the user is already
@@ -225,7 +232,7 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
     );
     // Members of a tab group asking to close together are one window closing: the first of them
-    // is the last window left (it returns to the welcome screen); the others just close.
+    // is the last window left (the frontend may return it to the welcome screen); the others just close.
     let count = match pending.first() {
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),
@@ -414,9 +421,10 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// The CNB mirror only serves upstream releases, signed with the upstream key.
-fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
-    if !official.iter().any(|url| url == UPSTREAM_GITHUB_ENDPOINT) {
+/// No official endpoint (a build without updates) means no mirror either. Nightly builds
+/// aren't mirrored: the mirror's manifest would move them to the stable version.
+fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
+    if !official.iter().any(|url| url == UPSTREAM_GITHUB_ENDPOINT) || nightly {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -426,6 +434,10 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
+fn is_nightly(version: &str) -> bool {
+    version.contains("-nightly.")
+}
+
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -433,7 +445,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
     }
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source),
+        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
     };
     let endpoints = endpoints
         .iter()
@@ -597,8 +609,66 @@ pub async fn app_install_update(
     result
 }
 
+/// Release notes of `version` from the update manifest (`latest.json`), read
+/// through the configured source. An install records the notes it saw, so this
+/// is only for an update installed outside the app. `Ok(None)` when the manifest
+/// covers another version or carries no notes.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+    };
+    let client = ide_http::client::shared()?;
+    for endpoint in endpoints {
+        // A hanging endpoint must not leave the page on "Fetching release notes…".
+        let fetched = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let Ok(response) = client.get(&endpoint).send().await else {
+                return None;
+            };
+            if !response.status().is_success() {
+                return None;
+            }
+            response.text().await.ok()
+        })
+        .await;
+        let Ok(Some(text)) = fetched else { continue };
+        if let Some(notes) = notes_for(&text, &version) {
+            return Ok(Some(notes));
+        }
+    }
+    Ok(None)
+}
+
+/// The notes of `version` in a manifest, when that is the entry it lists.
+fn notes_for(manifest: &str, version: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(manifest).ok()?;
+    if value.get("version")?.as_str()? != version {
+        return None;
+    }
+    let notes = value.get("notes")?.as_str()?.trim();
+    (!notes.is_empty()).then(|| notes.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_notes_come_from_the_manifest_of_that_version() {
+        let manifest = serde_json::json!({
+            "version": "0.1.40",
+            "notes": "## What's new\n\n- dev containers",
+            "pub_date": "2026-11-01T00:00:00Z",
+        })
+        .to_string();
+        assert_eq!(notes_for(&manifest, "0.1.40").as_deref(), Some("## What's new\n\n- dev containers"));
+        // Another version, empty notes, or not JSON: nothing to show.
+        assert_eq!(notes_for(&manifest, "0.1.41"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40", "notes": "  " }"#, "0.1.40"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40" }"#, "0.1.40"), None);
+        assert_eq!(notes_for("not json", "0.1.40"), None);
+    }
+
     #[test]
     fn menu_configuration_follows_the_active_window_or_its_settings_parent() {
         for (source, target, allowed) in [
@@ -647,14 +717,26 @@ mod tests {
     #[test]
     fn chosen_source_is_tried_first_and_the_other_after_it() {
         let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
+        assert_eq!(
+            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
+            [github.clone(), CNB_ENDPOINT.into()]
+        );
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
         let fork = "https://github.com/s-matsubara/openidea/releases/latest/download/latest.json".to_string();
         for source in [UpdateSource::Github, UpdateSource::Cnb] {
-            assert_eq!(source_endpoints(vec![fork.clone()], source), [fork.clone()]);
+            assert_eq!(source_endpoints(vec![fork.clone()], source, false), [fork.clone()]);
         }
+    }
+
+    #[test]
+    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
+        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
+        assert!(is_nightly("0.1.40-nightly.202611081417"));
+        assert!(!is_nightly("0.1.40"));
     }
 
     #[test]

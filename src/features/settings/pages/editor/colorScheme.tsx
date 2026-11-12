@@ -361,7 +361,13 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [['    """', "pyDocstring"]],
       [["    Syntax Highlighting Demo", "pyDocstring"]],
-      [["    @param x Parameter", "pyDocstring"]],
+      [
+        ["    :", "pyDocstring"],
+        ["param", "pyDocstringTag"],
+        [" ", "pyDocstring"],
+        ["x", "pyDocstringKeyword"],
+        [": Parameter", "pyDocstring"],
+      ],
       [],
       [["    Semantic highlighting:", "pyDocstring"]],
       [["    Generated spectrum to pick colors for local variables and parameters:", "pyDocstring"]],
@@ -1147,7 +1153,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   useEffect(() => {
     handlers.current = {
       import: async (file) => {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const path =
           file ??
           (await open({
@@ -1178,7 +1184,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
         setReport(tx`Applied ${parsed.applied} values; skipped ${parsed.skipped} unsupported or invalid values.`);
       },
       export: async (file) => {
-        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { save } = await import("@/platform/dialog");
         const path =
           file ??
           (await save({

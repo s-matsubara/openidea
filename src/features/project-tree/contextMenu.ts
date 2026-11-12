@@ -1,6 +1,7 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
-import { fileManagerName } from "@/platform/fileManager";
+import { getContext } from "@/platform/context";
+import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
@@ -31,7 +32,7 @@ import {
 } from "./operations";
 import { isSameOrInside } from "./paths";
 import { tx } from "@/platform/i18n";
-import { isJjPath, useVcs } from "@/features/vcs/store";
+import { isJjPath } from "@/features/vcs/store";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -301,7 +302,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   // Open In ›
   push(
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
       folder && getAction("terminal.openAt")
         ? { id: "terminal", label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", folder) }
         : null,
@@ -328,8 +334,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Git ›
-  if (inProject && (project?.isGit || useVcs.getState().available) && nodes.every((node) => !isJjPath(node.path))) {
+  // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
+  if (
+    inProject &&
+    (project?.isGit || getContext().vcsAvailable === true) &&
+    nodes.every((node) => !isJjPath(node.path))
+  ) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
@@ -352,7 +362,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           nodes.length > 0 &&
             nodes.every((n) => !n.placeholder) &&
             act("vcs.compareWithBranch", arg, "Compare with Branch…"),
+          singleFile && act("vcs.compareWithRevision", singleFile.path, "Compare with Revision…"),
           nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
+          singleFile && act("vcs.showCurrentRevision", singleFile.path, "Show Current Revision"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
           act("vcs.gitPush", undefined, "Push…"),
@@ -459,7 +471,12 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
     ]),
     single &&
       !single.dir &&

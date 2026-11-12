@@ -209,14 +209,14 @@ export function defaultProjectDirectory(): string | undefined {
 }
 
 async function pickFolder(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: true, multiple: false, title, defaultPath: defaultProjectDirectory() });
   const path = Array.isArray(picked) ? picked[0] : picked;
   return path ?? null;
 }
 
 async function pickFiles(title: string): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: false, multiple: true, title, defaultPath: defaultProjectDirectory() });
   return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
 }
@@ -572,8 +572,9 @@ async function closeThisWindow(): Promise<void> {
 }
 
 /**
- * LightEdit: closing its last editor tab closes the window (through the close guard,
- * so the last window shows the Welcome screen instead).
+ * LightEdit: closing its last editor tab closes the window, through the close guard.
+ * The last window returns to Welcome unless "Close the window instead of showing the
+ * Welcome screen" is on.
  */
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();

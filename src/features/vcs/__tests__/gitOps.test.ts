@@ -40,6 +40,7 @@ import {
   moveRow,
   planIsNoop,
   planProblem,
+  protectedBranchProblem,
   rebaseRange,
   singleCommitPlan,
   squashPlan,
@@ -144,6 +145,16 @@ describe("Undo Commit", () => {
     expect(headPushed(info({ upstream: "origin/main", ahead: 0 }))).toBe(true);
     expect(headPushed(info({ upstream: "origin/main", ahead: 1 }))).toBe(false);
     expect(headPushed(info())).toBe(false);
+  });
+
+  it("refuses history rewriting on a protected branch with an upstream", () => {
+    const problem = (head: string | null, upstream: string | null) =>
+      protectedBranchProblem({ head, upstream }, (name) => /^(main|master)$/.test(name));
+    expect(problem("main", "origin/main")).toMatch(/protected branch 'main'/);
+    expect(problem("master", "origin/master")).toMatch(/protected branch 'master'/);
+    expect(problem("feature", "origin/main")).toBeNull();
+    expect(problem("main", null)).toBeNull();
+    expect(problem(null, "origin/main")).toBeNull();
   });
 });
 

@@ -941,7 +941,8 @@ pub async fn vcs_log_details_batch(
     let cancel = host.begin_project_read_request(window, request);
     let result = blocking(move || {
         project.with_log_repo_at(repo.as_deref(), |r| {
-            revisions.iter().map(|id| r.log_details_cancellable(id, &cancel)).collect()
+            r.enable_log_index(&project.cache);
+            r.log_details_batch_cancellable(&revisions, &cancel)
         })
     })
     .await;
@@ -1188,10 +1189,11 @@ pub async fn vcs_rename_branch(
     repo: Option<PathBuf>,
     from: String,
     to: String,
+    unset_upstream: bool,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.rename_branch(&from, &to))).await
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.rename_branch(&from, &to, unset_upstream))).await
 }
 
 pub async fn vcs_merge(host: &Host, window: &str, repo: Option<PathBuf>, branch: String) -> IdeResult<()> {
@@ -1550,16 +1552,27 @@ pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> Id
     blocking(move || {
         // GitHub checks can read an explicitly selected jj root, without enabling
         // the Git mutation routes that remain guarded by require_git().
+        let mut selected = None;
         if let (Some(project), Some(root)) = (&access.project, repo.as_deref()) {
             let repos = project.repos();
             if let Some(repo) = repos.at_root(root).filter(|repo| repo.kind() == VcsKind::Jj) {
                 if project.is_trusted() {
                     apply_git_executable(&project.settings.effective());
                 }
-                return repo.remotes();
+                selected = Some(repo.remotes()?);
             }
         }
-        access.with_log_repo_at(repo.as_deref(), |r| r.remotes())
+        let mut remotes = match selected {
+            Some(remotes) => remotes,
+            None => access.with_log_repo_at(repo.as_deref(), |r| r.remotes())?,
+        };
+        for remote in &mut remotes {
+            let resolved = ide_ssh::resolve_ssh_remote_url(&remote.url);
+            if resolved != remote.url {
+                remote.resolved_url = Some(resolved);
+            }
+        }
+        Ok(remotes)
     })
     .await
 }
@@ -1612,8 +1625,31 @@ pub async fn vcs_remove_worktree(
         } else {
             project.with_repo_at(repo.as_deref(), |r| Ok(r.root().join(&path)))?
         };
-        check_worktree_removal(&project.root, &path)?;
+        check_worktree_away_from_project(
+            &project.root,
+            &path,
+            "Cannot remove a worktree containing the open project.",
+        )?;
         let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
+        project.refresh_repositories();
+        result
+    })
+    .await
+}
+
+/// Move Worktree…: moves the linked worktree at `path` to `to`.
+pub async fn vcs_move_worktree(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    path: PathBuf,
+    to: PathBuf,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        check_worktree_away_from_project(&project.root, &path, "Cannot move a worktree containing the open project.")?;
+        let result = project.with_repo_at(repo.as_deref(), |r| r.move_worktree(&path, &to));
         project.refresh_repositories();
         result
     })
@@ -2010,7 +2046,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_restore_branch(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
     });
     d.add("vcs_rename_branch", |c| async move {
-        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
+        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unset_upstream")?)
+            .await
     });
     d.add("vcs_merge", |c| async move { vcs_merge(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await });
     d.add("vcs_rebase", |c| async move { vcs_rebase(&c.host, &c.window, c.arg("repo")?, c.arg("onto")?).await });
@@ -2106,6 +2143,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_add_worktree", |c| async move {
         vcs_add_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("commitish")?, c.arg("newBranch")?)
             .await
+    });
+    d.add("vcs_move_worktree", |c| async move {
+        vcs_move_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("to")?).await
     });
     d.add("vcs_remove_worktree", |c| async move {
         vcs_remove_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("force")?).await

@@ -60,12 +60,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
+  { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
   {
-    id: "selection",
-    name: "Selected text",
+    id: "selectionForeground",
+    name: "Selection foreground",
     path: ["General", "Editor"],
     fg: "--fg-editor-selection",
-    bg: "--bg-editor-selection",
   },
   {
     id: "selectionInactive",
@@ -176,6 +176,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
+  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
+  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
   syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
   syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),
@@ -375,10 +377,13 @@ export function overrideDeclarations(
   if (!overrides) return out;
   for (const attr of ATTRIBUTES) {
     if (attr.language !== language) continue;
-    const o = overrides[attr.id];
+    const o = overrides[attr.id] ?? (attr.id === "selectionForeground" ? overrides.selection : undefined);
     if (!o) continue;
     if (setOrCleared(o.foreground) && attr.fg)
-      out.push([attr.fg, attr.id === "selection" && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground]);
+      out.push([
+        attr.fg,
+        attr.id === "selectionForeground" && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground,
+      ]);
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && setOrCleared(o.effectColor)) {

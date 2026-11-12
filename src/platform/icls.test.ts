@@ -20,6 +20,33 @@ const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorS
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("round trips Python docstring tags with the Python attribute key and keywords with an extension key", () => {
+    const { scheme } = parseIcls(`<scheme name="Python docs"><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.attributes.pyDocstringTag?.foreground).toBe("#123456");
+    expect(scheme.attributes.pyDocstringKeyword?.foreground).toBe("#654321");
+    const xml = exportIcls("custom-python", { "custom-python": scheme });
+    expect(xml).toContain('name="PY.DOC_COMMENT_TAG"');
+    expect(xml).toContain('name="OPENIDEA_pyDocstringKeyword"');
+    expect(xml).not.toContain("PY_DOC_COMMENT_TAG");
+    expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
+  it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
+    const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283"/>
+      <option name="SELECTION_FOREGROUND" value="ffffff"/>
+    </colors></scheme>`);
+    expect(scheme.attributes.selection).toEqual({ background: "#214283" });
+    expect(scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="ffffff" />');
+    expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+  });
+
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {
     const { scheme } = parseIcls(`<scheme name="Inherited"><attributes>
       <option name="PHP_PARAMETER" baseAttributes="PHP_VAR"/>
@@ -101,11 +128,54 @@ describe(".icls schemes", () => {
     });
     expect(scheme.attributes.text).toEqual({ foreground: "#d8ebd8", background: "#18281e" });
     expect(scheme.attributes.caret?.foreground).toBe("#f0e080");
-    expect(scheme.attributes.selection).toEqual({ background: "#406040", foreground: "#ffffff" });
+    expect(scheme.attributes.selection).toEqual({ background: "#406040" });
+    expect(scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
     expect(scheme.attributes.gutter?.background).toBe("#142018");
     expect(scheme.attributes.searchResult?.background).toBe("#6a5530");
     expect(scheme.attributes.error).toEqual({ effect: "wave", effectColor: "#ff6655" });
     expect([applied, skipped]).toEqual([17, 2]);
+  });
+
+  it("maps WebStorm's JavaScript and TypeScript keys, TypeScript first, then JavaScript, then defaults", () => {
+    const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#e89c45", bold: false, italic: false });
+    expect(fg("string")).toBe("#8bb770");
+    // A global function's key colours its calls too, and wins over the member function key.
+    expect(fg("functionDeclaration")).toBe("#6dacff");
+    expect(fg("functionCall")).toBe("#6dacff");
+    expect(fg("globalVariable")).toBe("#c678dd");
+    expect(fg("field")).toBe("#ef8a80");
+    expect(fg("constant")).toBe("#c580ea");
+    expect(fg("className")).toBe("#6fa4e5");
+    expect(fg("docCommentTagValue")).toBe("#e5c07b");
+    expect(fg("regexp")).toBe("#56b6c2");
+    // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
+    expect(scheme.attributes.operator).toBeUndefined();
+    expect([applied, skipped]).toEqual([10, 6]);
+  });
+
+  it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
+    const opt = (name: string, c: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${c}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="P"><attributes>${options.join("")}</attributes></scheme>`);
+    const separators = parse(
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_COMMA", "111111"),
+      opt("DEFAULT_DOT", "222222"),
+    );
+    expect(separators.scheme.attributes.operator).toBeUndefined();
+    expect([separators.applied, separators.skipped]).toEqual([0, 3]);
+    const braces = parse(opt("DEFAULT_BRACES", "333333"), opt("DEFAULT_PARENTHS", "444444"));
+    expect(braces.scheme.attributes.operator?.foreground).toBe("#444444");
+    const sign = parse(
+      opt("DEFAULT_PARENTHS", "444444"),
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_OPERATION_SIGN", "555555"),
+    );
+    expect(sign.scheme.attributes.operator?.foreground).toBe("#555555");
+    expect([sign.applied, sign.skipped]).toEqual([1, 2]);
   });
 
   it.each([
@@ -395,4 +465,10 @@ describe(".icls schemes", () => {
       useProject.setState({ settings: previous });
     }
   });
+});
+
+it("exports the selection foreground from legacy fork overrides", () => {
+  const xml = exportIcls("dark", {}, { selection: { foreground: "#abcdef" } });
+  expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="abcdef" />');
+  expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#abcdef" });
 });

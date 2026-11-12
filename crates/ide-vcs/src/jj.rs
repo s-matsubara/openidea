@@ -129,7 +129,7 @@ pub(crate) fn git_remotes(repo: &crate::Repo) -> IdeResult<Vec<crate::Remote>> {
                     line.split_once(char::is_whitespace).ok_or_else(|| IdeError::invalid("Invalid jj remote"))?;
                 (name.to_owned(), url.trim_start())
             };
-            Ok(crate::Remote { name, url: url.to_owned() })
+            Ok(crate::Remote { name, url: url.to_owned(), resolved_url: None })
         })
         .collect()
 }
@@ -2184,7 +2184,11 @@ mod workspace_tests {
         let remotes = repo.remotes().unwrap();
         assert_eq!(
             remotes,
-            vec![crate::Remote { name: "origin".into(), url: "https://github.com/example/fork.git".into() }]
+            vec![crate::Remote {
+                name: "origin".into(),
+                url: "https://github.com/example/fork.git".into(),
+                resolved_url: None
+            }]
         );
         let linked = tmp.path().join("linked");
         repo.jj_add_workspace("linked", &linked, "@").unwrap();

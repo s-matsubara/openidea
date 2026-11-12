@@ -85,8 +85,8 @@ jobs:
     name: Build (${{ matrix.name }})
     env:
       OPENIDEA_OFFICIAL_PLUGIN_KEYS: ${{ needs.create-release.outputs.official_plugin_keys }}
-      # Fat LTO exhausts the standard Linux arm64 runner's RAM and swap.
-      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'thin' || 'fat' }}
+      # Match upstream's Thin LTO profile; Linux arm64 cannot fit Fat LTO in RAM.
+      CARGO_PROFILE_RELEASE_LTO: thin
     strategy:
       fail-fast: false
       matrix:
