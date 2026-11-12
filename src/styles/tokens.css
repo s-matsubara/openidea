@@ -1528,6 +1528,10 @@ html {
   --db-connected: var(--success);
   --db-connected-ring: var(--success);
 }
+/* Go uses the editor foreground for delimiters. */
+.cm-editor[data-language="Go"] {
+  --syn-bracket: var(--fg-editor);
+}
 /* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
 .cm-editor[data-language="PHP"] {
   --syn-variable: var(--syn-php-variable);
