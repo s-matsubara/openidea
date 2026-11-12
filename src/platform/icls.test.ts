@@ -43,6 +43,7 @@ describe(".icls schemes", () => {
       <option name="DEFAULT_FUNCTION_CALL"><value><option name="FOREGROUND" value="84a0c6"/></value></option>
       <option name="GO_STRUCT_EXPORTED_MEMBER"><value><option name="FOREGROUND" value="9bb8dc"/><option name="FONT_TYPE" value="2"/></value></option>
       <option name="GO_STRUCT_LOCAL_MEMBER"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>
+      <option name="GO_TYPE_REFERENCE"><value><option name="FOREGROUND" value="6fafbd"/></value></option>
       <option name="JSON.PROPERTY_KEY"><value><option name="FOREGROUND" value="728eba"/></value></option>
       <option name="JSON.KEYWORD"><value><option name="FOREGROUND" value="8e7eba"/></value></option>
       </attributes></scheme>`);
@@ -53,17 +54,26 @@ describe(".icls schemes", () => {
     expect(scope(":root")).toContain("--syn-function-call: #84a0c6 !important");
     expect(scope(":root")).toContain("--syn-variable: #84a0c6 !important");
     expect(scope(":root")).not.toContain("--syn-property: #728eba");
+    expect(scope(":root")).not.toContain("--syn-go-type-reference");
     const go = scope('.cm-editor[data-language="Go"]');
     expect(go).toContain("--syn-go-exported-field: #9bb8dc !important");
     expect(go).toContain("--syn-go-unexported-field: #ada0d3 !important");
     expect(go).toContain("--syn-go-unexported-field-italic: italic !important");
     expect(go).toContain("--syn-go-local-variable: #ada0d3 !important");
     expect(go).toContain("--syn-go-local-variable-italic: italic !important");
+    expect(go).toContain("--syn-go-type-reference: #6fafbd !important");
     const json = scope('.cm-editor[data-language="JSON"]');
     expect(json).toContain("--syn-property: #728eba !important");
     expect(json).toContain("--syn-keyword: #8e7eba !important");
     const exported = parseIcls(exportIcls("custom-iceberg", customs)).scheme;
-    for (const id of ["go.localVariable", "go.exportedField", "go.unexportedField", "json.propertyKey", "json.keyword"])
+    for (const id of [
+      "go.localVariable",
+      "go.typeReference",
+      "go.exportedField",
+      "go.unexportedField",
+      "json.propertyKey",
+      "json.keyword",
+    ])
       expect(exported.attributes[id]).toEqual(scheme.attributes[id]);
   });
 

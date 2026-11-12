@@ -230,6 +230,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     fallbackToken: "variable",
   },
   {
+    ...syn("go.typeReference", "Type reference", ["Go", "Classes"], "go-type-reference"),
+    language: "Go",
+    fallbackToken: "type",
+  },
+  {
     ...syn("go.exportedField", "Exported struct field", ["Go", "Identifiers"], "go-exported-field"),
     language: "Go",
     fallbackToken: "property",

@@ -386,6 +386,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  ".cm-sem-go-type-reference": semanticStyle("go-type-reference", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.

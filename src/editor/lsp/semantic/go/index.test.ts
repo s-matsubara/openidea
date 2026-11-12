@@ -46,7 +46,7 @@ describe("Go semantic tokens", () => {
     for (const [type, expected] of [
       ["property", "cm-sem-property cm-sem-go-unexported-field"],
       ["function", "cm-sem-function"],
-      ["type", "cm-sem-type"],
+      ["type", "cm-sem-go-type-reference"],
       ["typeParameter", "cm-sem-typeParameter"],
     ]) {
       expect(
@@ -54,6 +54,11 @@ describe("Go semantic tokens", () => {
           ?.className,
       ).toBe(expected);
     }
+  });
+
+  it.each(["declaration", "definition", "defaultLibrary"])("keeps %s types on the shared type color", (modifier) => {
+    const tokens = { tokenTypes: ["type"], tokenModifiers: [modifier], data: [0, 0, 4, 0, 1] };
+    expect(semanticRanges(doc, tokens, false, "go")[0]?.className.split(" ")[0]).toBe("cm-sem-type");
   });
 
   it("highlights Go package declarations, import aliases, and qualified references", async () => {
@@ -90,7 +95,7 @@ describe("Go semantic tokens", () => {
       ["main", "cm-sem-go-package"],
       ["fmtAlias", "cm-sem-go-package"],
       ["machine", "cm-sem-go-package"],
-      ["Pin", "cm-sem-type"],
+      ["Pin", "cm-sem-go-type-reference"],
       ["keyboard", "cm-sem-go-package"],
       ["Port", "cm-sem-function"],
       ["time", "cm-sem-go-package"],

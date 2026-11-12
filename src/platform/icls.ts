@@ -70,6 +70,7 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   MARKDOWN_LINK_TEXT: "mdLink",
   REGEXP: "regexp",
   GO_PACKAGE: "go.packageReference",
+  GO_TYPE_REFERENCE: "go.typeReference",
   "OPENIDEA_go.packageReference": "go.packageReference",
   GO_STRUCT_EXPORTED_MEMBER: "go.exportedField",
   GO_STRUCT_LOCAL_MEMBER: "go.unexportedField",

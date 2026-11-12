@@ -737,7 +737,7 @@ const SAMPLES: Record<string, CodeSample> = {
         ["func ", "go.keyword"],
         ["(", "go.operator"],
         ["g", "go.parameter"],
-        [" Greeter", "go.className"],
+        [" Greeter", "go.typeReference"],
         [") ", "go.operator"],
         ["Greet", "go.functionDeclaration"],
         ["(", "go.operator"],
