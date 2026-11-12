@@ -374,7 +374,7 @@ pub(crate) static SPECS: &[Spec] = &[
         name: "toml",
         language: tree_sitter_toml_ng::LANGUAGE,
         outline: outline!("toml"),
-        highlights: None,
+        highlights: Some(Highlights { query: highlights!("toml"), first_wins: false }),
         fold_nodes: &["table", "table_array_element", "string"],
         fold_bodies: NONE,
         imports: NONE,

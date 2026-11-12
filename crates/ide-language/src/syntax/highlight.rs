@@ -383,6 +383,42 @@ mod tests {
     }
 
     #[test]
+    fn toml_distinguishes_bare_keys_and_dates_from_strings_and_numbers() {
+        use SyntaxHighlightKind as K;
+        let src = r#"
+[database."quoted".settings]
+"connection_max" = 5000
+enabled = true
+updated = 2019-11-04T07:32:00-08:00
+local = 2019-11-04 07:32:00
+day = 2019-11-04
+time = 07:32:00
+client = { ip = '10.0.0.1', ready = false }
+[[servers]]
+"#;
+        let got = spans("toml", src);
+        for (text, expected) in [
+            ("database", K::Keyword),
+            ("\"quoted\"", K::String),
+            ("settings", K::Keyword),
+            ("\"connection_max\"", K::String),
+            ("5000", K::Number),
+            ("enabled", K::Keyword),
+            ("true", K::Keyword),
+            ("2019-11-04T07:32:00-08:00", K::Keyword),
+            ("2019-11-04 07:32:00", K::Keyword),
+            ("2019-11-04", K::Keyword),
+            ("07:32:00", K::Keyword),
+            ("ip", K::Keyword),
+            ("'10.0.0.1'", K::String),
+            ("false", K::Keyword),
+            ("servers", K::Keyword),
+        ] {
+            assert!(got.iter().any(|(word, kind)| word == text && *kind == expected), "{text}: {got:?}");
+        }
+    }
+
+    #[test]
     fn kotlin_supplements_stream_highlighting_with_declaration_roles() {
         use SyntaxHighlightKind as K;
         let src = "package palette\n/** Docs */\n@Deprecated(\"old\")\nclass Greeter(val name: String) {\n var count: Int = 0\n fun greet(prefix: String): String { val message = \"hello\\n\"; println(message); return prefix }\n}\ntypealias Handler = (String) -> Unit\nvalue class UserId(val value: String)\n";

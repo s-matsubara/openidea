@@ -67,4 +67,30 @@ describe("syntaxHighlightField", () => {
       expect(span.children.length).toBe(0);
     }
   });
+
+  it("lets TOML grammar colours override the stream mode for a table, a quoted key, and a boolean", async () => {
+    const support = await loadSupport(findLanguageDescription("TOML", "demo.toml")!);
+    const doc = '[database]\n"enabled" = true';
+    const view = new EditorView({
+      parent: document.body,
+      doc,
+      extensions: [support!, syntaxHighlightField, syntaxHighlighting(openideaHighlightStyle)],
+    });
+    views.push(view);
+    const parts = ["database", '"enabled"', "true"];
+    view.dispatch({
+      effects: setSyntaxHighlights.of({
+        kinds: ["keyword", "string"],
+        data: parts.flatMap((text, i) => {
+          const from = doc.indexOf(text);
+          return [from, from + text.length, i === 1 ? 1 : 0];
+        }),
+      }),
+    });
+    for (const [i, text] of parts.entries()) {
+      const cls = highlightingFor(view.state, [i === 1 ? t.string : t.keyword])!;
+      const mark = [...view.contentDOM.querySelectorAll(`.${cls}`)].find((el) => el.textContent === text);
+      expect(mark?.children.length).toBe(0);
+    }
+  });
 });
