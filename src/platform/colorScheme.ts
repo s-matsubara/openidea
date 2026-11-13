@@ -9,6 +9,7 @@
  */
 import tokensCss from "@/styles/tokens.css?raw";
 import type { CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { RUST_COLORS } from "./rustColors";
 import { BUILTIN_THEMES, isBuiltinTheme, themeKind, type BuiltinThemeId } from "./themes";
 
 export type SchemeId = BuiltinThemeId;
@@ -307,6 +308,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   },
   { ...syn("json.propertyKey", "Property key", ["JSON"], "property"), language: "JSON" },
   { ...syn("json.keyword", "Keyword", ["JSON"], "keyword"), language: "JSON" },
+  ...Object.entries(RUST_COLORS).map(([role, [, name, fallbackToken]]) => ({
+    ...syn(`rust.${role}`, name, ["Rust"], `rust-${role}`),
+    language: "Rust",
+    fallbackToken,
+  })),
 ];
 
 const SCOPED_LANGUAGES = new Set([
@@ -597,7 +603,7 @@ export function resolvedAttribute(
     for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
 
   const token = attr.token;
-  const foreground = attr.fg ? vars.get(attr.fg) : undefined;
+  const foreground = (attr.fg && vars.get(attr.fg)) ?? (attr.fallbackToken && vars.get(`--syn-${attr.fallbackToken}`));
   const background = attr.bg ? vars.get(attr.bg) : token ? vars.get(`--syn-${token}-bg`) : undefined;
   const effectCss = attr.effect ? vars.get(attr.effect) : token ? vars.get(`--syn-${token}-effect`) : undefined;
   const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
@@ -660,6 +666,27 @@ export function schemeCss(
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
     if (languageBody.length) css += `.cm-editor[data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+  }
+  // Apply only the Rust attributes that the scheme defines. Unconfigured roles keep the
+  // existing syntax/semantic styling, including static, mutable and deprecated modifiers.
+  for (const role of Object.keys(RUST_COLORS)) {
+    const key = `rust.${role}`;
+    const imported = valid[id]?.attributes[key];
+    const override = overrides?.[id]?.[key];
+    if (!imported && !override) continue;
+    const attr = { ...imported, ...override };
+    const selector = `.cm-editor[data-language="Rust"] .cm-sem-rust-${role}`;
+    const token = `--syn-rust-${role}`;
+    const decls = [];
+    if (setOrCleared(attr.background)) decls.push(`background-color: var(${token}-bg);`);
+    if (attr.effect)
+      css += `${selector}:not(:where(.cm-sem-deprecated, .cm-sem-mutable)) { text-decoration: var(${token}-effect); -webkit-text-decoration: var(${token}-effect); }\n`;
+    if (decls.length) css += `${selector} { ${decls.join(" ")} }\n`;
+    const text = [];
+    if (setOrCleared(attr.foreground)) text.push(`color: var(${token});`);
+    if (attr.bold !== undefined) text.push(`font-weight: var(${token}-bold);`);
+    if (attr.italic !== undefined) text.push(`font-style: var(${token}-italic);`);
+    if (text.length) css += `${selector}:not(:where([class*="cm-sem-rainbow-"])) { ${text.join(" ")} }\n`;
   }
   return css;
 }

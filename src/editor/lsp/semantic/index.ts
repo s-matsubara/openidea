@@ -30,6 +30,7 @@ import "./kotlin";
 import "./python";
 import "./php";
 import "./go";
+import "./rust";
 
 const semanticBackoff = featureBackoff();
 

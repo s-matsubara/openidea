@@ -21,6 +21,27 @@ const fixture = (name: string, ext = "icls") =>
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("round trips Rust macro and generic styles in the Rust scope", () => {
+    const { scheme } = parseIcls(`<scheme name="Iceberg Rust" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_METADATA"><value><option name="FOREGROUND" value="8e7eba"/></value></option>
+      <option name="org.rust.MACRO"><value><option name="FOREGROUND" value="e2a478"/></value></option>
+      <option name="org.rust.TYPE_PARAMETER"><value><option name="FOREGROUND" value="b7c685"/></value></option>
+      <option name="org.rust.LIFETIME" baseAttributes="LifetimeStyle"/>
+      <option name="LifetimeStyle"><value><option name="FOREGROUND" value="b7c685"/><option name="FONT_TYPE" value="2"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes["rust.macro"]).toMatchObject({ foreground: "#e2a478", italic: false });
+    expect(scheme.attributes["rust.type-parameter"]).toMatchObject({ foreground: "#b7c685", italic: false });
+    expect(scheme.attributes["rust.lifetime"]).toMatchObject({ foreground: "#b7c685", italic: true });
+    const customs = { "custom-rust": scheme };
+    const css = schemeCss("custom-rust", undefined, null, customs);
+    const [global, rust] = css.split('.cm-editor[data-language="Rust"] {\n');
+    expect(global).toContain("--syn-decorator: #8e7eba");
+    expect(global).not.toContain("--syn-rust-");
+    expect(rust).toContain("--syn-rust-lifetime-italic: italic");
+    expect(rust).toContain("--syn-rust-macro: #e2a478");
+    expect(parseIcls(exportIcls("custom-rust", customs)).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("uses GoLand's local-variable fallback for Go parameters and honours explicit Go colors", () => {
     const local =
       '<option name="DEFAULT_LOCAL_VARIABLE"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>';

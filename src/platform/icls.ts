@@ -10,6 +10,7 @@ import {
 } from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { RUST_COLORS } from "./rustColors";
 
 // Many language keys share the editor's language-default tokens.
 const ATTRIBUTE_NAMES: Record<string, string> = {
@@ -81,6 +82,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   "JSON.PROPERTY_KEY": "json.propertyKey",
   "JSON.KEYWORD": "json.keyword",
 };
+for (const [role, [key]] of Object.entries(RUST_COLORS)) ATTRIBUTE_NAMES[`org.rust.${key}`] = `rust.${role}`;
+
 const LANGUAGE_KEYS: Record<string, string> = {
   KEYWORD: "keyword",
   NUMBER: "number",
