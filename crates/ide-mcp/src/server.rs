@@ -54,7 +54,7 @@ impl McpServer {
                 port,
                 token: token.clone(),
                 pid: std::process::id(),
-                version: env!("CARGO_PKG_VERSION").to_owned(),
+                version: ide_core::version::app_version().to_owned(),
             };
             info.write(path)?;
         }

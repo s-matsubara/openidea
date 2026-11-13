@@ -1,7 +1,7 @@
 [package]
 name = "openidea"
 description = "OpenIDEA desktop shell: an open-source IDE inspired by IntelliJ IDEA"
-version.workspace = true
+version = "2026.2.12"
 edition.workspace = true
 license.workspace = true
 

@@ -109,6 +109,8 @@ See `docs/releases/README.md` for the command, validation and retry rules.
   Tool versions: `.github/tool-versions.env` (shared with Language smoke).
 - `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
   `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
+  The application version is in `src-tauri/Cargo.toml`; do not bump the root
+  workspace component baseline. See `docs/releases/build-cache.md`.
 
 ## Before opening a PR
 

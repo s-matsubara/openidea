@@ -31,9 +31,12 @@ export function setNightlyIdentity(json: string): string {
 
 function main() {
   const root = fileURLToPath(new URL("..", import.meta.url));
-  const version = nightlyVersion(cargoVersion(readFileSync(join(root, "Cargo.toml"), "utf8")), process.argv[2]);
+  const version = nightlyVersion(
+    cargoVersion(readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8")),
+    process.argv[2],
+  );
 
-  edit(join(root, "Cargo.toml"), (text) => setCargoVersion(text, version));
+  edit(join(root, "src-tauri/Cargo.toml"), (text) => setCargoVersion(text, version));
   edit(join(root, "package.json"), (text) => setJsonVersion(text, version));
   edit(join(root, "src-tauri/tauri.conf.json"), (text) => setNightlyIdentity(setJsonVersion(text, version)));
   const cargo = spawnSync("cargo", ["update", "--workspace"], {

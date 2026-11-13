@@ -979,7 +979,7 @@ impl LspManager {
         }
         let mut params = json!({
             "processId": std::process::id(),
-            "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "OpenIDEA", "version": ide_core::version::app_version() },
             "locale": "en",
             "rootPath": server.root.to_string_lossy(),
             "rootUri": root_uri,

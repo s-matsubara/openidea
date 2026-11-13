@@ -1,0 +1,35 @@
+name: Release workspace cache
+description: Restore compiled crates and content-verified Cargo source timestamps
+inputs:
+  scope:
+    required: true
+    description: Desktop, server or plugins; separates build profiles and command lines
+  target:
+    required: true
+    description: Compilation target, including host architecture in the compatibility hash
+outputs:
+  key:
+    value: ${{ steps.keys.outputs.key }}
+    description: Unique save key for this attempt
+  paths:
+    value: ${{ steps.keys.outputs.paths }}
+    description: Compiled artifact paths and their input snapshot
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - id: keys
+      shell: bash
+      env:
+        CACHE_SCOPE: ${{ inputs.scope }}
+        CACHE_TARGET: ${{ inputs.target }}
+      run: python3 scripts/release-cache.py keys --scope "$CACHE_SCOPE" --target "$CACHE_TARGET"
+    - uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.keys.outputs.paths }}
+        key: ${{ steps.keys.outputs.key }}
+        restore-keys: ${{ steps.keys.outputs.prefix }}
+    - shell: bash
+      run: python3 scripts/release-cache.py restore

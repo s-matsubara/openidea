@@ -136,7 +136,7 @@ impl Syntax {
         static FP: OnceLock<String> = OnceLock::new();
         FP.get_or_init(|| {
             let mut h = blake3::Hasher::new();
-            h.update(env!("CARGO_PKG_VERSION").as_bytes());
+            h.update(ide_core::version::app_version().as_bytes());
             // Bump when web definitions (`.class`, `#id`, `--var` tags) change.
             h.update(b"web-definitions-1");
             for s in SPECS {

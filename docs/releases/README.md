@@ -46,3 +46,11 @@ Validation without creating tags or releases:
 `node --test scripts/release-workflow.test.mjs` runs the actual inline guards with
 mocked GitHub responses, plus the real manifest-version check on temporary files.
 Workflow guard steps share a [YAML anchor](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#yaml-anchors-and-aliases).
+
+## Build version and cache policy
+
+`src-tauri/Cargo.toml` carries the application version. Keep the root workspace's
+component baseline stable when preparing a release or merging upstream. Internal
+libraries receive the public version at runtime; do not bake a new release number
+into every dependency. See [build cache design and verification](build-cache.md)
+for immutable cache generations, source-mtime safety, limitations and experiments.

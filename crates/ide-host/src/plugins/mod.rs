@@ -451,7 +451,7 @@ impl PluginHost {
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
             // Revalidate SVGs accepted before URL-valued CSS functions were rejected.
-            concat!(env!("CARGO_PKG_VERSION"), ":svg-2"),
+            &format!("{}:svg-2", ide_core::version::app_version()),
         ));
         ui.set_index(Some(index.clone()));
         let languages = PluginLanguages::new();

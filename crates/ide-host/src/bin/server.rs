@@ -9,10 +9,14 @@ use ide_language::LanguageRegistry;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+#[path = "common/release_version.rs"]
+mod release_version;
+
 fn main() {
+    release_version::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
-        println!("openidea-server {} (protocol {})", env!("CARGO_PKG_VERSION"), rpc::PROTOCOL_VERSION);
+        println!("openidea-server {} (protocol {})", ide_core::version::app_version(), rpc::PROTOCOL_VERSION);
         return;
     }
     if args.first().is_some_and(|a| a == "--connect") {
@@ -97,7 +101,7 @@ async fn run(base: PathBuf) -> i32 {
     {
         tracing::warn!("cannot trust {}: {e}", root.to_string_lossy());
     }
-    tracing::info!("openidea-server {} ready", env!("CARGO_PKG_VERSION"));
+    tracing::info!("openidea-server {} ready", ide_core::version::app_version());
     let mut dispatcher = Dispatcher::standard();
     if let Some(plugins) = &plugins {
         plugins.register(&mut dispatcher);

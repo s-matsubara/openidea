@@ -715,7 +715,7 @@ fn terminal_env(user: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     env.insert("TERM".to_owned(), "xterm-256color".to_owned());
     env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
     env.insert("TERM_PROGRAM".to_owned(), "OpenIDEA".to_owned());
-    env.insert("TERM_PROGRAM_VERSION".to_owned(), env!("CARGO_PKG_VERSION").to_owned());
+    env.insert("TERM_PROGRAM_VERSION".to_owned(), ide_core::version::app_version().to_owned());
     let has_lang = user.contains_key("LANG") || std::env::var_os("LANG").is_some_and(|v| !v.is_empty());
     if !has_lang {
         env.insert("LANG".to_owned(), "en_US.UTF-8".to_owned());

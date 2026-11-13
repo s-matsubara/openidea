@@ -4625,6 +4625,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ide-core",
  "percent-encoding",
  "serde",
  "serde_json",
