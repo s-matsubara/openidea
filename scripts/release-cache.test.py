@@ -449,7 +449,7 @@ serde_json="1"
         output = Path(self.temp.name) / "outputs"
         base_env = dict(os.environ)
 
-        def key(**env):
+        def key(namespace="release-target", generation="", **env):
             os.environ.update(
                 {
                     "GITHUB_RUN_ID": "1",
@@ -459,7 +459,7 @@ serde_json="1"
                 }
             )
             output.write_text("")
-            cache.keys("desktop", "x86_64-unknown-linux-gnu")
+            cache.keys("desktop", "x86_64-unknown-linux-gnu", namespace, generation)
             return dict(
                 line.split("=", 1)
                 for line in output.read_text().splitlines()
@@ -475,6 +475,11 @@ serde_json="1"
             self.assertNotEqual(first["key"], retry["key"])
             self.assertEqual(first["prefix"], second["prefix"])
             self.assertNotEqual(first["key"], second["key"])
+            cold = key(namespace="verification-run-1", generation="cold")
+            warm = key(namespace="verification-run-1", generation="warm")
+            self.assertEqual(cold["prefix"], warm["prefix"])
+            self.assertNotEqual(cold["key"], warm["key"])
+            self.assertNotEqual(first["prefix"], cold["prefix"])
             self.assertNotEqual(
                 second["prefix"], key(RUSTFLAGS="-C debuginfo=1")["prefix"]
             )

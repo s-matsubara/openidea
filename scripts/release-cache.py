@@ -295,7 +295,11 @@ def restore():
         print("No valid input snapshot: discarded workspace fingerprints")
 
 
-def keys(scope, target):
+def keys(scope, target, namespace="release-target", generation=""):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", namespace) or (
+        generation and not re.fullmatch(r"[A-Za-z0-9_-]+", generation)
+    ):
+        raise ValueError("cache namespace and generation must be simple identifiers")
     manifests = {}
     workspace = packages()
     for package in workspace:
@@ -343,9 +347,11 @@ def keys(scope, target):
             configuration,
         ]
     )
-    prefix = f"release-target-v{FORMAT}-{os.environ.get('RUNNER_OS', os.name)}-{scope}-{target}-{compatibility}"
+    prefix = f"{namespace}-v{FORMAT}-{os.environ.get('RUNNER_OS', os.name)}-{scope}-{target}-{compatibility}"
     # The unique suffix is save-only. It must never enter the cross-commit restore prefix.
     key = f"{prefix}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    if generation:
+        key += f"-{generation}"
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(
             f"key={key}\nprefix={prefix}-\npaths<<CACHE_PATHS\n{artifact_paths(workspace)}\nCACHE_PATHS\n"
@@ -357,9 +363,11 @@ if __name__ == "__main__":
     parser.add_argument("operation", choices=["capture", "restore", "keys"])
     parser.add_argument("--scope")
     parser.add_argument("--target")
+    parser.add_argument("--namespace", default="release-target")
+    parser.add_argument("--generation", default="")
     args = parser.parse_args()
     if args.operation == "keys":
-        keys(args.scope, args.target)
+        keys(args.scope, args.target, args.namespace, args.generation)
     elif args.operation == "capture":
         capture()
     else:

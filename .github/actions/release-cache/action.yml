@@ -7,6 +7,12 @@ inputs:
   target:
     required: true
     description: Compilation target, including host architecture in the compatibility hash
+  namespace:
+    default: release-target
+    description: Isolated cache family; verification must never use the release family
+  generation:
+    default: ""
+    description: Optional save-only suffix for multiple producers in the same run
 outputs:
   key:
     value: ${{ steps.keys.outputs.key }}
@@ -14,6 +20,15 @@ outputs:
   paths:
     value: ${{ steps.keys.outputs.paths }}
     description: Compiled artifact paths and their input snapshot
+  prefix:
+    value: ${{ steps.keys.outputs.prefix }}
+    description: Compatibility prefix without the save generation
+  matched-key:
+    value: ${{ steps.restore.outputs.cache-matched-key }}
+    description: Restored key, including prefix hits; empty means no archive
+  cache-hit:
+    value: ${{ steps.restore.outputs.cache-hit }}
+    description: True only on an exact immutable key hit
 runs:
   using: composite
   steps:
@@ -25,8 +40,11 @@ runs:
       env:
         CACHE_SCOPE: ${{ inputs.scope }}
         CACHE_TARGET: ${{ inputs.target }}
-      run: python3 scripts/release-cache.py keys --scope "$CACHE_SCOPE" --target "$CACHE_TARGET"
-    - uses: actions/cache/restore@v5
+        CACHE_NAMESPACE: ${{ inputs.namespace }}
+        CACHE_GENERATION: ${{ inputs.generation }}
+      run: python3 scripts/release-cache.py keys --scope "$CACHE_SCOPE" --target "$CACHE_TARGET" --namespace "$CACHE_NAMESPACE" --generation "$CACHE_GENERATION"
+    - id: restore
+      uses: actions/cache/restore@v5
       with:
         path: ${{ steps.keys.outputs.paths }}
         key: ${{ steps.keys.outputs.key }}

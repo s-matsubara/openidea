@@ -115,3 +115,47 @@ inputs can reduce reuse. Archives consume repository cache quota and may be
 evicted, so inspect cache hit/size logs on the first authorized future release.
 No existing release needs to be retried for this change. It first applies to a
 new tag containing these scripts after the PR is merged.
+
+## Hosted PR verification
+
+`verify-release-cache.yml` runs on this draft PR's synchronize/open/reopen events,
+including a branch push. It is separate from the metadata-only `PR check`.
+Two sequential `ubuntu-24.04` jobs use separate fresh hosted machines and the same
+head SHA. They build the real `ide-host/openidea-server` with Thin LTO and
+incremental disabled. The warm job uses the real release preparation script to
+bump only the app release, checks all four app-version locations and unchanged
+component/dependency versions, then checks the server's actual `--version`.
+It creates no tag, Release, updater manifest or distribution bundle.
+
+Both cache families use a run/attempt-specific **verification namespace**.
+Swatinem uses an explicit shared-key so the cold/warm job IDs do not split the
+dependency cache. The workspace action accepts an optional namespace and a
+save-only generation (cold/warm); its production defaults are unchanged.
+Cold must miss, warm must restore the exact cold workspace generation and an
+exact dependency hit, and compatibility prefixes must match after the app bump.
+Image/toolchain/profile changes fail the comparison instead of silently passing
+a new cold build. Inspect the runner image and toolchain logs when that happens.
+
+The workspace archive is explicitly saved **before** Swatinem's post-job cleanup,
+and its input snapshot is removed before that dependency-only save. Warm saves
+to its own immutable generation, avoiding the same-run cold key collision.
+An exact dependency hit skips Swatinem's save as expected. JSON reports and Cargo
+compiler-artifact fresh flags are uploaded as public Actions measurement artifacts;
+the action logs show compressed transfer sizes, restore/save keys and durations.
+The reports also inventory the exact private archive selection and its byte count.
+Final binaries, bundle/signature canaries and the server executable must be absent
+before the warm build. The final server must be rebuilt while core, host and at
+least five real internal libraries are fresh.
+
+These workflows have `contents: read`, use no signing credentials/secrets, and
+never upload executable distribution assets. This public repository's Actions
+logs and reports can be public. Signing, notarization, installed desktop GUI,
+updater/download end-to-end behavior and real bundle names remain separate,
+unverified Release checks; the experiment only checks their unchanged version
+source contract and archive boundaries. No GUI smoke is substituted for the
+repository's Tauri MCP verification procedure.
+
+[PR caches live under refs/pull/.../merge](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+They are not promoted to main and cannot seed its Release cache. After merge,
+the first separately authorized Release must cold-seed main's production cache.
+This experiment must not reuse or cancel an existing Release/diagnostic run.
