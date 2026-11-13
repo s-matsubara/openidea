@@ -276,6 +276,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     fallbackToken: "variable",
   },
   {
+    ...syn("go.methodReceiver", "Method receiver", ["Go", "Identifiers"], "go-method-receiver"),
+    language: "Go",
+    fallbackToken: "param",
+  },
+  {
     ...syn("go.typeReference", "Type reference", ["Go", "Classes"], "go-type-reference"),
     language: "Go",
     fallbackToken: "type",

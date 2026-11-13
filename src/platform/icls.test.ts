@@ -21,6 +21,26 @@ const fixture = (name: string, ext = "icls") =>
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
+  it("uses GoLand's local-variable fallback for Go parameters and honours explicit Go colors", () => {
+    const local =
+      '<option name="DEFAULT_LOCAL_VARIABLE"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>';
+    const common =
+      '<option name="DEFAULT_PARAMETER"><value><option name="FOREGROUND" value="bcbec4"/></value></option>';
+    const receiver =
+      '<option name="GO_METHOD_RECEIVER"><value><option name="FOREGROUND" value="9bb8dc"/></value></option>';
+    const parse = (extra: string) =>
+      parseIcls(`<scheme name="Go"><attributes>${local}${common}${extra}</attributes></scheme>`).scheme;
+    const scheme = parse(receiver);
+    expect(scheme.attributes.parameter?.foreground).toBe("#bcbec4");
+    expect(scheme.attributes["go.parameter"]).toMatchObject({ foreground: "#ada0d3", italic: true });
+    expect(scheme.attributes["go.methodReceiver"]).toMatchObject({ foreground: "#9bb8dc", italic: false });
+    expect(parse("").attributes["go.methodReceiver"]).toEqual(scheme.attributes["go.parameter"]);
+    const explicit = parse(receiver + '<option name="GO_FUNCTION_PARAMETER" baseAttributes="DEFAULT_PARAMETER"/>');
+    expect(explicit.attributes["go.parameter"]?.foreground).toBe("#bcbec4");
+    const customs = { "custom-go": scheme };
+    expect(parseIcls(exportIcls("custom-go", customs)).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("imports separate Go built-in function and type colors, including inherited attributes", () => {
     const { scheme } = parseIcls(`<scheme name="Go built-ins"><attributes>
       <option name="DEFAULT_CLASS_REFERENCE"><value><option name="FOREGROUND" value="c6c8d0"/></value></option>

@@ -7737,6 +7737,7 @@
   "Property key": "属性键",
   "JSON": "JSON",
   "Type reference": "类型引用",
+  "Method receiver": "方法接收者",
   "Built-in function": "内置函数",
   "Built-in type": "内置类型",
   "Identifier": "标识符",

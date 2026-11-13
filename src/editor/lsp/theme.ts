@@ -404,6 +404,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-go-exported-field": semanticStyle("go-exported-field", "property"),
   ".cm-sem-go-unexported-field": semanticStyle("go-unexported-field", "property"),
   ".cm-sem-parameter": semanticStyle("param", "variable"),
+  ".cm-sem-go-method-receiver": semanticStyle("go-method-receiver", "param"),
   ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
   ".cm-sem-self": semanticStyle("self", "keyword"),
   ".cm-sem-keyword": semanticStyle("keyword", "keyword"),

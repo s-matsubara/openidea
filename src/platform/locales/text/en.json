@@ -1352,6 +1352,7 @@
   "Property key": "Property key",
   "JSON": "JSON",
   "Type reference": "Type reference",
+  "Method receiver": "Method receiver",
   "Built-in function": "Built-in function",
   "Built-in type": "Built-in type",
   "Selected text": "Selected text",

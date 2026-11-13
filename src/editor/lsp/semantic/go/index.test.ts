@@ -5,6 +5,35 @@ import { semanticRanges } from "../index";
 
 const doc = Text.of(["name"]);
 describe("Go semantic tokens", () => {
+  it("distinguishes a method receiver from parameters, locals, and shadowing closure parameters", async () => {
+    const go = await languages.find((language) => language.name === "Go")!.load();
+    const lines = [
+      "package p",
+      "func (t *Time) addSec(d int64) {",
+      "  t.n += d",
+      "  func(t int) { _ = t }(0)",
+      "  { t := 1; _ = t }",
+      "  func() { _ = t }()",
+      "}",
+      "func other(t int) { _ = t }",
+    ];
+    const doc = Text.of(lines);
+    const tree = go.language.parser.parse(doc.toString());
+    const data = lines.flatMap((line, index) =>
+      [...line.matchAll(/\b[td]\b/g)].flatMap((match) => [index, match.index, 1, index === 4 ? 1 : 0, 0]),
+    );
+    const tokens = { tokenTypes: ["parameter", "variable"], tokenModifiers: [], data };
+    const receiverLines = (ranges: ReturnType<typeof semanticRanges>) =>
+      ranges.filter((r) => r.className.includes("cm-sem-go-method-receiver")).map((r) => doc.lineAt(r.from).number);
+    const ranges = semanticRanges(doc, tokens, true, "go", tree);
+    expect(receiverLines(ranges)).toEqual([2, 3, 6]);
+    expect(ranges.filter((r) => doc.sliceString(r.from, r.to) === "d").map((r) => r.className)).toEqual([
+      expect.stringMatching(/^cm-sem-parameter cm-sem-rainbow-/),
+      expect.stringMatching(/^cm-sem-parameter cm-sem-rainbow-/),
+    ]);
+    expect(receiverLines(semanticRanges(doc, { ...tokens, data: [] }, false, "go", tree))).toEqual([2]);
+  });
+
   it.each([
     [["readonly"], ["cm-sem-constant"]],
     [["static"], ["cm-sem-global", "cm-sem-static"]],

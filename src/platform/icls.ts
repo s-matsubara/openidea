@@ -17,6 +17,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   DEFAULT_TEXT: "text",
   DEFAULT_KEYWORD: "keyword",
   DEFAULT_IDENTIFIER: "identifier",
+  GO_FUNCTION_PARAMETER: "go.parameter",
+  GO_METHOD_RECEIVER: "go.methodReceiver",
   DEFAULT_LOCAL_VARIABLE: "go.localVariable",
   DEFAULT_PARAMETER: "parameter",
   DEFAULT_GLOBAL_VARIABLE: "globalVariable",
@@ -281,7 +283,7 @@ const precedence = (name: string) => {
 function targets(name: string): string[] {
   if (!Object.hasOwn(ATTRIBUTE_NAMES, name)) return [];
   const id = ATTRIBUTE_NAMES[name]!;
-  if (name === "DEFAULT_LOCAL_VARIABLE") return [id, "identifier"];
+  if (name === "DEFAULT_LOCAL_VARIABLE") return [id, "identifier", "go.parameter", "go.methodReceiver"];
   return ALSO_CALLS.has(name) ? [id, "functionCall"] : [id];
 }
 
