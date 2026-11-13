@@ -428,6 +428,7 @@ mod tests {
         cli(&remote, &["bookmark", "create", "main"]);
         cli(&root, &["git", "clone", "upstream", "local"]);
         let repo = Repo::discover(&root.join("local")).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         std::fs::write(repo.root().join("local.txt"), "local").unwrap();
 
         cli(&remote, &["new", "main", "-m", "update"]);
@@ -504,6 +505,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(Command::new(exe).current_dir(temp.path()).args(["git", "init"]).output().unwrap().status.success());
         let repo = Repo::discover(temp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let guard = UpdateGuard::acquire(&repo).unwrap();
         assert!(UpdateGuard::acquire(&repo).is_err());
         drop(guard);

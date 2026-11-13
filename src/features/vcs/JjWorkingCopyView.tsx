@@ -1,3 +1,4 @@
+import { editorService } from "@/workbench/contributions";
 import type { FileStatus, JjDescriptionEdit, VcsRoot } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
@@ -352,6 +353,10 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
           }
           selected={selected}
           onSelectionChange={setSelected}
+          onJumpToSource={(n) => {
+            const file = n.type === "file" ? n.files[0] : null;
+            if (file && effectiveKind(file) !== "deleted") void editorService().openFile(file.path, { focus: true });
+          }}
           onContextMenu={(node, selection, e) => {
             const file = node?.type === "file" ? node.files[0] : undefined;
             const files: FileStatus[] = [];

@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { VcsRoot } from "@/bindings";
+import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
 import { CommitToolWindow } from "../CommitView";
@@ -20,6 +21,7 @@ vi.mock("../DiffEditor", async (original) => ({
 }));
 const readDiff = vi.fn();
 const openInput = vi.fn();
+const openFile = vi.fn();
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -34,7 +36,7 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
-  editorService: () => ({ openInput }),
+  editorService: () => ({ openInput, openFile }),
 }));
 
 const root = (patch: Partial<VcsRoot> = {}): VcsRoot => ({
@@ -55,6 +57,7 @@ beforeEach(() => {
   useCommit.setState({ groupByDir: true, commitDiffPreview: false });
   readDiff.mockReset();
   openInput.mockReset();
+  openFile.mockReset();
   useVcs.setState({ available: false, root: "/jj", roots: [], jjRoots: [root()], error: null, status: [] });
 });
 
@@ -565,4 +568,45 @@ it("copies jj file names and paths from the keyboard and directory menu", async 
   fireEvent.click(await screen.findByText("Copy Path"));
   expect(writeText).toHaveBeenLastCalledWith("/jj/src/a.txt\n/jj/src/b.txt");
   expect(restore).not.toHaveBeenCalled();
+});
+
+it("opens the selected jj source on F4 and leaves deleted files closed", async () => {
+  const files = ["source", "deleted"].map((relPath) => ({
+    path: `/jj/${relPath}`,
+    relPath,
+    unstaged: relPath === "deleted" ? ("deleted" as const) : ("modified" as const),
+    staged: null,
+    renamedFrom: null,
+  }));
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files } })] });
+  render(<CommitToolWindow />);
+  fireEvent.mouseDown(screen.getByText("source"));
+  fireEvent.keyDown(screen.getByRole("tree"), { key: "F4" });
+  expect(openFile).toHaveBeenCalledWith("/jj/source", { focus: true });
+  openFile.mockClear();
+  fireEvent.mouseDown(screen.getByText("deleted"));
+  fireEvent.keyDown(screen.getByRole("tree"), { key: "F4" });
+  expect(openFile).not.toHaveBeenCalled();
+  expect(readDiff).not.toHaveBeenCalled();
+});
+
+it("opens the explicit jj diff from the new-window action in a jj-only project", async () => {
+  const dispose = registerVcsActions();
+  setContext("vcsAvailable", false);
+  setContext("vcsJjAvailable", true);
+  const target = { root: "/jj", path: "/jj/a", commit: "immutable" };
+  const data = {
+    path: "/jj/a",
+    left: { type: "text" as const, text: "", label: "Parent", absent: true },
+    right: { type: "text" as const, text: "snapshot", label: "@", jjBlame: target },
+  };
+  try {
+    await executeAction("vcs.showDiffInNewWindow", data);
+    await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+    expect(openInput.mock.calls[0]![0].data).toEqual(data);
+    expect(readDiff).not.toHaveBeenCalled();
+  } finally {
+    dispose();
+    setContext("vcsJjAvailable", false);
+  }
 });

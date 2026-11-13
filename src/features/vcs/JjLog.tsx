@@ -1,7 +1,7 @@
 /** Jujutsu history and its selected change details. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileLineStats, FileStatus, JjHistoryCommit, JjHistoryPage } from "@/bindings";
-import { useGitLogChecks } from "@/workbench/contributions";
+import { editorService, useGitLogChecks } from "@/workbench/contributions";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import {
@@ -465,6 +465,10 @@ function HistoryFiles({ root, commit }: { root: string; commit: string }) {
           onExpandedChange={setExpanded}
           selected={selected}
           onSelectionChange={select}
+          onJumpToSource={(n) => {
+            if (n.file && effectiveKind(n.file) !== "deleted")
+              void editorService().openFile(n.file.path, { focus: true });
+          }}
           onActivate={(n) => n.file && open(n.file)}
           aria-label="Changed files"
           className={styles.fileTree}

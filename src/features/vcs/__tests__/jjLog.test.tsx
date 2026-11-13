@@ -18,6 +18,7 @@ const historyFiles = vi.fn();
 const historyDiff = vi.fn();
 const historyLineStats = vi.fn();
 const openInput = vi.fn();
+const openFile = vi.fn();
 const gitLog = vi.fn();
 const rootsRequest = vi.fn();
 vi.mock("@/platform/ipc", async (original) => {
@@ -37,7 +38,7 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
-  editorService: () => ({ openInput }),
+  editorService: () => ({ openInput, openFile }),
 }));
 const root = (name: string, unavailableReason: string | null = null): VcsRoot => ({
   root: name,
@@ -80,6 +81,7 @@ beforeEach(() => {
   historyDiff.mockReset();
   historyLineStats.mockReset();
   openInput.mockReset();
+  openFile.mockReset();
   useLogOptions.setState({ diffPreview: false, showLineStats: false, showGitHubChecks: false });
   useGitLogChecks.setState({ cell: null });
   rootsRequest.mockReset();
@@ -480,4 +482,19 @@ it("shows GitHub checks for commit IDs in the selected jj root only when enabled
   expect(await screen.findByTestId("jj-check")).toHaveTextContent(`/one:${id}`);
   fireEvent.click(screen.getByRole("button", { name: "GitHub Commit Checks" }));
   expect(screen.queryByTestId("jj-check")).toBeNull();
+});
+
+it("opens a jj history file's live source on F4 without requesting a Git or jj diff", async () => {
+  history.mockResolvedValue(ok([commit("first")]));
+  historyFiles.mockResolvedValue({ status: "ok", data: [changed("source"), changed("deleted", "deleted")] });
+  render(<JjToolWindow />);
+  fireEvent.mouseDown(await screen.findByText("source"));
+  fireEvent.keyDown(screen.getByRole("tree"), { key: "F4" });
+  expect(openFile).toHaveBeenCalledWith("/one/source", { focus: true });
+  openFile.mockClear();
+  fireEvent.mouseDown(screen.getByText("deleted"));
+  fireEvent.keyDown(screen.getByRole("tree"), { key: "F4" });
+  expect(openFile).not.toHaveBeenCalled();
+  expect(historyDiff).not.toHaveBeenCalled();
+  expect(gitLog).not.toHaveBeenCalled();
 });

@@ -161,7 +161,9 @@ async fn jj_diff_reads_owning_nested_root_without_enabling_git_writes() {
     jj(&root, &["git", "init", "--colocate"]);
     std::fs::write(nested.join("historical.txt"), "outer historical nested path").unwrap();
     jj(&root, &["describe", "-m", "outer historical"]);
-    let historical_id = ide_vcs::Repo::discover(&root).unwrap().unwrap().jj_working_copy().unwrap().commit_id;
+    let repo = ide_vcs::Repo::discover(&root).unwrap().unwrap();
+    repo.set_execution_allowed(true);
+    let historical_id = repo.jj_working_copy().unwrap().commit_id;
     jj(&root, &["new"]);
     std::fs::remove_file(nested.join("historical.txt")).unwrap();
     jj(&root, &["new"]);

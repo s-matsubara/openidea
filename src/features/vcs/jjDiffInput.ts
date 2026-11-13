@@ -5,8 +5,20 @@ import type { DiffData } from "./diffInput";
 export function jjFileDiffData(path: string, pair: JjFileDiff): DiffData {
   return {
     path,
-    left: { type: "text", text: pair.before, label: pair.beforeLabel, jjBlame: pair.beforeBlame ?? null },
-    right: { type: "text", text: pair.after, label: pair.afterLabel, jjBlame: pair.afterBlame ?? null },
+    left: {
+      type: "text",
+      text: pair.before,
+      label: pair.beforeLabel,
+      jjBlame: pair.beforeBlame ?? null,
+      ...(pair.beforeAbsent ? { absent: true } : {}),
+    },
+    right: {
+      type: "text",
+      text: pair.after,
+      label: pair.afterLabel,
+      jjBlame: pair.afterBlame ?? null,
+      ...(pair.afterAbsent ? { absent: true } : {}),
+    },
   };
 }
 

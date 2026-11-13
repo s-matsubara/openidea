@@ -4275,6 +4275,7 @@ dependencies = [
  "ide-core",
  "ide-http",
  "ide-ssh",
+ "notify",
  "oracledb",
  "parking_lot 0.13.0",
  "reqwest",
@@ -4431,6 +4432,7 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -4590,6 +4592,7 @@ name = "ide-lsp"
 version = "2026.2.9"
 dependencies = [
  "dunce",
+ "encoding_rs",
  "futures",
  "globset",
  "ide-core",
@@ -4682,6 +4685,7 @@ name = "ide-profiler"
 version = "2026.2.9"
 dependencies = [
  "ide-core",
+ "ide-jvm-attach",
  "ide-run",
  "serde",
  "serde_json",
@@ -4766,6 +4770,7 @@ dependencies = [
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "url",
  "zip",
 ]
 
@@ -4815,11 +4820,15 @@ dependencies = [
  "parking_lot 0.13.0",
  "russh",
  "russh-sftp",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "specta",
+ "suppaftp",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
 ]
@@ -4935,9 +4944,9 @@ dependencies = [
 name = "ide-web"
 version = "2026.2.9"
 dependencies = [
+ "dirs 7.0.0",
  "ide-core",
  "open",
- "parking_lot 0.13.0",
  "percent-encoding",
  "serde",
  "specta",
@@ -5503,6 +5512,29 @@ checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
+]
+
+[[package]]
+name = "lazy-regex"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0a2cce8a22920a29fdcc8c9170aa5d29edd9fbcf8bea856e24c2cb1c2419f67"
+dependencies = [
+ "lazy-regex-proc_macros",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
+name = "lazy-regex-proc_macros"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f1e4b1f1d8c71edb4ff2b2150ec4606445fd2ddf67ddc097655daf59286baa6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6904,6 +6936,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "pin-project"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -8964,6 +9016,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "suppaftp"
+version = "12.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b58fcf921745cca6f0127c9f822069947da8c6dbeff52e9004750bcc448171f"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lazy-regex",
+ "log",
+ "pin-project",
+ "rustls-pki-types",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "swift-rs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9804,7 +9873,10 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -10473,6 +10545,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.21",
  "utf-8",

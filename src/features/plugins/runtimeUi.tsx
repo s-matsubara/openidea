@@ -32,7 +32,7 @@ import { setPluginDecorations } from "./decorations";
 import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
-import { onIdeEvent } from "@/platform/ipc";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -340,6 +340,11 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -534,6 +539,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "subscriptionsChanged":
       refreshEventKinds();
       return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
+      return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);
       return true;
@@ -612,6 +620,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
       return true;
+    case "promptWaiting":
+      bringWindowToFront();
+      return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
       return true;
@@ -621,6 +632,18 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     default:
       return false;
   }
+}
+
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
 }
 
 /**

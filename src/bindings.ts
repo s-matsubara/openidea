@@ -126,6 +126,15 @@ export const commands = {
 	 */
 	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
 	/**
+	 *  Saves a new custom ACP agent through its agent file; refuses built-in and
+	 *  ACP Registry ids and taken ids.
+	 */
+	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
+	/**  Removes a custom agent's file (registry installs go through `agent_registry_remove`). */
+	agentCustomRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_remove", { id })),
+	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
+	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -191,8 +200,14 @@ export const commands = {
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as they were when it started. */
 	agentRollbackChanges: (task: string, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths })),
+	/**
+	 *  Accept: copies a worktree task's changed files among `paths` (all without) into the
+	 *  local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+	 */
+	agentAcceptChanges: (task: string, paths: string[] | null) => typedError<AgentAcceptOutcome, IdeError>(__TAURI_INVOKE("agent_accept_changes", { task, paths })),
 	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
+	notebookCellDocs: (id: string) => typedError<NotebookCellDoc[], IdeError>(__TAURI_INVOKE("notebook_cell_docs", { id })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_reload", { id })),
@@ -233,6 +248,12 @@ export const commands = {
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
+	/**
+	 *  Opens a project file with its default application (Office, PDF readers). The checks run here,
+	 *  in the backend, instead of widening the webview's opener permissions: the window must be a
+	 *  trusted local project and the file must lie inside it.
+	 */
+	fsOpenWithSystem: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_open_with_system", { path })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
@@ -280,8 +301,9 @@ export const commands = {
 	 *  without opening it: previews of closed files.
 	 */
 	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
-	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label. */
-	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state. */
+	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	docSetBom: (doc: DocId, hasBom: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_bom", { doc, hasBom })),
 	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
@@ -344,6 +366,11 @@ export const commands = {
 	 *  file and its folders); an open editor updates in place.
 	 */
 	historyRestore: (path: string, id: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_restore", { path, id })),
+	/**
+	 *  Reports which of `combos` (single-stroke `Alt+Shift+R`-style bindings) are
+	 *  already registered to another app. Empty everywhere but Windows.
+	 */
+	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
 	/**  `workspace/willRenameFiles` on every interested server (before the move). Cancellable. */
 	refactorFileMoveEdits: (request: RequestId, moves: FileMove[]) => typedError<FileRenameEdits, IdeError>(__TAURI_INVOKE("refactor_file_move_edits", { request, moves })),
 	/**
@@ -362,6 +389,14 @@ export const commands = {
 	refactorCanUndoFileMove: (id: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("refactor_can_undo_file_move", { id })),
 	/**  Schedules the invalidation for the next start (`None` cancels a pending one). */
 	cachesScheduleInvalidation: (options: InvalidateCachesOptions | null) => typedError<null, IdeError>(__TAURI_INVOKE("caches_schedule_invalidation", { options })),
+	cachesLocalDataInfo: () => typedError<LocalDataInfo, IdeError>(__TAURI_INVOKE("caches_local_data_info")),
+	/**
+	 *  Stores (`Some`) or clears (`None`, an empty string counts) the custom
+	 *  local-data root; with `migrate`, the current tree moves at the next start.
+	 *  Returns the directory that takes effect after a restart. The caller
+	 *  restarts the IDE (see `app_restart`).
+	 */
+	cachesSetLocalDataDir: (path: string | null, migrate: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("caches_set_local_data_dir", { path, migrate })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
@@ -912,6 +947,11 @@ export const commands = {
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
 	/**
+	 *  Opens a window showing `diff` next to this window ("Show Diff in New Window").
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenDiff: (diff: DiffLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_diff", { diff, background })),
+	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
@@ -1045,9 +1085,15 @@ export const commands = {
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
-	profilerPrepare: (config: RunConfig) => typedError<ProfilePrepared, IdeError>(__TAURI_INVOKE("profiler_prepare", { config })),
+	profilerPrepare: (config: RunConfig, mode: ProfileMode) => typedError<ProfilePrepared, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
 	profilerCollect: (spec: ProfileSpec) => typedError<Profile, IdeError>(__TAURI_INVOKE("profiler_collect", { spec })),
+	/**
+	 *  Runs a full garbage collection in the JVMs of a running local run, so a live-object profile
+	 *  written when it stops holds only reachable objects. Returns how many JVMs collected; 0 for a
+	 *  run that is gone, remote, or has no JVM with an attach listener.
+	 */
+	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
 	/**  Dumps the session's JVM and analyzes the dump; cancel with `request`. */
 	debugHeapCapture: (session: DebugSessionId, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapCaptureResult, IdeError>(__TAURI_INVOKE("debug_heap_capture", { session, request, onProgress })),
 	/**  Analyzes an `.hprof` file; cancel with `request`. */
@@ -1317,6 +1363,11 @@ export const commands = {
 	 *  existing one, else a new one next to it.
 	 */
 	httpEnvironmentFile: (path: IpcPath, isPrivate: boolean) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("http_environment_file", { path, isPrivate })),
+	/**
+	 *  Where `{{name}}` is defined in the environment files that apply to request file `path`
+	 *  (Navigate › Declaration on a variable), private file first.
+	 */
+	httpVariableDefinitions: (path: IpcPath, name: string) => typedError<Location[], IdeError>(__TAURI_INVOKE("http_variable_definitions", { path, name })),
 	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
 	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
 	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
@@ -1376,6 +1427,7 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteMkdir: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { connection, path })),
+	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
@@ -1441,6 +1493,17 @@ export const commands = {
 };
 
 /* Types */
+/**  What importing one entry of a JetBrains `acp.json` file did. */
+export type AcpImportOutcome = {
+	/**  The `agent_servers` key the entry was imported from. */
+	name: string,
+	/**  The id its agent file would get (also when skipped). */
+	id: string,
+	saved: boolean,
+	/**  Why the entry was skipped; empty when it was saved. */
+	reason?: string,
+};
+
 export type ActionPerformed = {
 	action: string,
 	title: string,
@@ -1461,6 +1524,20 @@ export type ActionsOnSaveSettings = {
 export type ActiveTheme = {
 	pluginId: string,
 	theme: ThemeDef,
+};
+
+/**  What accepting a worktree task's changes copied into the local checkout. */
+export type AgentAcceptOutcome = {
+	/**  Relative paths copied into the checkout (uncommitted), including ones already identical. */
+	accepted: string[],
+	/**  Files left alone because the checkout has its own edits to them. */
+	skipped: AgentAcceptSkipped[],
+};
+
+/**  A file accept left alone, with why. */
+export type AgentAcceptSkipped = {
+	path: string,
+	reason: string,
 };
 
 /**  A task the agent runs in the background while the conversation goes on. */
@@ -1745,6 +1822,14 @@ export type AgentRetry = {
 	/**  When the next attempt starts (ms since the epoch). */
 	retryAtMs: number | null,
 	error: string | null,
+};
+
+/**  Tools › Agents: Command Execution Policy (whitelist and blacklist patterns). */
+export type AgentSecuritySettings = {
+	/**  Commands or patterns (`git status*`, `pwd`) automatically approved without prompting. */
+	allowedCommands?: string[],
+	/**  Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected. */
+	blockedCommands?: string[],
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
@@ -2466,6 +2551,13 @@ export type CodeStyleSettings = {
 	formatterTagsRegexp?: boolean,
 };
 
+/**  Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics"). */
+export type CodeVisionPosition = 
+/**  A row of its own above the declaration. */
+"top" | 
+/**  After the end of the declaration's first line. */
+"right";
+
 /**  ColorInfo data. */
 export type ColorInfo = {
 	range: Range,
@@ -2859,6 +2951,18 @@ export type CreateRequest = {
 	name: string,
 	git: boolean,
 	values: { [key in string]: string },
+};
+
+/**
+ *  Payload for creating a custom ACP agent (always the ACP driver); the id
+ *  becomes the `<config>/agents/<id>.toml` file name.
+ */
+export type CustomAgentInput = {
+	id: string,
+	name: string,
+	command: string,
+	args?: string[],
+	env?: { [key in string]: string },
 };
 
 /**  Imported editor colour scheme on top of a built-in base. */
@@ -3265,7 +3369,12 @@ export type DebugEvent =
  */
 { kind: "hotCodeReplace"; changeType: string; message: string } | 
 /**  The session's capabilities changed after it started: fetch them again. */
-{ kind: "capabilities" } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "capabilities" } | 
+/**
+ *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+ *  `variables`; empty means all) is stale and has to be fetched again.
+ */
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -3423,6 +3532,8 @@ export type DeploymentServer = {
 	name?: string,
 	/**  [`SshConfiguration::id`]. */
 	sshConfig?: string,
+	/**  FTP / FTPS servers. */
+	ftp?: FtpConnection,
 	/**  Absolute remote folder the mappings are relative to; empty = the login directory. */
 	rootPath?: string,
 	/**  Web server URL of the root (Open in Browser on the deployed file). */
@@ -3446,7 +3557,9 @@ export type DeploymentSettings = {
 	exclude?: string[],
 };
 
-export type DeploymentType = "sftp" | "local";
+export type DeploymentType = "sftp" | "ftp" | 
+/**  FTP secured with `AUTH TLS` (explicit FTPS). */
+"ftps" | "local";
 
 export type Diagnostic = {
 	range: Range,
@@ -3469,6 +3582,29 @@ export type DiffFilesLaunch = {
 	left: IpcPath,
 	right: IpcPath,
 };
+
+/**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
+export type DiffLaunch = {
+	/**  Absolute path of the file (the right side's path). */
+	path: string,
+	left: DiffSide,
+	right: DiffSide,
+	/**  0-based line of the right side to reveal. */
+	line?: number | null,
+};
+
+/**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
+export type DiffSide = 
+/**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
+{ type: "rev"; rev: string; path?: string | null; label?: string | null } | 
+/**  The working file (unsaved editor buffer included). */
+{ type: "worktree"; jjBlame?: JjBlameTarget | null; label?: string | null } | 
+/**  Another file (Compare With…, Compare Files). */
+{ type: "file"; path: string; label?: string | null } | 
+/**  Literal text: a side that does not exist. */
+{ type: "text"; text: string; label: string; absent?: boolean | null; jjBlame?: JjBlameTarget | null } | 
+/**  A Local History revision. */
+{ type: "history"; id: string; label: string };
 
 export type DirectoryCompareEntry = {
 	path: string,
@@ -3670,6 +3806,20 @@ export type DockerVolume = {
 	labels?: { [key in string]: string },
 };
 
+/**  Local changes accepted by the editor's shared document model. */
+export type DocumentChanged = {
+	path: string,
+	baseVersion: number,
+	version: number,
+	changes: DocumentTextChange[],
+};
+
+/**  Encoding and BOM currently applied to an open document. */
+export type DocumentEncoding = {
+	encoding: string,
+	hasBom: boolean,
+};
+
 /**  What the UI needs to show an opened document. */
 export type DocumentInfo = {
 	id: DocId,
@@ -3678,9 +3828,17 @@ export type DocumentInfo = {
 	version: number,
 	language: LanguageId,
 	encoding: string,
+	hasBom: boolean,
 	lineEnding: LineEnding,
 	readOnly: boolean,
 	dirty: boolean,
+	/**
+	 *  Whether "Reload with Encoding" can re-decode this document's source
+	 *  bytes: true for files and virtual documents the backend can re-read
+	 *  (archive entries, JDT sources with an editable attachment encoding,
+	 *  Git revisions); false for server-generated content (decompiled code).
+	 */
+	canReloadEncoding: boolean,
 	/**
 	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
 	 *  structure and folding are disabled; the editor should drop heavy features.
@@ -3713,6 +3871,13 @@ export type DocumentLink = {
 	/**  Any other target (`https:`, …). */
 	url: string | null,
 	tooltip: string | null,
+};
+
+/**  One UTF-16 replacement in a locally edited editor document. */
+export type DocumentTextChange = {
+	from: number,
+	to: number,
+	insert: string,
 };
 
 export type DuplicateGroup = {
@@ -3939,7 +4104,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4241,6 +4406,11 @@ export type FileSettings = {
 	fileTypes?: { [key in string]: FileTypeAssociation },
 	/**  Override File Type: file (project-relative and `/`-separated, or absolute) → language id. */
 	fileTypeOverrides?: { [key in string]: string },
+	/**
+	 *  File Types › Files opened in associated applications: file-name patterns
+	 *  (`*.xlsx`) opened with the system application instead of an editor.
+	 */
+	associatedApplications?: string[],
 	/**  Compose detection choices, keyed by project-relative file path. */
 	composeFileOverrides?: { [key in string]: ComposeFileOverride },
 };
@@ -4357,7 +4527,23 @@ export type Fragment = {
 	text: string,
 };
 
-export type FsConnection = { kind: "sftp"; ssh: string } | { kind: "local" };
+export type FsConnection = { kind: "sftp"; ssh: string } | 
+/**  `server`: the deployment server whose saved password is used. */
+{ kind: "ftp"; server: string; secure: boolean; ftp: FtpConnection } | { kind: "local" };
+
+/**
+ *  Host and login of an FTP / FTPS deployment server. The password is kept with
+ *  the saved passwords, under the server's id.
+ */
+export type FtpConnection = {
+	host?: string,
+	/**  `None`: 21. */
+	port?: number | null,
+	/**  Empty: anonymous login. */
+	user?: string,
+	/**  Passive mode (the client opens data connections); off: active mode. */
+	passive?: boolean,
+};
 
 /**
  *  A method breakpoint (DAP function breakpoint). `name` uses the adapter's syntax:
@@ -5111,6 +5297,19 @@ export type IndexEntry = {
 	 *  the IDE before showing it.
 	 */
 	icon?: PluginIcon | null,
+	/**  Where to read more: the manifest's homepage, else the registry's source repository. */
+	homepage?: string | null,
+	/**  This version's release notes (the manifest's `change-notes`). */
+	notes?: string | null,
+	/**  Downloads of the plugin's packages, as counted by whoever serves them. */
+	downloads?: number | null,
+	/**  Picked by the marketplace's maintainers. */
+	featured?: boolean,
+	/**
+	 *  Project-relative paths whose presence makes the plugin worth suggesting
+	 *  (`pom.xml`, `config/routes.rb`).
+	 */
+	suggest?: string[],
 };
 
 export type IndexStatus = {
@@ -5158,6 +5357,12 @@ export type InlayHintsSettings = {
 	codeVisionUsages?: boolean,
 	/**  Code vision: last author of a declaration (VCS blame) beside its usages. */
 	codeVisionAuthor?: boolean,
+	/**  Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere). */
+	codeVisionNoUsages?: boolean,
+	/**  Code vision: where the usages go, above the declaration or at the end of its line. */
+	codeVisionUsagesPosition?: CodeVisionPosition,
+	/**  Code vision: where the author goes, above the declaration or at the end of its line. */
+	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
 export type InlayKind = "type" | "parameter" | "other";
@@ -5485,6 +5690,8 @@ export type JjFetchOptions = {
 
 /**  Immutable text pair for the shared diff viewer. */
 export type JjFileDiff = {
+	beforeAbsent?: boolean | null,
+	afterAbsent?: boolean | null,
 	beforeBlame?: JjBlameTarget | null,
 	afterBlame?: JjBlameTarget | null,
 	before: string,
@@ -5830,6 +6037,8 @@ export type Launch = {
 	positions?: FilePosition[],
 	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
 	comparison?: ComparisonLaunch | null,
+	/**  Diff windows: the diff to show (boxed: most launches have none). */
+	diffWindow?: DiffLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
 	/**  Files requested after the pending diff take focus after it opens. */
@@ -5923,6 +6132,18 @@ export type LineMatch = {
 	ranges: ([number, number])[],
 	/**  Column offset of `text` in the real line (non-zero when truncated). */
 	textOffset: number,
+};
+
+/**  Settings › System Settings › Caches: where the local data lives. */
+export type LocalDataInfo = {
+	/**  The directory in use by this run. */
+	current: string,
+	/**  The OS default (what clearing the custom directory returns to). */
+	defaultDir: string,
+	/**  The custom root stored by Settings, if any (`current` is `<root>/<identifier>`). */
+	customRoot: string | null,
+	/**  `OPENIDEA_LOCAL_DATA_DIR` is set and wins over everything Settings stores. */
+	envOverride: boolean,
 };
 
 /**  What a local definition declares (nvim-treesitter `@local.definition.<kind>`). */
@@ -6109,6 +6330,8 @@ export type MarketPlugin = {
 	installed: string | null,
 	/**  Whether this IDE can load `entry` (the newest version it can, else the newest). */
 	compatible: boolean,
+	/**  The publisher's display name, as the index lists it. */
+	publisherName?: string | null,
 } & IndexEntry;
 
 export type Markup = {
@@ -6231,6 +6454,8 @@ export type MavenSettings = {
 	threads?: string,
 	/**  Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings. */
 	activeProfiles?: string,
+	/**  Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ). */
+	delegateBuild?: boolean,
 };
 
 /**  A named environment variable or HTTP header for an MCP server. */
@@ -6278,6 +6503,11 @@ export type McpServerInput = {
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -6494,6 +6724,14 @@ export type NotebookCell = {
 	outputs: unknown[],
 	executionCount: number | null,
 	attachments: unknown,
+};
+
+/**  The document the language servers know a code cell by. */
+export type NotebookCellDoc = {
+	cell: string,
+	doc: DocId,
+	/**  Also the `path` of the cell's diagnostics and of locations in it. */
+	uri: string,
 };
 
 export type NotebookEdit = { type: "setSource"; cell: string; source: string } | { type: "insertCell"; after: string | null; cellType: string } | { type: "deleteCell"; cell: string } | { type: "moveCell"; cell: string; before: string | null } | { type: "setCellType"; cell: string; cellType: string } | { type: "setOutputs"; cell: string; outputs: unknown[]; executionCount: number | null };
@@ -6808,7 +7046,9 @@ actions: NotificationAction[] } |
  *  The kinds of workbench events plugins want changed: re-fetch
  *  `plugin_event_kinds` (the UI reports only those).
  */
-{ type: "subscriptionsChanged" } | { type: "themeChanged"; theme: ActiveTheme | null } | 
+{ type: "subscriptionsChanged" } | 
+/**  A background WebSocket has messages ready for its owning plugin. */
+{ type: "websocketReady"; pluginId: string; connection: number } | { type: "themeChanged"; theme: ActiveTheme | null } | 
 /**
  *  A plugin needs capabilities the user has not granted yet (first use
  *  after migrating from 0.1): show its consent dialog.
@@ -6843,6 +7083,11 @@ actions: NotificationAction[] } |
 { type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt } | 
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
 { type: "promptClosed"; promptId: string } | 
+/**
+ *  A command of this window's prompting plugin was run from another window and refused
+ *  while the plugin waits for the answer here: bring this window to the front.
+ */
+{ type: "promptWaiting"; pluginId: string } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
 { type: "revealView"; pluginId: string; view: string } | 
 /**
@@ -7164,8 +7409,9 @@ export type ProcessMemory = {
 export type Profile = {
 	/**  `node --cpu-prof`, `py-spy`, `async-profiler`, `perf`. */
 	profiler: string,
-	/**  `ms` (time-weighted) or `samples`. */
+	/**  `ms` (time-weighted), `samples` (sample or live-object counts) or `bytes` (allocated). */
 	unit: string,
+	mode: ProfileMode,
 	total: number | null,
 	frames: ProfileFrame[],
 	/**  Depth-first; `nodes[0]` is the root. */
@@ -7179,7 +7425,23 @@ export type ProfileFrame = {
 	file: IpcPath | null,
 	/**  0-based. */
 	line: number | null,
+	kind: ProfileFrameKind,
 };
+
+export type ProfileFrameKind = 
+/**  A function; `file` / `line` locate its source. */
+"code" | 
+/**  The leaf of an allocation stack: the type that was allocated, not a source line. */
+"allocatedType";
+
+/**  What a profile measures. */
+export type ProfileMode = 
+/**  Sampled CPU time. */
+"cpu" | 
+/**  Bytes allocated, by allocation stack. */
+"allocations" | 
+/**  Objects still alive when the run stopped, by allocation stack. */
+"liveObjects";
 
 /**  A call-tree node; node 0 is the synthetic root (`all`). */
 export type ProfileNode = {
@@ -7205,9 +7467,10 @@ export type ProfileSpec =
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
- *  against `base`. `jvm_root`: map JVM class frames to sources below it.
+ *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
+ *  allocation modes the last frame of a JVM stack is the allocated type.
  */
-{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null } | 
+{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null; mode: ProfileMode } | 
 /**  `perf script -i <data>` output. */
 { kind: "perf"; perf: string; data: IpcPath; cwd: IpcPath; env: { [key in string]: string } };
 
@@ -7436,7 +7699,10 @@ export type RecentProject = {
 	path: IpcPath,
 	name: string,
 	openedAtMs: number | null,
-	/**  Current git branch when last opened, shown on the welcome screen. */
+	/**
+	 *  Git branch shown on the welcome screen. Persisted as of last open; [`RecentProjects::list_live`]
+	 *  refreshes it from `.git/HEAD` when the list is shown.
+	 */
 	branch: string | null,
 };
 
@@ -8132,6 +8398,8 @@ export type Settings = {
 	agents?: AgentSettings,
 	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
+	/**  Tools › Agents: Command Execution Policy. */
+	agentSecurity?: AgentSecuritySettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -9047,6 +9315,18 @@ export type VirtualDocument = {
 	description: string | null,
 	/**  Generated Java from a decompiler, rather than real source or a disassembler stub. */
 	decompiled: boolean,
+	/**
+	 *  Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+	 *  `utf-8` for text the server decoded itself.
+	 */
+	encoding: string,
+	hasBom: boolean,
+	/**
+	 *  "Reload with Encoding" can re-decode the origin's bytes (archive
+	 *  entries, JDT sources with an editable attachment encoding); false for
+	 *  server-generated content such as decompiled code.
+	 */
+	canReloadEncoding: boolean,
 };
 
 /**  Declared (or conventional) visibility of an outline symbol. */
@@ -9107,6 +9387,11 @@ export type WebReferenceKind =
 /**  `var(--name)`: the custom property's declarations. */
 "cssVariable";
 
+export type WebsocketReady = {
+	pluginId: string,
+	connection: number,
+};
+
 export type WhileRunning = "queue" | "steer";
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
@@ -9124,7 +9409,7 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
+export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
 { kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value?: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 

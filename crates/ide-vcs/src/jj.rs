@@ -373,7 +373,7 @@ fn restore_files_with(repo: &crate::Repo, commit: &str, paths: &[PathBuf], exe: 
 }
 
 /// A file in an immutable Jujutsu revision.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct JjBlameTarget {
     pub root: PathBuf,
@@ -385,6 +385,10 @@ pub struct JjBlameTarget {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct JjFileDiff {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_absent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_absent: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_blame: Option<JjBlameTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -535,6 +539,8 @@ fn file_diff_snapshot(
     if file.unstaged == Some(crate::ChangeKind::Conflicted) {
         let versions = conflict_versions_at(repo, path, commit, exe)?;
         return Ok(JjFileDiff {
+            before_absent: None,
+            after_absent: None,
             before_blame: None,
             after_blame: None,
             before: versions.base.unwrap_or_default(),
@@ -586,6 +592,8 @@ fn file_diff_snapshot(
         commit: commit.to_owned(),
     };
     Ok(JjFileDiff {
+        before_absent: Some(added),
+        after_absent: Some(deleted),
         before_blame: (!added).then(|| blame(before_path, &parents[0])),
         after_blame: (!deleted).then(|| blame(&file.rel_path, commit)),
         before: if added { String::new() } else { read(&parents[0], before_path)? },
@@ -708,6 +716,7 @@ mod snapshot_tests {
         let tmp = tempfile::tempdir().unwrap();
         jj(&exe, tmp.path(), &["git", "init"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let root = repo.root();
         let path = root.join("conflict.txt");
         let text =
@@ -749,6 +758,7 @@ mod snapshot_tests {
         let tmp = tempfile::tempdir().unwrap();
         jj(&exe, tmp.path(), &["git", "init"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let root = repo.root();
         for (name, text) in [("unchanged", "same"), ("modified", "before"), ("deleted", "gone"), ("old", "rename")] {
             std::fs::write(root.join(name), text).unwrap();
@@ -800,6 +810,7 @@ mod snapshot_tests {
         assert!(modified.after_label.contains(&accepted.commit_id));
         let deleted = get("deleted").unwrap();
         assert_eq!((deleted.before.as_str(), deleted.after.as_str()), ("gone", ""));
+        assert_eq!((deleted.before_absent, deleted.after_absent), (Some(false), Some(true)));
         let renamed = get("renamed").unwrap();
         assert_eq!((renamed.before.as_str(), renamed.after.as_str()), ("rename", "rename"));
         assert!(renamed.before_label.contains("old"));
@@ -852,6 +863,7 @@ mod snapshot_tests {
         let tmp = tempfile::tempdir().unwrap();
         jj(&exe, tmp.path(), &["git", "init", "--colocate"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let root = repo.root();
         for (name, text) in [("modified", "before\n"), ("deleted", "gone"), ("old name", "rename contents")] {
             std::fs::write(root.join(name), text).unwrap();
@@ -889,6 +901,7 @@ mod snapshot_tests {
         assert!(modified.after_label.starts_with("@ "));
         let deleted = get("deleted").unwrap();
         assert_eq!((deleted.before.as_str(), deleted.after.as_str()), ("gone", ""));
+        assert_eq!((deleted.before_absent, deleted.after_absent), (Some(false), Some(true)));
         let renamed = get("new name").unwrap();
         assert_eq!((renamed.before.as_str(), renamed.after.as_str()), ("rename contents", "rename contents"));
         assert!(renamed.before_label.contains("old name"));
@@ -909,6 +922,8 @@ mod snapshot_tests {
             let pair = get(name).unwrap();
             assert_eq!((pair.before.as_str(), pair.after.as_str()), ("", ""));
             assert_eq!(pair.before_label, "(does not exist)");
+            assert_eq!(pair.before_absent, Some(true));
+            assert_eq!(pair.after_absent, Some(false));
         }
         assert!(get("binary").unwrap_err().to_string().contains("Binary"));
         assert!(get("non-utf8").unwrap_err().to_string().contains("Non-UTF-8"));
@@ -957,6 +972,7 @@ mod snapshot_tests {
         let tmp = tempfile::tempdir().unwrap();
         jj(&exe, tmp.path(), &["git", "init", "--colocate"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let first = snapshot(&repo, &exe).unwrap();
         assert!(first.description.is_empty());
         assert!(first.files.is_empty());
@@ -1062,7 +1078,7 @@ newline.txt"
         std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\nprintf 'jj 0.35.0\\n'\n", marker.display())).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
-        repo.set_execution_allowed(false);
+        assert!(repo.require_execution_allowed().is_err());
         set_jj_executable(Some(&exe));
         let error = repo.jj_working_copy().unwrap_err().to_string();
         let diff_error = repo.jj_file_diff(&root.join("file.txt"), "abc12345").unwrap_err().to_string();
@@ -1234,6 +1250,7 @@ mod history_tests {
         run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
         run(&exe, temp.path(), &["describe", "-m", "original"]);
         let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let before = snapshot(&repo, &exe).unwrap();
         let mut edit = JjDescriptionEdit {
             commit: before.commit_id.clone(),
@@ -1277,6 +1294,7 @@ mod history_tests {
         run(&exe, &root, &["git", "init"]);
         run(&exe, &root, &["config", "set", "--repo", "signing.behavior", "drop"]);
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let copy = snapshot(&repo, &exe).unwrap();
         let edit = JjDescriptionEdit {
             commit: copy.commit_id.clone(),
@@ -1300,6 +1318,7 @@ mod history_tests {
         run(&exe, temp.path(), &["config", "set", "--repo", "signing.behavior", "drop"]);
         run(&exe, temp.path(), &["describe", "-m", "original"]);
         let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let base = snapshot(&repo, &exe).unwrap();
         let operation = String::from_utf8(
             read_command(&repo, &exe, &["op", "log", "--no-graph", "--limit", "1", "-T", "id"]).unwrap(),
@@ -1327,6 +1346,7 @@ mod history_tests {
         let temp = tempfile::tempdir().unwrap();
         run(&exe, temp.path(), &["git", "init"]);
         let repo = crate::Repo::discover(temp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let root = repo.root();
         std::fs::write(root.join("common"), "base").unwrap();
         run(&exe, root, &["describe", "-m", "共通\n\nfull body with \"quotes\"\n"]);
@@ -1360,6 +1380,7 @@ mod history_tests {
         let clone = tempfile::tempdir().unwrap();
         run(&exe, clone.path(), &["git", "clone", root.to_str().unwrap(), "remote"]);
         let cloned = crate::Repo::discover(&clone.path().join("remote")).unwrap().unwrap();
+        cloned.set_execution_allowed(true);
         assert!(
             history_with(&cloned, None, 100, &exe)
                 .unwrap()
@@ -1413,6 +1434,7 @@ mod history_tests {
         let tmp = tempfile::tempdir().unwrap();
         run(&exe, tmp.path(), &["git", "init"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         let fake = tmp.path().join("fake-jj");
         std::fs::write(&fake, "#!/bin/sh\nprintf 'not-json'\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1436,6 +1458,7 @@ mod history_tests {
         std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         repo.set_execution_allowed(false);
         set_jj_executable(Some(&exe));
         let first = repo.jj_history(None, 25).unwrap_err().to_string();
@@ -1577,6 +1600,7 @@ mod log_action_tests {
         let tmp = tempfile::tempdir().unwrap();
         cli(&exe, tmp.path(), &["git", "init"]);
         let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         cli(&exe, repo.root(), &["config", "set", "--repo", "signing.behavior", "drop"]);
         Some((tmp, repo, exe))
     }
@@ -1705,6 +1729,7 @@ mod log_action_tests {
         assert!(git.status.success());
         std::fs::create_dir(root.join(".jj")).unwrap();
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         std::fs::write(
             &exe,
             r#"#!/bin/sh
@@ -2085,6 +2110,7 @@ pub(crate) fn update_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> Id
         return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
     }
     let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    target_repo.set_execution_allowed(true);
     if target_repo.root() != target || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current) {
         return Err(IdeError::invalid("Workspace identity changed; refresh"));
     }
@@ -2114,6 +2140,7 @@ pub(crate) fn remove_workspace(repo: &crate::Repo, expected: &JjWorkspace) -> Id
         return Err(IdeError::invalid("Workspace repository identity changed; refresh"));
     }
     let target_repo = crate::Repo::discover(&target)?.ok_or_else(|| IdeError::invalid("Workspace is unavailable"))?;
+    target_repo.set_execution_allowed(true);
     if target_repo.root() != target
         || !workspaces(&target_repo)?.iter().any(|w| w.name == row.name && w.current && w.commit_id == row.commit_id)
     {
@@ -2137,6 +2164,7 @@ mod workspace_tests {
         let root = base.join("main");
         assert!(Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap().status.success());
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
         let target = base.join("secondary");
         repo.jj_add_workspace("other", &target, "@").unwrap();
@@ -2144,6 +2172,7 @@ mod workspace_tests {
         std::fs::write(root.join("updated.txt"), "updated on disk").unwrap();
         workspace_command(&repo, &["restore", "--from", "@", "--into", "other@", "updated.txt"]).unwrap();
         let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        secondary.set_execution_allowed(true);
         let error = workspace_command(&secondary, &["status"]).unwrap_err().to_string();
         assert!(error.contains("stale"), "{error}");
         assert_ne!(
@@ -2179,6 +2208,7 @@ mod workspace_tests {
             Command::new(&exe).args(["git", "init", "--no-colocate"]).arg(&root).output().unwrap().status.success()
         );
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         workspace_command(&repo, &["git", "remote", "add", "origin", "https://github.com/example/fork.git"]).unwrap();
         assert!(!root.join(".git").exists());
         let remotes = repo.remotes().unwrap();
@@ -2193,6 +2223,7 @@ mod workspace_tests {
         let linked = tmp.path().join("linked");
         repo.jj_add_workspace("linked", &linked, "@").unwrap();
         let secondary = crate::Repo::discover(&linked).unwrap().unwrap();
+        secondary.set_execution_allowed(true);
         assert_eq!(secondary.remotes().unwrap(), remotes);
         secondary.set_execution_allowed(false);
         assert!(secondary.remotes().is_err());
@@ -2207,6 +2238,7 @@ mod workspace_tests {
         let out = Command::new(&exe).args(["git", "init"]).arg(&root).output().unwrap();
         assert!(out.status.success());
         let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
         workspace_command(&repo, &["config", "set", "--repo", "signing.behavior", "drop"]).unwrap();
         let rows = repo.jj_workspaces().unwrap();
         assert_eq!(rows.len(), 1);
@@ -2231,6 +2263,7 @@ mod workspace_tests {
         repo.jj_add_workspace("other", &target, "@").unwrap();
         assert!(target.join(".jj/repo").is_file());
         let secondary = crate::Repo::discover(&target).unwrap().unwrap();
+        secondary.set_execution_allowed(true);
         assert_eq!(secondary.root(), target);
         assert_eq!(secondary.kind(), crate::VcsKind::Jj);
         assert!(secondary.jj_workspaces().unwrap().iter().any(|w| w.name == "other" && w.current));

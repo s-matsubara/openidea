@@ -117,6 +117,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
     assert!(String::from_utf8(saved.clone()).unwrap().contains(r"\u4F60\u597D\uD83D\uDE00\u4E16\u754C"));
     vcs::vcs_stage_hunks(&host, "main", path.clone(), vec![0]).await.unwrap();
     let repo = ide_vcs::Repo::discover(&root).unwrap().unwrap();
+    repo.set_execution_allowed(true);
     assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), saved);
     repo.unstage(std::slice::from_ref(&path)).unwrap();
     // Line staging must match the decoded base even when Git stores lowercase escapes.
