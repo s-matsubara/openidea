@@ -192,6 +192,33 @@ It only builds a PR head whose commit body has the exact trailer
 skip the builds. PR path filters inspect cumulative changes, so adding a second
 workflow alone would not have prevented duplicate cold builds.
 
+This is a **one-off control pinned to an existing seed**, not a general release
+benchmark. An ordinary push without the marker skips measurement. The seed may
+be evicted, and a different image/toolchain/root must fail compatibility rather
+than silently run cold or weaken production boundaries. Do not blindly rerun to
+obtain a matching image.
+
+The original cold/warm seed-producing workflow is preserved in Git at
+`f80a5c9f9b2de1aeaba6b9b5588b6068e76f7245`. Inspect it without running anything:
+
+```sh
+git show f80a5c9f9b2de1aeaba6b9b5588b6068e76f7245:.github/workflows/verify-release-cache.yml
+```
+
+For an intentionally requested new cold/warm experiment, restore that workflow
+to the same filename in a **new commit on this PR branch**; do not reset/force the
+published branch or change main/tags. Pin its shared checkout step to the full
+source SHA above when reproducing these exact sources. Keep the original
+`scripts/verify-release-cache.py`, cache action and cache script at that revision.
+Review/actionlint it, then push the new verification commit. Its PR trigger and
+branch guard start cold then warm, with a new run/attempt namespace, a shared
+dependency key, and separate workspace save generations. Cold must miss both
+caches; warm bumps only the app version and must restore the cold generation and
+exact dependency archive. Its image guard rejects a mismatched second runner.
+Record that rejection as a failed comparison; do not use a blind retry. Restore
+the marker-gated control workflow afterwards if continuing report-only work.
+No such new seed-producing experiment was run in this follow-up.
+
 The controller is copied to the runner's temporary directory before either
 checkout. Between arms it removes the disposable checkout (including `.git`,
 all sources and `target`) and Cargo's downloaded registry/git directories.
