@@ -1,42 +1,70 @@
 name: Release
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.0); must already exist"
+        description: "Existing fork tag to release (vYYYY.x.x), reachable from main"
+        type: string
         required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ inputs.tag }}
   COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
 
 jobs:
-  # Creates (or reuses) one draft release that every platform build uploads into.
+  # Only this run may resume its draft. A separate dispatch must use a new tag.
   create-release:
     runs-on: ubuntu-24.04
     outputs:
+      commit_sha: ${{ steps.target.outputs.sha }}
       release_id: ${{ steps.release.outputs.id }}
       official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
+      - id: target
+        name: Validate main dispatch and resolve target tag
+        uses: actions/github-script@v9
+        with:
+          script: |
+            if (context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main" ||
+                `${context.repo.owner}/${context.repo.repo}` !== "s-matsubara/openidea")
+              throw new Error("Release must be dispatched from s-matsubara/openidea main");
+            const tag = process.env.TAG;
+            if (!/^v[0-9]{4}\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag ?? ""))
+              throw new Error("Expected an explicit fork tag: vYYYY.x.x");
+            const { owner, repo } = context.repo;
+            let { data: { object } } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            for (let depth = 0; object.type === "tag" && depth < 8; depth++) {
+              ({ data: { object } } = await github.rest.git.getTag({ owner, repo, tag_sha: object.sha }));
+            }
+            if (object.type !== "commit" || !/^[0-9a-f]{40}$/.test(object.sha))
+              throw new Error("Tag must resolve to a commit");
+            const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+              owner, repo, basehead: `${object.sha}...main`,
+            });
+            if (comparison.merge_base_commit.sha !== object.sha)
+              throw new Error("Target tag must be reachable from main");
+            core.setOutput("sha", object.sha);
       - uses: actions/checkout@v7
-        with: { ref: "${{ env.TAG }}" }
-      - name: Tag matches app version
+        with: { ref: "${{ steps.target.outputs.sha }}" }
+      - name: Tag matches app versions
         run: |
-          app="v$(jq -r .version src-tauri/tauri.conf.json)"
-          if [ "$app" != "$TAG" ]; then
-            echo "::error::tag $TAG does not match tauri.conf.json version $app"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json, os, tomllib
+          tag = os.environ["TAG"]
+          versions = [json.load(open(p))["version"] for p in ["package.json", "src-tauri/tauri.conf.json"]]
+          versions.append(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])
+          if any(f"v{version}" != tag for version in versions):
+              raise SystemExit(f"Tag {tag} does not match app versions: {versions}")
+          PY
       # A shipped plugin API is frozen: its WIT must be the snapshot api_frozen.rs checks later
       # versions against (plugins/README.md, "Evolving the plugin API").
       - name: Plugin API snapshot matches wit/
@@ -63,20 +91,25 @@ jobs:
           fi
       - id: release
         uses: actions/github-script@v9
+        env:
+          COMMIT_SHA: ${{ steps.target.outputs.sha }}
         with:
           script: |
             const tag = process.env.TAG;
             const { owner, repo } = context.repo;
+            const marker = `<!-- openidea-release:${context.runId}:${process.env.COMMIT_SHA} -->`;
             const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
-              if (!existing.draft) core.setFailed(`release ${tag} is already published`);
+              if (!existing.draft || !existing.body?.includes(marker))
+                throw new Error(`Release ${tag} is published or belongs to another run; do not redispatch it`);
               core.setOutput("id", existing.id);
               return;
             }
             const { data } = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: `OpenIDEA ${tag}`,
-              draft: true, prerelease: tag.includes("-"), generate_release_notes: true,
+              target_commitish: process.env.COMMIT_SHA,
+              draft: true, prerelease: false, generate_release_notes: true, body: marker,
             });
             core.setOutput("id", data.id);
 
@@ -105,8 +138,31 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
+      - &owned-draft
+        name: Require this run's unpublished release
+        uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          COMMIT_SHA: ${{ needs.create-release.outputs.commit_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.TAG;
+            const sha = process.env.COMMIT_SHA;
+            const marker = `<!-- openidea-release:${context.runId}:${sha} -->`;
+            const { data: release } = await github.rest.repos.getRelease({
+              owner, repo, release_id: Number(process.env.RELEASE_ID),
+            });
+            if (!release.draft || release.tag_name !== tag || !release.body?.includes(marker))
+              throw new Error("Refusing to modify a published, unrelated or foreign-run release");
+            let { data: { object } } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            for (let depth = 0; object.type === "tag" && depth < 8; depth++) {
+              ({ data: { object } } = await github.rest.git.getTag({ owner, repo, tag_sha: object.sha }));
+            }
+            if (object.type !== "commit" || object.sha !== sha)
+              throw new Error("Target tag moved since validation; refusing to continue");
       - uses: actions/checkout@v7
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
       - uses: pnpm/action-setup@v6
         with: { version: 11 }
       - uses: actions/setup-node@v7
@@ -201,8 +257,9 @@ jobs:
           - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
+      - *owned-draft
       - uses: actions/checkout@v7
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
@@ -241,6 +298,7 @@ jobs:
     env:
       SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
     steps:
+      - *owned-draft
       - id: key
         run: |
           if [ -z "$SIGNING_KEY" ]; then
@@ -249,7 +307,7 @@ jobs:
           fi
       - uses: actions/checkout@v5
         if: steps.key.outputs.skip != 'true'
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
       - uses: dtolnay/rust-toolchain@stable
         if: steps.key.outputs.skip != 'true'
         with: { targets: wasm32-wasip2 }
@@ -304,6 +362,7 @@ jobs:
     needs: [create-release, build]
     runs-on: ubuntu-24.04
     steps:
+      - *owned-draft
       - uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
@@ -360,6 +419,7 @@ jobs:
     needs: [create-release, build, server, plugins, updater-manifest]
     runs-on: ubuntu-24.04
     steps:
+      - *owned-draft
       - uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}

@@ -77,3 +77,9 @@ risk warrants it.
   verification results, tag, and remote state.
 - Push or publish only when explicitly authorized; importing and creating a local
   tag do not authorize a remote release. Never force-push main or existing tags.
+- When release execution is authorized, push main first, then the new tag, then
+  dispatch `release.yml` from `main` with the explicit tag input. Tag push must
+  not trigger Release automatically. Preserve the fork's dispatch validation,
+  resolved-tag commit checkout and per-run draft ownership on upstream imports.
+  Follow `docs/releases/README.md`; never redispatch an existing release tag or
+  adopt another run's draft. Resume failures through the original run instead.

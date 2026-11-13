@@ -79,6 +79,11 @@ release into the fork tip, preserve existing jj work and tags, and create a new
 main. `openidea-upstream-rebase` is retired.
 `eval` takes a failing code-intelligence eval to a fix with before / after numbers.
 
+Fork releases are manual dispatches from `main`: push main, then the new tag,
+then explicitly dispatch `release.yml --ref main` with that tag. Preserve this
+dispatch-only trigger on future imports; never restore tag-push release triggers.
+See `docs/releases/README.md` for the command, validation and retry rules.
+
 ## Commands
 
 - `pnpm tauri dev` — run the app with worktree isolation (Node 22.18+).
