@@ -126,6 +126,8 @@ incremental disabled. The warm job uses the real release preparation script to
 bump only the app release, checks all four app-version locations and unchanged
 component/dependency versions, then checks the server's actual `--version`.
 It creates no tag, Release, updater manifest or distribution bundle.
+The version bump happens before either cache restore, including Swatinem's key
+calculation. A changed hosted image is reported and refused before restoration.
 
 Both cache families use a run/attempt-specific **verification namespace**.
 Swatinem uses an explicit shared-key so the cold/warm job IDs do not split the

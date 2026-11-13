@@ -1,6 +1,10 @@
 import importlib.util
+import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     "verification", Path(__file__).with_name("verify-release-cache.py")
@@ -10,6 +14,21 @@ spec.loader.exec_module(verification)
 
 
 class HostedVerificationTests(unittest.TestCase):
+    def test_image_change_is_reported_before_touching_versions_or_caches(self):
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.dict(
+                os.environ, {"BASE_IMAGE": "old-image", "ImageVersion": "new-image"}
+            ),
+        ):
+            report = Path(temp)
+            with self.assertRaisesRegex(RuntimeError, "runner image changed"):
+                verification.prepare("warm", report)
+            self.assertEqual(
+                json.loads((report / "incompatible-image.json").read_text()),
+                {"cold_image": "old-image", "warm_image": "new-image"},
+            )
+
     def artifacts(self, fresh):
         names = ["ide-core", "ide-host", "ide-mcp", "ide-terminal", "ide-language"]
         packages = [{"id": name, "name": name} for name in names]

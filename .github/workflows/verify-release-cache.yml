@@ -36,10 +36,12 @@ jobs:
       EXPECTED_PREFIX: ""
       EXPECTED_KEY: ""
       BASE_VERSION: ""
+      BASE_IMAGE: ""
     outputs:
       prefix: ${{ steps.workspace.outputs.prefix }}
       key: ${{ steps.workspace.outputs.key }}
       version: ${{ steps.prepare.outputs.version }}
+      image: ${{ steps.prepare.outputs.image }}
     steps: &measurement
       - uses: actions/checkout@v7
         with:
@@ -55,6 +57,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22.23.4
+      - id: prepare
+        name: Check image and versions; warm changes only the application release
+        run: python3 scripts/verify-release-cache.py prepare
       - id: dependency
         uses: Swatinem/rust-cache@v2
         with:
@@ -62,9 +67,6 @@ jobs:
           shared-key: server-${{ github.run_id }}-${{ github.run_attempt }}
           env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
           cache-workspace-crates: false
-      - id: prepare
-        name: Check versions; warm changes only the application release
-        run: python3 scripts/verify-release-cache.py prepare
       - id: workspace
         uses: ./.github/actions/release-cache
         with:
@@ -119,4 +121,5 @@ jobs:
       EXPECTED_PREFIX: ${{ needs.cold.outputs.prefix }}
       EXPECTED_KEY: ${{ needs.cold.outputs.key }}
       BASE_VERSION: ${{ needs.cold.outputs.version }}
+      BASE_IMAGE: ${{ needs.cold.outputs.image }}
     steps: *measurement

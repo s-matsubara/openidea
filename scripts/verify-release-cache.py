@@ -29,6 +29,18 @@ def versions():
 
 
 def prepare(phase, report):
+    report.mkdir(parents=True, exist_ok=True)
+    image = os.environ.get("ImageVersion", "")
+    if phase == "warm":
+        expected = os.environ["BASE_IMAGE"]
+        if not expected or image != expected:
+            data = {"cold_image": expected, "warm_image": image}
+            (report / "incompatible-image.json").write_text(
+                json.dumps(data, indent=2) + "\n"
+            )
+            raise RuntimeError(
+                f"runner image changed: cold={expected}, warm={image}; comparison refused"
+            )
     before = versions()
     lock = tomllib.loads(Path("Cargo.lock").read_text())
     root = Path("Cargo.toml").read_bytes()
@@ -65,7 +77,6 @@ def prepare(phase, report):
     assert set(components.values()) == {
         tomllib.loads(root.decode())["workspace"]["package"]["version"]
     }
-    report.mkdir(parents=True, exist_ok=True)
     data = {
         "phase": phase,
         "sha": run("git", "rev-parse", "HEAD"),
@@ -82,6 +93,7 @@ def prepare(phase, report):
     }
     (report / "versions.json").write_text(json.dumps(data, indent=2) + "\n")
     output("version", current)
+    output("image", image)
     print(json.dumps(data, indent=2))
 
 
