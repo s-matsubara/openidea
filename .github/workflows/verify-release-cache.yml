@@ -1,22 +1,16 @@
-name: Verify release cache
+name: Dependency-warm cache control
 on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
       - .github/workflows/verify-release-cache.yml
-      - .github/actions/release-cache/**
-      - scripts/*release-cache*
-      - Cargo.toml
-      - Cargo.lock
-      - crates/**
-      - src-tauri/Cargo.toml
-      - src-tauri/tauri.conf.json
+      - scripts/dependency-warm-control*
 
 permissions:
   contents: read
 
 concurrency:
-  group: verify-release-cache-${{ github.run_id }}-${{ github.run_attempt }}
+  group: dependency-warm-control-${{ github.run_id }}-${{ github.run_attempt }}
   cancel-in-progress: false
 
 env:
@@ -24,30 +18,40 @@ env:
   CARGO_BUILD_JOBS: "2"
   CARGO_TERM_COLOR: never
   BUILD_TARGET: x86_64-unknown-linux-gnu
-  CACHE_NAMESPACE: verify-release-target-${{ github.run_id }}-${{ github.run_attempt }}
+  BASE_VERSION: "2026.2.12"
+  BASE_IMAGE: "20261111.370.1"
 
 jobs:
-  cold:
+  request:
     if: github.repository == 's-matsubara/openidea' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'perf/release-workspace-cache'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      PHASE: cold
-      EXPECTED_PREFIX: ""
-      EXPECTED_KEY: ""
-      BASE_VERSION: ""
-      BASE_IMAGE: ""
     outputs:
-      prefix: ${{ steps.workspace.outputs.prefix }}
-      key: ${{ steps.workspace.outputs.key }}
-      version: ${{ steps.prepare.outputs.version }}
-      image: ${{ steps.prepare.outputs.image }}
-    steps: &measurement
+      run: ${{ steps.request.outputs.run }}
+    steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - id: request
+        name: Measure only an explicitly marked commit, never a report-only follow-up
+        run: |
+          if git log -1 --format=%B | grep -Fxq 'Cache-Control: dependency-warm-v1'; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  control:
+    needs: request
+    if: needs.request.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Keep the controller outside both measured checkouts
+        run: cp scripts/dependency-warm-control.py "$RUNNER_TEMP/dependency-warm-control.py"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # seed's stable action
         with:
           toolchain: 1.99.1
           targets: ${{ env.BUILD_TARGET }}
@@ -57,69 +61,71 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22.23.4
-      - id: prepare
-        name: Check image and versions; warm changes only the application release
-        run: python3 scripts/verify-release-cache.py prepare
-      - id: dependency
-        uses: Swatinem/rust-cache@v2
+      - name: Empty the first checkout and Cargo downloaded sources
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" reset dependency-only
+      - uses: actions/checkout@v7
         with:
+          ref: f80a5c9f9b2de1aeaba6b9b5588b6068e76f7245
+          persist-credentials: false
+      - name: Prepare identical app-only release and require seed compatibility
+        id: first
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" prepare dependency-only
+      - name: Require the immutable workspace seed before either build
+        id: seed
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ steps.first.outputs.paths }}
+          key: ${{ steps.first.outputs.seed-key }}
+          lookup-only: true
+          fail-on-cache-miss: true
+      - id: dependencies_first
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # seed's v2 action
+        with: &dependencies
           prefix-key: verify-release-dependencies-v1
-          shared-key: server-${{ github.run_id }}-${{ github.run_attempt }}
+          shared-key: server-43520576305-1
           env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
           cache-workspace-crates: false
+          save-if: "false"
+      - name: Require exact dependency hit and no internal artifacts
+        env:
+          DEPENDENCY_HIT: ${{ steps.dependencies_first.outputs.cache-hit }}
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" dependency-check dependency-only
+      - name: Measure dependency-only build
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" build dependency-only
+      - name: Remove the first build and all checkout files, including source mtimes
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" reset workspace-warm
+      - uses: actions/checkout@v7
+        with:
+          ref: f80a5c9f9b2de1aeaba6b9b5588b6068e76f7245
+          persist-credentials: false
+      - name: Prepare the same app-only release from a new checkout
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" prepare workspace-warm
+      - id: dependencies_second
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # seed's v2 action
+        with: *dependencies
+      - name: Require identical restored dependency target and fresh source mtimes
+        env:
+          DEPENDENCY_HIT: ${{ steps.dependencies_second.outputs.cache-hit }}
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" dependency-check workspace-warm
       - id: workspace
         uses: ./.github/actions/release-cache
         with:
           scope: server-validation
           target: ${{ env.BUILD_TARGET }}
-          namespace: ${{ env.CACHE_NAMESPACE }}
-          generation: ${{ env.PHASE }}
-      - name: Require cold miss or compatible cold-generation restore
+          namespace: verify-release-target-43520576305-1
+          generation: control
+      - name: Measure workspace-warm build from the exact seed generation
         env:
           ACTUAL_PREFIX: ${{ steps.workspace.outputs.prefix }}
           MATCHED_KEY: ${{ steps.workspace.outputs.matched-key }}
-          DEPENDENCY_HIT: ${{ steps.dependency.outputs.cache-hit }}
-        run: python3 scripts/verify-release-cache.py restore-check
-      - name: Measure real Thin LTO server build and require the current version
-        run: python3 scripts/verify-release-cache.py build
-      - name: Add excluded distribution canaries and snapshot inputs
-        run: |
-          mkdir -p target/${BUILD_TARGET}/release/bundle/cache-verification
-          printf 'not a distribution signature\n' > target/${BUILD_TARGET}/release/bundle/cache-verification/installer.sig
-          printf 'not a desktop binary\n' > target/${BUILD_TARGET}/release/openidea
-          python3 scripts/release-cache.py capture
-      - name: Verify the exact private archive selection
-        env:
-          CACHE_PATHS: ${{ steps.workspace.outputs.paths }}
-          CACHE_PATHS_FILE: ${{ runner.temp }}/cache-paths.txt
-        run: |
-          printf '%s\n' "$CACHE_PATHS" > "$CACHE_PATHS_FILE"
-          python3 scripts/verify-release-cache.py inventory
-      - name: Save this generation before the dependency post-job cleanup
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ steps.workspace.outputs.paths }}
-          key: ${{ steps.workspace.outputs.key }}
-      - name: Keep the input snapshot out of the dependency archive
-        run: rm -f target/.release-inputs.json
-      - name: Upload public measurement reports, never executables
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" build workspace-warm
+      - name: Require equal versions and library sets; report the measured difference
+        run: python3 "$RUNNER_TEMP/dependency-warm-control.py" compare
+      - name: Upload only public JSON measurements and raw Cargo messages
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: cache-verification-${{ env.PHASE }}
-          path: ${{ runner.temp }}/cache-report/
+          name: dependency-warm-control
+          path: ${{ runner.temp }}/dependency-warm-control/
           retention-days: 7
           if-no-files-found: error
-
-  warm:
-    if: github.repository == 's-matsubara/openidea' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'perf/release-workspace-cache'
-    needs: cold
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      PHASE: warm
-      EXPECTED_PREFIX: ${{ needs.cold.outputs.prefix }}
-      EXPECTED_KEY: ${{ needs.cold.outputs.key }}
-      BASE_VERSION: ${{ needs.cold.outputs.version }}
-      BASE_IMAGE: ${{ needs.cold.outputs.image }}
-    steps: *measurement
