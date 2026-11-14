@@ -10,7 +10,8 @@ pub fn set_app_version(version: &'static str) {
     assert_eq!(APP_VERSION.get().copied(), Some(version), "application version already set");
 }
 
-/// Standalone library users default to the stable component version.
+/// Uninitialized library users get Cargo's omitted-version default, `0.0.0`.
+/// Executables must initialize their real application release before starting services.
 pub fn app_version() -> &'static str {
     APP_VERSION.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
 }
@@ -19,6 +20,7 @@ pub fn app_version() -> &'static str {
 mod tests {
     #[test]
     fn executable_version_is_independent_of_the_component() {
+        assert_eq!(super::app_version(), "0.0.0");
         super::set_app_version("2099.1.2");
         super::set_app_version("2099.1.2");
         assert_eq!(super::app_version(), "2099.1.2");

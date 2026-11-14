@@ -1,7 +1,6 @@
 [package]
 name = "ide-mcp"
 description = "The IDE's MCP server: Streamable HTTP on 127.0.0.1 for AI agents outside the IDE, its discovery file and the stdio bridge"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

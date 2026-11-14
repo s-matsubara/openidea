@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -39,7 +40,6 @@ class CargoCache(unittest.TestCase):
 resolver="3"
 members=["crates/*", "src-tauri"]
 [workspace.package]
-version="2026.2.12"
 edition="2024"
 [profile.release]
 lto="thin"
@@ -65,7 +65,7 @@ ide-host={path="../crates/ide-host"}
         )
         self.write(
             "crates/ide-core/Cargo.toml",
-            '[package]\nname="ide-core"\nversion.workspace=true\nedition.workspace=true\n',
+            '[package]\nname="ide-core"\nedition.workspace=true\n',
         )
         self.write("crates/ide-core/src/lib.rs", "pub mod version;")
         self.write(
@@ -74,7 +74,7 @@ ide-host={path="../crates/ide-host"}
         )
         self.write(
             "crates/cache-lib/Cargo.toml",
-            '[package]\nname="cache-lib"\nversion.workspace=true\nedition.workspace=true\n',
+            '[package]\nname="cache-lib"\nedition.workspace=true\n',
         )
         self.write(
             "crates/cache-lib/src/lib.rs",
@@ -98,7 +98,6 @@ println!("cargo:rustc-env=CONTENT={value}");
             "crates/ide-host/Cargo.toml",
             """[package]
 name="ide-host"
-version.workspace=true
 edition.workspace=true
 [dependencies]
 ide-core={path="../ide-core"}
@@ -258,6 +257,54 @@ serde_json="1"
                 expected,
             )
 
+    def test_release_and_nightly_preparation_preserve_omitted_versions(self):
+        for name in ["release-prepare.ts", "nightly-prepare.ts"]:
+            self.write(f"scripts/{name}", (REPO / "scripts" / name).read_text())
+        self.write(
+            "src-tauri/Cargo.toml",
+            Path("src-tauri/Cargo.toml")
+            .read_text()
+            .replace('version="', 'version = "'),
+        )
+        self.write("package.json", json.dumps({"version": "2026.2.12"}, indent=2))
+        config = json.loads((REPO / "src-tauri/tauri.conf.json").read_text())
+        config["version"] = "2026.2.12"
+        self.write("src-tauri/tauri.conf.json", json.dumps(config, indent=2))
+        for folder in ["wit", "sdk/rust/openidea-plugin/tests/api/released"]:
+            self.write(f"{folder}/plugin.wit", "package openidea:plugin@1.6.0;\n")
+        manifests = {
+            path: path.read_bytes()
+            for path in [Path("Cargo.toml"), *Path("crates").glob("*/Cargo.toml")]
+        }
+        lock = tomllib.loads(Path("Cargo.lock").read_text())
+        for script, argument, expected in [
+            ("release-prepare.ts", "2026.2.13", "2026.2.13"),
+            ("nightly-prepare.ts", "202611141200", "2026.2.14-nightly.202611141200"),
+        ]:
+            self.run_command("node", f"scripts/{script}", argument)
+            for manifest, content in manifests.items():
+                self.assertEqual(manifest.read_bytes(), content)
+            metadata = json.loads(
+                self.run_command(
+                    "cargo", "metadata", "--no-deps", "--format-version=1", "--locked"
+                )
+            )
+            for package in metadata["packages"]:
+                self.assertEqual(
+                    package["version"],
+                    expected if package["name"] == "openidea" else "0.0.0",
+                )
+            for path in ["package.json", "src-tauri/tauri.conf.json"]:
+                self.assertEqual(
+                    json.loads(Path(path).read_text())["version"], expected
+                )
+            updated = tomllib.loads(Path("Cargo.lock").read_text())
+            for package in updated["package"]:
+                if package["name"] == "openidea":
+                    self.assertEqual(package["version"], expected)
+                    package["version"] = "2026.2.12"
+            self.assertEqual(updated, lock)
+
     def test_version_only_with_verified_cache_reuses_internal_libraries(self):
         self.build("split: cold")
         self.save()
@@ -279,6 +326,18 @@ serde_json="1"
         )
 
     def test_inherited_workspace_version_still_rebuilds_even_with_mtime_restore(self):
+        self.write(
+            "Cargo.toml",
+            Path("Cargo.toml")
+            .read_text()
+            .replace("[workspace.package]", '[workspace.package]\nversion="2026.2.12"'),
+        )
+        for manifest in Path("crates").glob("*/Cargo.toml"):
+            manifest.write_text(
+                manifest.read_text().replace(
+                    "[package]", "[package]\nversion.workspace=true"
+                )
+            )
         self.write(
             "src-tauri/Cargo.toml",
             Path("src-tauri/Cargo.toml")
@@ -444,6 +503,47 @@ serde_json="1"
                 )
             )
             self.assertNotEqual(baseline, key())
+
+    def test_omission_starts_a_new_workspace_cache_generation(self):
+        output = Path(self.temp.name) / "key-output"
+        manifests = [Path("Cargo.toml"), *Path("crates").glob("*/Cargo.toml")]
+        omitted = {path: path.read_text() for path in manifests}
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_RUN_ID": "1",
+                "GITHUB_RUN_ATTEMPT": "1",
+            },
+        ):
+
+            def prefix():
+                output.write_text("")
+                cache.keys("server", "x86_64-unknown-linux-gnu")
+                return next(
+                    line
+                    for line in output.read_text().splitlines()
+                    if line.startswith("prefix=")
+                )
+
+            current = prefix()
+            for manifest, content in omitted.items():
+                if manifest == Path("Cargo.toml"):
+                    content = content.replace(
+                        "[workspace.package]",
+                        '[workspace.package]\nversion="2026.2.12"',
+                    )
+                else:
+                    content = content.replace(
+                        "[package]", "[package]\nversion.workspace=true"
+                    )
+                manifest.write_text(content)
+            self.run_command("cargo", "update", "--workspace", "--offline")
+            self.assertNotEqual(prefix(), current)
+            for manifest, content in omitted.items():
+                manifest.write_text(content)
+            self.run_command("cargo", "update", "--workspace", "--offline")
+            self.assertEqual(prefix(), current)
 
     def test_immutable_save_keys_and_invalidation(self):
         output = Path(self.temp.name) / "outputs"

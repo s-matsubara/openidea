@@ -1,7 +1,6 @@
 [package]
 name = "ide-heap"
 description = "HotSpot .hprof parser and heap-snapshot analysis for the debugger's JVM Memory view"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

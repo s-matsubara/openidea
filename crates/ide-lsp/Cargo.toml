@@ -1,7 +1,6 @@
 [package]
 name = "ide-lsp"
 description = "Language server manager: lifecycle, document sync, feature requests mapped to IDE types"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

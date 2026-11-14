@@ -1,7 +1,6 @@
 [package]
 name = "ide-index"
 description = "Background project index: files and symbols, persisted in redb, fuzzy queried with nucleo"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

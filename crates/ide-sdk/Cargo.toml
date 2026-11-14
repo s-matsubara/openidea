@@ -1,7 +1,6 @@
 [package]
 name = "ide-sdk"
 description = "SDKs / toolchains: interpreter discovery (Python, Node.js, Rust, Go, TypeScript), virtualenvs, pip, and applying the selected toolchain to language servers, run configurations and terminals"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

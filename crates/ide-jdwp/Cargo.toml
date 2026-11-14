@@ -1,7 +1,6 @@
 [package]
 name = "ide-jdwp"
 description = "JDWP codec and a transparent debugger link that counts every object ID it receives, so it can release them exactly"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

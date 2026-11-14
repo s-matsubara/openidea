@@ -110,7 +110,10 @@ See `docs/releases/README.md` for the command, validation and retry rules.
 - `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
   `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
   The application version is in `src-tauri/Cargo.toml`; do not bump the root
-  workspace component baseline. See `docs/releases/build-cache.md`.
+  workspace version or add internal package versions. Internal `crates/*` omit
+  `package.version` (Cargo reports `0.0.0`). Run
+  `python3 scripts/verify-release-cache.py policy` after imports to catch newly
+  added crates that reintroduce version inheritance. See `docs/releases/build-cache.md`.
 
 ## Before opening a PR
 

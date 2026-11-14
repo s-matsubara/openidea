@@ -28,6 +28,29 @@ def versions():
     return app
 
 
+def component_versions(metadata=None, root=Path(".")):
+    workspace = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]
+    assert "version" not in workspace.get("package", {}), (
+        "internal versions must be omitted from workspace.package"
+    )
+    names = set()
+    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+        package = tomllib.loads(manifest.read_text())["package"]
+        assert "version" not in package, f"{manifest}: internal version must be omitted"
+        names.add(package["name"])
+    assert names, "no internal crates found"
+    if metadata is None:
+        metadata = json.loads(
+            run("cargo", "metadata", "--no-deps", "--format-version=1", "--locked")
+        )
+    components = {
+        p["name"]: p["version"] for p in metadata["packages"] if p["name"] in names
+    }
+    assert set(components) == names, "internal crates missing from Cargo metadata"
+    assert set(components.values()) == {"0.0.0"}, components
+    return components
+
+
 def prepare(phase, report):
     report.mkdir(parents=True, exist_ok=True)
     image = os.environ.get("ImageVersion", "")
@@ -59,7 +82,9 @@ def prepare(phase, report):
             if package["name"] == "openidea" and "source" not in package:
                 package["version"] = before
         assert lock == after_lock, "version preparation changed dependencies"
-        assert Path("Cargo.toml").read_bytes() == root, "component baseline changed"
+        assert Path("Cargo.toml").read_bytes() == root, (
+            "internal version policy changed"
+        )
         changed = set(run("git", "diff", "--name-only").splitlines())
         assert changed == {
             "Cargo.lock",
@@ -71,12 +96,7 @@ def prepare(phase, report):
     metadata = json.loads(
         run("cargo", "metadata", "--no-deps", "--format-version=1", "--locked")
     )
-    components = {
-        p["name"]: p["version"] for p in metadata["packages"] if p["name"] != "openidea"
-    }
-    assert set(components.values()) == {
-        tomllib.loads(root.decode())["workspace"]["package"]["version"]
-    }
+    components = component_versions(metadata)
     data = {
         "phase": phase,
         "sha": run("git", "rev-parse", "HEAD"),
@@ -246,7 +266,8 @@ def inventory(paths_file, report):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=["prepare", "restore-check", "build", "inventory"]
+        "operation",
+        choices=["policy", "prepare", "restore-check", "build", "inventory"],
     )
     parser.add_argument(
         "--phase", choices=["cold", "warm"], default=os.environ.get("PHASE")
@@ -258,7 +279,9 @@ if __name__ == "__main__":
         default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "cache-report",
     )
     args = parser.parse_args()
-    if args.operation == "prepare":
+    if args.operation == "policy":
+        print(json.dumps(component_versions(), indent=2))
+    elif args.operation == "prepare":
         prepare(args.phase, args.report)
     elif args.operation == "restore-check":
         check_restore(

@@ -1,7 +1,6 @@
 [package]
 name = "ide-extension"
 description = "Plugin manifest, extension points, contribution registry and capability model (no Wasm runtime)"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

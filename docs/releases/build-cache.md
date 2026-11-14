@@ -2,10 +2,19 @@
 
 The application release lives in `src-tauri/Cargo.toml`, `package.json` and
 `src-tauri/tauri.conf.json`. `release:prepare` updates those and only the
-`openidea` version in Cargo.lock. `[workspace.package].version` remains at the
-component baseline **2026.2.12**; its 43 internal libraries do not change package
-identity on each release. This avoids a needless one-time renumbering, too.
-Guest SDK and Plugin API versions remain independently versioned.
+`openidea` version in Cargo.lock. Omit `version` from `[workspace.package]` and
+all 43 internal `crates/*/Cargo.toml` packages, including `version.workspace`.
+Cargo assigns these internal packages **0.0.0**; their identities remain unchanged
+on subsequent app-only releases. Guest SDK, plugins and fixtures retain their
+separate version policies.
+
+Migrating from the former explicit **2026.2.12** baseline changes internal
+package identities and the workspace cache compatibility digest once, so the
+first build safely starts a new workspace artifact cache. Later app-only releases
+keep the same internal identities.
+Run `python3 scripts/verify-release-cache.py policy` to reject version fields
+reintroduced by new upstream crates and require Cargo metadata to report `0.0.0`
+for every internal package.
 
 Executables initialize `ide_core::version` before services start. The desktop
 uses its own package version; the server/plugin binaries embed the version from
@@ -13,8 +22,7 @@ tauri.conf.json **in their binary targets**, not in ide-host's library. About,
 remote server identity/downloads, CLI output, MCP/LSP/agent client identities and
 terminal metadata keep the application release. Persistent syntax, SVG and shell
 integration cache salts also retain release-based invalidation. Embedded library
-users can initialize their own public version; without it they get the component
-baseline. New upstream uses of `CARGO_PKG_VERSION` in public metadata need review.
+users can initialize their own public version; without it they get `0.0.0`. New upstream uses of `CARGO_PKG_VERSION` in public metadata need review.
 
 The Release tag/app-version guard now reads the application's Cargo.toml. Asset
 names and updater `latest.json` still use the explicit validated tag. This fork
@@ -79,6 +87,8 @@ Requires Python 3.12, Git and a Rust toolchain. Fetch Cargo dependencies first
 (`cargo fetch --locked`); the miniature builds then run offline. Run:
 
 ```sh
+python3 scripts/verify-release-cache.py policy
+python3 scripts/verify-release-cache.test.py
 RELEASE_CACHE_REPORT=/tmp/cache-report.json python3 scripts/release-cache.test.py
 node --test scripts/release-workflow.test.mjs
 pnpm vitest run scripts/release-prepare.test.ts scripts/nightly-prepare.test.ts
@@ -88,7 +98,18 @@ The Linux x86-64 experiment uses real `cargo build --release` with Thin LTO and
 incremental disabled. It simulates fresh checkouts at the same absolute path,
 a dependency-only archive plus a separate workspace archive, and runs the built
 desktop/server fixtures to verify the new public version. It copies the actual
-runtime-version implementation and server initializer from this repository.
+runtime-version implementation and server initializer from this repository. The
+production fixture omits internal versions; the inherited-version control adds
+explicit workspace inheritance only for that control.
+The current 15-case suite also executes the canonical release/nightly preparation
+scripts, checks that their Cargo updates preserve omitted internal versions, and
+verifies that migration from explicit inheritance changes the cache prefix once.
+The omitted-version app-only experiment keeps all three internal library targets
+fresh while rebuilding both executables with the real application version.
+
+The following recorded measurements predate omission and used the explicit
+2026.2.12 internal baseline. They remain historical evidence, not measurements
+of the new omission policy.
 
 | Version-only change after a fresh checkout                | Internal libraries recompiled |
 | --------------------------------------------------------- | ----------------------------- |
@@ -255,9 +276,11 @@ The workflow uses `contents: read`, no signing secrets, and uploads only public
 measurement JSON, raw Cargo fresh flags and inventories. It creates no tag,
 Release, updater manifest, executable distribution artifact or installer.
 
-## Remaining verification and adoption
+## Historical verification and adoption notes
 
-Keep the PR draft pending final review and desktop validation. The GNU/Linux
+These notes record the experiment's review checklist before PR #1 was merged
+at `a1a31318`. They are not a statement of the current Release's status.
+At measurement time the PR remained draft pending review and desktop validation. The GNU/Linux
 server experiment does not measure desktop, musl, macOS/Windows, real signing,
 notarization, bundle names or updater download/signature end-to-end behavior.
 The unchanged version source contract and archive exclusions do not prove those

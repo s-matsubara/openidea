@@ -49,8 +49,11 @@ Workflow guard steps share a [YAML anchor](https://docs.github.com/en/actions/re
 
 ## Build version and cache policy
 
-`src-tauri/Cargo.toml` carries the application version. Keep the root workspace's
-component baseline stable when preparing a release or merging upstream. Internal
-libraries receive the public version at runtime; do not bake a new release number
-into every dependency. See [build cache design and verification](build-cache.md)
+`src-tauri/Cargo.toml` carries the application version. Omit `version` from
+`[workspace.package]` and every internal `crates/*/Cargo.toml` package; Cargo
+reports their versions as `0.0.0`. Do not add `version.workspace` on imports.
+Run `python3 scripts/verify-release-cache.py policy` to check all current and
+new internal crates against Cargo metadata. SDK, plugins and fixtures retain
+their separate version policies. Internal libraries receive the public version
+at runtime; uninitialized library users get `0.0.0`. See [build cache design and verification](build-cache.md)
 for immutable cache generations, source-mtime safety, limitations and experiments.

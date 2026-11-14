@@ -1,7 +1,6 @@
 [package]
 name = "ide-http"
 description = "HTTP Client: .http request files, environments, execution and response history"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

@@ -1,7 +1,6 @@
 [package]
 name = "ide-language"
 description = "Language registry (languages/*.toml), detection, and tree-sitter powered outline/folding/symbol tags"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

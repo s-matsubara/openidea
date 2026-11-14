@@ -4,9 +4,8 @@ members = ["crates/*", "src-tauri"]
 # Plugins and the guest SDK build for wasm32-wasip2 in their own workspaces.
 exclude = ["sdk", "plugins"]
 
-# Stable internal component version; application releases live in src-tauri/Cargo.toml.
+# Internal crate versions are omitted (Cargo defaults to 0.0.0); the app is versioned separately.
 [workspace.package]
-version = "2026.2.12"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"

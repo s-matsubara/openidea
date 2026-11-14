@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import chdir
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +15,79 @@ spec.loader.exec_module(verification)
 
 
 class HostedVerificationTests(unittest.TestCase):
+    def test_prepare_accepts_omitted_versions_without_a_workspace_version(self):
+        with tempfile.TemporaryDirectory() as temp, chdir(temp):
+            root = Path.cwd()
+            (root / "Cargo.toml").write_text('[workspace.package]\nedition="2024"\n')
+            (root / "src-tauri").mkdir()
+            (root / "src-tauri/Cargo.toml").write_text(
+                '[package]\nversion="2026.2.13"\n'
+            )
+            for path in ["package.json", "src-tauri/tauri.conf.json"]:
+                (root / path).write_text('{"version":"2026.2.13"}')
+            (root / "Cargo.lock").write_text(
+                '[[package]]\nname="openidea"\nversion="2026.2.13"\n'
+            )
+            manifest = root / "crates/ide-core/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('[package]\nname="ide-core"\n')
+            metadata = {"packages": [{"name": "ide-core", "version": "0.0.0"}]}
+
+            def run(*args):
+                return (
+                    json.dumps(metadata)
+                    if args[:2] == ("cargo", "metadata")
+                    else "fixture"
+                )
+
+            with (
+                mock.patch.object(verification, "run", side_effect=run),
+                mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "outputs")}),
+            ):
+                verification.prepare("cold", root / "report")
+            report = json.loads((root / "report/versions.json").read_text())
+            self.assertEqual(report["components"], {"ide-core": "0.0.0"})
+            self.assertEqual(report["version"], "2026.2.13")
+
+    def test_omitted_internal_versions_and_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cargo.toml").write_text('[workspace.package]\nedition="2024"\n')
+            manifest = root / "crates/ide-core/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('[package]\nname="ide-core"\n')
+            metadata = {"packages": [{"name": "ide-core", "version": "0.0.0"}]}
+            self.assertEqual(
+                verification.component_versions(metadata, root), {"ide-core": "0.0.0"}
+            )
+            for version in ["2026.2.12", "1.0.0"]:
+                metadata["packages"][0]["version"] = version
+                with self.assertRaises(AssertionError):
+                    verification.component_versions(metadata, root)
+
+    def test_upstream_added_crate_cannot_reintroduce_a_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cargo.toml").write_text('[workspace.package]\nedition="2024"\n')
+            manifest = root / "crates/new-upstream-crate/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            for version in ["version.workspace=true", 'version="0.0.0"']:
+                manifest.write_text(
+                    f'[package]\nname="new-upstream-crate"\n{version}\n'
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "internal version must be omitted"
+                ):
+                    verification.component_versions({"packages": []}, root)
+            manifest.write_text('[package]\nname="new-upstream-crate"\n')
+            with self.assertRaisesRegex(AssertionError, "missing from Cargo metadata"):
+                verification.component_versions({"packages": []}, root)
+            (root / "Cargo.toml").write_text(
+                '[workspace.package]\nversion="2026.2.12"\n'
+            )
+            with self.assertRaisesRegex(AssertionError, "workspace.package"):
+                verification.component_versions({"packages": []}, root)
+
     def test_image_change_is_reported_before_touching_versions_or_caches(self):
         with (
             tempfile.TemporaryDirectory() as temp,
