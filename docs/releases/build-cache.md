@@ -56,6 +56,120 @@ workspace cache. Swatinem separately restores third-party dependencies. Its key
 also includes runner-image/SDK environment, without a per-commit suffix.
 All builds still run Cargo; a cache hit never skips the build or validation.
 
+### Cargo 1.100 layout and cache format 2
+
+[Cargo 1.100 changed its intermediate build layout](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+([Cargo PR #17354](https://github.com/rust-lang/cargo/pull/17354)). Libraries,
+fingerprints and text dep-info now live under
+`target/<profile>/build/<package>/<unit>/{out,fingerprint}` (and the equivalent
+target-triple directory). Build-script execution output moved to the unit's
+`run` directory. Executable copies in `out` no longer have hash suffixes.
+
+The [v2026.2.14 x64 musl server job](https://github.com/s-matsubara/openidea/actions/runs/43573517718/job/132382773877)
+used Rust/Cargo 1.100.0, restored 748,307,975 bytes of dependency cache and hit a
+295,716-byte workspace archive. It reported 6,492 reused input mtimes, yet rebuilt
+all 36 internal libraries in an 8m 23s build and saved only 295,803 bytes. This
+was a cache hit without internal artifacts, not a normal cold miss: format 1
+only selected the pre-1.100 paths. Its capture also missed new fingerprints and
+dep-info, recording no compilation units in a minimal real-Cargo reproduction.
+
+Format 2 supports both layouts in artifact selection, fingerprints, dep-info,
+build-script inputs, clock anchors and fingerprint invalidation. It selects
+library/proc-macro files and build-script outputs individually. It does not
+cache bin-unit fingerprints or executable copies in the new `out` directories;
+app/server/plugin binaries still rebuild. Build-script **compilation** dep-info
+is checked as well as execution `rerun-if-changed` paths. Nondefault Cargo build
+directories are rejected. The versioned key and snapshot schema reject format 1;
+the first format 2 production build must seed a new archive. Toolchain, image,
+profile, target, root and dependency compatibility boundaries remain intact.
+
+The fixture's simulated dependency archive now independently removes both
+layouts and checks Cargo's actual workspace output filenames. Previously it
+could leave the new workspace directories in the dependency archive, falsely
+passing a reuse test when the private archive contained only the snapshot.
+Missing-dep-info tests require finding and deleting real files. Hosted archive
+inventory requires artifacts and fingerprints for **every** built library and
+reports library counts and bytes; snapshot-only archives fail verification.
+
+`verify-cargo-cache-layout.yml` is a non-distribution, read-only-permission
+experiment on one Ubuntu 22.04 runner, Rust/Cargo 1.100.0, the actual x64 musl
+server target, Thin LTO, incremental=0 and `CARGO_BUILD_JOBS=2`. This is a
+controlled same-runner, two-build-jobs experiment, not a full production release
+speed measurement. It builds a seed, saves/restores the
+workspace archive through Actions cache, independently strips all workspace
+artifacts from a single immutable dependency tar, and recreates tracked sources
+and target before each measured arm. Both arms apply the same app-only version
+increment from the same commit, root, toolchain and runner image. Dependency
+contents/modes/nanosecond mtimes and archive SHA-256 must agree; all external
+compiler units must be fresh, the first arm must rebuild all internal libraries,
+and the second must reuse all of them while rebuilding the correct-version
+server. Only JSON diagnostics are uploaded, never distribution executables.
+
+The expensive job runs only for this fork's `fix/cargo-1100-release-cache` PR
+when its head commit contains the exact trailer `Cache-Control: cargo-1100-v2`.
+Report-only commits without that marker skip measurement. Its unique concurrency
+group and private cache namespace cannot cancel or mutate Release runs. This
+workflow neither dispatches releases nor writes tags/main. Historical 1.99
+measurements below describe their original configurations; they are not proof
+of the new layout implementation's performance. macOS desktop/GUI, signing,
+notarization and updater distribution are outside this Linux server experiment.
+
+Local verification used actual Cargo 1.99.1 and 1.100.0 (20 cache experiments on
+each), including explicit-target host proc-macro reuse, build-script compilation
+and rerun inputs, dependency-only negative control, backdated edits, directory
+deletion, missing dep-info/snapshot, foreign schema, clock skew and environment
+invalidation. Seven hosted-validator tests include rejecting a snapshot-only
+archive. These compiler-freshness tests are stronger than static glob checks,
+but the small fixture is not a complete application or production server build.
+
+### Hosted Cargo 1.100 control (2026-11-14)
+
+[Run 43578726196, attempt 1](https://github.com/s-matsubara/openidea/actions/runs/43578726196)
+and [control job 132398669279](https://github.com/s-matsubara/openidea/actions/runs/43578726196/job/132398669279)
+passed at commit `4d350a913ae6d9193d632cb3543bc5241c1cf973`, based on main
+`9998c075ecf772d95fe9441e7b468b23f0742593`. This is the controlled same-runner,
+**two-build-jobs** experiment described above, not a full production release
+speed measurement. The image was `20261111.360.2`, Rust `1.100.0
+(0ef1bc386 2026-11-09)`, Cargo `1.100.0 (3acc79c0c 2026-11-05)` and target
+`x86_64-unknown-linux-musl`, with the same checkout root, Thin LTO and incremental=0.
+
+| Arm                  | Cargo build seconds | Internal libraries fresh | Internal libraries rebuilt | Final server fresh |
+| -------------------- | ------------------: | -----------------------: | -------------------------: | ------------------ |
+| Dependency-only warm |       682.120853574 |                        0 |                         36 | false              |
+| Workspace also warm  |       285.406879841 |                       36 |                          0 | false              |
+
+Both rebuilt executables returned **`openidea-server 2026.2.15 (protocol 2)`**.
+The version change from 2026.2.14 was confined to the disposable checkouts; no
+2026.2.15 tag or release was created. The controller reported all **743 external
+compiler keys fresh** in both arms, and their stderr contained no external
+`Compiling` entries. The two arms used the same dependency tar with verified
+content hashes, modes and nanosecond mtimes and identical SHA-256. Before each
+workspace restore, Cargo's recorded workspace output filenames were absent.
+
+The difference is **396.713973733 seconds (58.1589%)** for these Cargo build steps;
+it excludes archive/setup overhead. The initial empty seed build took
+1127.226126840 seconds and is **not** the denominator for this percentage.
+The private archive contained **253 files / 501,312,444 uncompressed bytes**,
+including all 36 library units and **383,216,458 library-artifact bytes**.
+Actions restored **165,245,033 compressed bytes** from the exact seed generation
+under the matching `cargo-layout-43578726196-1-v2-...` prefix. No bin fingerprints,
+final executable copies, bundles or signatures were included. JSON diagnostics
+are retained in the run's `cargo-layout-report-1` artifact.
+
+The measured run conservatively marked 51 unbuilt ide-host targets dirty
+(49 tests, one benchmark and the plugin CLI), because missing-dep-info detection
+looked for any bin fingerprint in the package. None of the 36 built libraries
+was rebuilt. This conservative diagnostic limitation is retained in the tested
+implementation; it does not prevent the demonstrated library reuse. The
+post-measurement commit updates documentation only.
+
+The verification archive is scoped to this PR's merge ref and an isolated
+namespace. Main cannot use it as a production seed. After separate review and
+merge approval, the next separately authorized main Release must create its
+own format-2 seed; subsequent compatible app-only releases can reuse it.
+The PR remains draft. Native macOS/Windows desktop/GUI, terminal metadata in the
+running app, signing/notarization and updater distribution remain unverified.
+
 ## Content verification, not commit timestamps
 
 [Stable Cargo uses source/dep-info mtimes](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html),

@@ -169,7 +169,7 @@ def analyze(messages, packages, phase):
         assert libraries.get("ide-core") and libraries.get("ide-host"), (
             "core and host were not reused"
         )
-        assert sum(libraries.values()) >= 5, "too few real internal libraries reused"
+        assert all(libraries.values()), "some internal libraries were rebuilt"
     return libraries
 
 
@@ -252,14 +252,37 @@ def inventory(paths_file, report):
         assert not re.fullmatch(
             r"(?:openidea(?:-server|-plugin)?)(?:-[0-9a-f]+)?(?:\.exe)?", path.name
         ), name
+        assert not path.name.startswith(("bin-", "dep-bin-", "output-bin-")), name
+    expected = json.loads((report / "build.json").read_text())["libraries"]
+    libraries = {}
+    for package in expected:
+        crate = package.replace("-", "_")
+        artifacts = [
+            p
+            for p in paths
+            if p.name.startswith(f"lib{crate}-")
+            and p.suffix in {".rlib", ".so", ".dylib"}
+        ]
+        fingerprints = [p for p in paths if p.name == f"lib-{crate}.json"]
+        assert artifacts and fingerprints, (
+            f"no compiled library/fingerprint in archive: {package}"
+        )
+        libraries[package] = {
+            "artifacts": len(artifacts),
+            "units": len(fingerprints),
+            "bytes": sum(p.stat().st_size for p in artifacts),
+        }
+    assert libraries, "snapshot-only archive is not a workspace cache"
     data = {
         "files": len(paths),
         "uncompressed_bytes": sum(p.stat().st_size for p in paths),
         "paths": sorted(str(p.relative_to(Path.cwd())) for p in paths),
+        "libraries": libraries,
+        "library_bytes": sum(p["bytes"] for p in libraries.values()),
     }
     (report / "archive-inventory.json").write_text(json.dumps(data, indent=2) + "\n")
     print(
-        f"Private archive: {data['files']} files, {data['uncompressed_bytes']} bytes; no final binaries/bundles/signatures"
+        f"Private archive: {data['files']} files, {data['uncompressed_bytes']} bytes, {len(libraries)} libraries ({data['library_bytes']} bytes); no final binaries/bundles/signatures"
     )
 
 

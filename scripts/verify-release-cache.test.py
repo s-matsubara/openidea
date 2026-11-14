@@ -15,6 +15,30 @@ spec.loader.exec_module(verification)
 
 
 class HostedVerificationTests(unittest.TestCase):
+    def test_inventory_rejects_snapshot_only_and_requires_each_built_library(self):
+        with tempfile.TemporaryDirectory() as temp, chdir(temp):
+            report = Path("report")
+            report.mkdir()
+            (report / "build.json").write_text(
+                json.dumps({"libraries": {"ide-core": False}})
+            )
+            Path("target").mkdir()
+            Path("target/.release-inputs.json").write_text("{}")
+            Path("paths").write_text("target/**/*\n")
+            with self.assertRaisesRegex(AssertionError, "no compiled library"):
+                verification.inventory("paths", report)
+            unit = Path("target/release/build/ide-core/hash")
+            (unit / "out").mkdir(parents=True)
+            (unit / "out/libide_core-hash.rlib").write_text("compiled library")
+            (unit / "fingerprint").mkdir()
+            (unit / "fingerprint/lib-ide_core.json").write_text("{}")
+            verification.inventory("paths", report)
+            data = json.loads((report / "archive-inventory.json").read_text())
+            self.assertEqual(data["libraries"]["ide-core"]["units"], 1)
+            (unit / "out/openidea-server").write_text("stale")
+            with self.assertRaises(AssertionError):
+                verification.inventory("paths", report)
+
     def test_prepare_accepts_omitted_versions_without_a_workspace_version(self):
         with tempfile.TemporaryDirectory() as temp, chdir(temp):
             root = Path.cwd()
