@@ -11,8 +11,9 @@ import time
 import tomllib
 from pathlib import Path
 
-FORMAT = 1
+FORMAT = 2
 STATE = Path("target/.release-inputs.json")
+PROFILES = ("target/*", "target/*/*")
 
 
 def artifact_paths(workspace):
@@ -22,13 +23,24 @@ def artifact_paths(workspace):
         if package["name"] == "openidea":
             continue
         name = package["name"]
-        paths.add(f"target/**/.fingerprint/{name}-*/*")
         for target in package["targets"]:
+            crate = target["name"].replace("-", "_")
             if "lib" in target["kind"] or "proc-macro" in target["kind"]:
-                crate = target["name"].replace("-", "_")
                 paths.update(
                     [f"target/**/deps/{crate}-*.d", f"target/**/deps/lib{crate}-*"]
                 )
+                # Cargo 1.100 puts each unit under build/<package>/<hash>.
+                # Select files, not the unit's out directory: bin units share this tree.
+                paths.update(
+                    [
+                        f"target/**/build/{name}/*/out/{crate}-*.d",
+                        f"target/**/build/{name}/*/out/lib{crate}-*",
+                    ]
+                )
+                for suffix in ("dll", "dll.lib", "pdb"):
+                    paths.add(f"target/**/deps/{crate}-*.{suffix}")
+                    paths.add(f"target/**/build/{name}/*/out/{crate}-*.{suffix}")
+                fingerprint_kind = "lib"
             if "custom-build" in target["kind"]:
                 for leaf in [
                     "output",
@@ -39,6 +51,33 @@ def artifact_paths(workspace):
                     "out",
                 ]:
                     paths.add(f"target/**/build/{name}-*/{leaf}")
+                for leaf in (crate, f"{crate}.exe", f"{crate}.d", f"{crate}.pdb"):
+                    paths.add(f"target/**/build/{name}/*/out/{leaf}")
+                for leaf in (
+                    "stdout",
+                    "stderr",
+                    "root-output",
+                    "invoked.timestamp",
+                    "out",
+                ):
+                    paths.add(f"target/**/build/{name}/*/run/{leaf}")
+                fingerprint_kind = "build-script"
+                for prefix in (
+                    f"target/**/.fingerprint/{name}-*",
+                    f"target/**/build/{name}/*/fingerprint",
+                ):
+                    paths.add(f"{prefix}/run-build-script-*")
+            if set(target["kind"]) & {"lib", "proc-macro", "custom-build"}:
+                for prefix in (
+                    f"target/**/.fingerprint/{name}-*",
+                    f"target/**/build/{name}/*/fingerprint",
+                ):
+                    for stem in (
+                        fingerprint_kind,
+                        f"dep-{fingerprint_kind}",
+                        f"output-{fingerprint_kind}",
+                    ):
+                        paths.add(f"{prefix}/{stem}-*")
     return "\n".join(sorted(paths))
 
 
@@ -115,20 +154,44 @@ def packages():
     )
     if Path(metadata["target_directory"]) != Path.cwd() / "target":
         raise ValueError("release cache supports only this checkout's target directory")
+    if (
+        Path(metadata.get("build_directory", metadata["target_directory"]))
+        != Path.cwd() / "target"
+    ):
+        raise ValueError("release cache supports only this checkout's build directory")
     return [p for p in metadata["packages"] if p["id"] in metadata["workspace_members"]]
 
 
 def fingerprints(name, pattern="*"):
-    for prefix in ["*/.fingerprint", "*/*/.fingerprint"]:
-        yield from Path("target").glob(f"{prefix}/{name}-*/{pattern}")
+    for profile in PROFILES:
+        yield from Path().glob(f"{profile}/.fingerprint/{name}-*/{pattern}")
+        yield from Path().glob(f"{profile}/build/{name}/*/fingerprint/{pattern}")
+
+
+def dep_infos(package, target):
+    crate = target["name"].replace("-", "_")
+    name = package["name"]
+    for profile in PROFILES:
+        yield from Path().glob(f"{profile}/deps/{crate}-*.d")
+        if "custom-build" in target["kind"]:
+            yield from Path().glob(f"{profile}/build/{name}-*/{crate}-*.d")
+        yield from Path().glob(f"{profile}/build/{name}/*/out/{crate}-*.d")
+        # Executable units (including build scripts) no longer have hash suffixes.
+        for executable in {crate, target["name"]}:
+            yield from Path().glob(f"{profile}/build/{name}/*/out/{executable}.d")
 
 
 def anchors():
     paths = []
-    for prefix in ["*/.fingerprint", "*/*/.fingerprint"]:
-        paths.extend(Path("target").glob(f"{prefix}/*/*"))
-    for prefix in ["*/build", "*/*/build"]:
-        paths.extend(Path("target").glob(f"{prefix}/*/output"))
+    for profile in PROFILES:
+        for suffix in (
+            ".fingerprint/*/*",
+            "build/*/output",
+            "build/*/*/fingerprint/*",
+            "build/*/*/run/stdout",
+            "build/*/*/run/invoked.timestamp",
+        ):
+            paths.extend(Path().glob(f"{profile}/{suffix}"))
     return max((p.stat().st_mtime_ns for p in paths if p.is_file()), default=0)
 
 
@@ -186,32 +249,26 @@ def capture():
                         uncertain |= not changed
                     except (ValueError, KeyError, TypeError):
                         uncertain = True
-            else:
-                paths = []
-                for prefix in ["*/deps", "*/*/deps"]:
-                    paths.extend(
-                        Path("target").glob(
-                            f"{prefix}/{target['name'].replace('-', '_')}-*.d"
-                        )
+            paths = list(dep_infos(package, target))
+            if not paths:
+                kind = (
+                    "build-script"
+                    if "custom-build" in target["kind"]
+                    else (
+                        "lib"
+                        if set(target["kind"])
+                        & {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+                        else "bin"
                     )
-                if not paths:
-                    if not set(target["kind"]) & {
-                        "lib",
-                        "rlib",
-                        "dylib",
-                        "cdylib",
-                        "staticlib",
-                        "proc-macro",
-                    }:
-                        continue
-                    if not list(fingerprints(package["name"], "lib-*.json")):
-                        continue
+                )
+                if not list(fingerprints(package["name"], f"{kind}-*.json")):
+                    continue
+                uncertain = True
+            for path in paths:
+                try:
+                    dependencies.extend(source_rules(path))
+                except (ValueError, UnicodeError):
                     uncertain = True
-                for path in paths:
-                    try:
-                        dependencies.extend(source_rules(path))
-                    except (ValueError, UnicodeError):
-                        uncertain = True
             units.append(
                 {
                     "primary": primary,
@@ -230,7 +287,7 @@ def capture():
     STATE.parent.mkdir(exist_ok=True)
     STATE.write_text(json.dumps(state, sort_keys=True))
     print(
-        f"Snapshotted {len(files)} tracked inputs; unknown inputs force their compilation target dirty"
+        f"Snapshotted {len(files)} tracked inputs for {len(units)} compilation targets; unknown inputs force their compilation target dirty"
     )
 
 

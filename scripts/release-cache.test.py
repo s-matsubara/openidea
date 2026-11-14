@@ -147,21 +147,29 @@ serde_json="1"
             "--bins",
             "--message-format=json",
         )
+        self.cargo_messages = output
         fresh = {}
         self.binary_fresh = {}
+        self.build_script_fresh = {}
+        self.workspace_artifacts = set()
         for line in output.splitlines():
             item = json.loads(line)
+            if item.get("reason") == "compiler-artifact" and item[
+                "package_id"
+            ].startswith("path+"):
+                self.workspace_artifacts.update(Path(p) for p in item["filenames"])
+                if "custom-build" in item["target"]["kind"]:
+                    self.build_script_fresh[item["package_id"]] = item["fresh"]
             if (
                 item.get("reason") == "compiler-artifact"
                 and "bin" in item["target"]["kind"]
             ):
                 self.binary_fresh[item["target"]["name"]] = item["fresh"]
-            if (
-                item.get("reason") == "compiler-artifact"
-                and "lib" in item["target"]["kind"]
-            ):
+            if item.get("reason") == "compiler-artifact" and set(
+                item["target"]["kind"]
+            ) & {"lib", "proc-macro"}:
                 name = item["target"]["name"]
-                if name in ["ide_core", "cache_lib", "ide_host"]:
+                if name in ["ide_core", "cache_lib", "ide_host", "cache_macro"]:
                     fresh[name] = item["fresh"]
         RESULTS.append(
             {
@@ -169,6 +177,7 @@ serde_json="1"
                 "seconds": round(time.monotonic() - start, 3),
                 "internal_fresh": fresh,
                 "binaries_fresh": self.binary_fresh,
+                "build_scripts_fresh": self.build_script_fresh,
             }
         )
         return fresh
@@ -184,7 +193,13 @@ serde_json="1"
         self.dependencies = Path(self.temp.name) / "dependencies"
         shutil.copytree("target", self.dependencies, copy_function=shutil.copy2)
         (self.dependencies / ".release-inputs.json").unlink()
-        for profile in [p.parent for p in self.dependencies.glob("*/.fingerprint")]:
+        profiles = set()
+        for depth in ("*", "*/*"):
+            for marker in (".fingerprint", "build"):
+                profiles.update(
+                    p.parent for p in self.dependencies.glob(f"{depth}/{marker}")
+                )
+        for profile in profiles:
             for path in list(profile.iterdir()):
                 if path.name not in {"deps", "build", ".fingerprint"}:
                     if path.is_dir():
@@ -194,17 +209,29 @@ serde_json="1"
 
         # Simulate Swatinem's dependency-only target archive, independently of the workspace archive.
         for package in cache.packages():
-            for path in list(
-                self.dependencies.glob(f"*/.fingerprint/{package['name']}-*")
-            ):
-                shutil.rmtree(path)
-            for path in list(self.dependencies.glob(f"*/build/{package['name']}-*")):
-                shutil.rmtree(path)
-            for target in package["targets"]:
-                name = target["name"].replace("-", "_")
-                for pattern in [f"*/deps/{name}-*", f"*/deps/lib{name}-*"]:
-                    for path in self.dependencies.glob(pattern):
-                        path.unlink()
+            for profile in profiles:
+                for pattern in (
+                    f".fingerprint/{package['name']}-*",
+                    f"build/{package['name']}-*",
+                    f"build/{package['name']}",
+                ):
+                    for path in profile.glob(pattern):
+                        shutil.rmtree(path)
+                    self.assertFalse(list(profile.glob(pattern)))
+                for target in package["targets"]:
+                    name = target["name"].replace("-", "_")
+                    for pattern in [f"deps/{name}-*", f"deps/lib{name}-*"]:
+                        for path in profile.glob(pattern):
+                            path.unlink()
+        # Cargo JSON is independent evidence: no workspace compiler output may survive.
+        self.assertTrue(self.workspace_artifacts)
+        for artifact in self.workspace_artifacts:
+            self.assertFalse(
+                (
+                    self.dependencies / artifact.relative_to(self.root / "target")
+                ).exists(),
+                artifact,
+            )
         patterns = cache.artifact_paths(cache.packages()).splitlines()
         selected = set()
         for pattern in patterns:
@@ -228,6 +255,14 @@ serde_json="1"
         self.assertFalse(list(self.saved.rglob("libopenidea_lib*")))
         self.assertFalse((self.saved / "release/openidea").exists())
         self.assertFalse((self.saved / "release/server").exists())
+        for path in self.saved.rglob("*"):
+            self.assertNotIn(
+                path.name, {"server", "openidea", "server.exe", "openidea.exe"}
+            )
+            self.assertFalse(
+                path.name.startswith(("bin-", "dep-bin-", "output-bin-")), path
+            )
+        self.assertEqual(len(list(self.saved.rglob("*.rlib"))), 3)
 
     def checkout(self):
         # A fresh checkout of the same absolute Actions workspace, with immutable cached targets.
@@ -251,9 +286,10 @@ serde_json="1"
         self.run_command("cargo", "update", "--workspace", "--offline")
 
     def identities(self, expected):
+        profile = Path("target") / self.env.get("CARGO_BUILD_TARGET", "") / "release"
         for binary in ["openidea", "server"]:
             self.assertEqual(
-                self.run_command(str(Path("target/release", binary).resolve())).strip(),
+                self.run_command(str((profile / binary).resolve())).strip(),
                 expected,
             )
 
@@ -313,6 +349,43 @@ serde_json="1"
         cache.restore()
         self.assertTrue(all(self.build("split: verified cache, version-only").values()))
         self.assertEqual(self.binary_fresh, {"openidea": False, "server": False})
+        self.assertTrue(self.build_script_fresh)
+        self.assertTrue(all(self.build_script_fresh.values()))
+        self.identities("2026.2.13:ABbaseline")
+
+    def test_explicit_target_reuses_host_proc_macro_and_target_libraries(self):
+        self.write(
+            "crates/cache-macro/Cargo.toml",
+            '[package]\nname="cache-macro"\nedition.workspace=true\n[lib]\nproc-macro=true\n',
+        )
+        self.write(
+            "crates/cache-macro/src/lib.rs",
+            "#[proc_macro] pub fn identity(input: proc_macro::TokenStream)->proc_macro::TokenStream{input}",
+        )
+        manifest = Path("crates/cache-lib/Cargo.toml")
+        manifest.write_text(
+            manifest.read_text()
+            + '[dependencies]\ncache-macro={path="../cache-macro"}\n'
+        )
+        self.write(
+            "crates/cache-lib/src/lib.rs",
+            'pub fn value()->&\'static str {cache_macro::identity!(env!("CONTENT"))}',
+        )
+        self.run_command("git", "add", ".")
+        self.env["CARGO_BUILD_TARGET"] = next(
+            line.removeprefix("host: ")
+            for line in self.run_command("rustc", "-vV").splitlines()
+            if line.startswith("host: ")
+        )
+        self.build("explicit target with host proc macro: cold")
+        self.save()
+        self.checkout()
+        self.bump()
+        cache.restore()
+        fresh = self.build("explicit target with host proc macro: warm")
+        self.assertEqual(len(fresh), 4)
+        self.assertTrue(all(fresh.values()), fresh)
+        self.assertEqual(self.binary_fresh, {"openidea": False, "server": False})
         self.identities("2026.2.13:ABbaseline")
 
     def test_fresh_checkout_without_mtime_restore_rebuilds(self):
@@ -324,6 +397,39 @@ serde_json="1"
         self.assertFalse(
             any(self.build("split: cache without input-mtime verification").values())
         )
+
+    def test_dependency_archive_alone_has_no_workspace_reuse(self):
+        self.build("dependency isolation: cold")
+        self.save()
+        shutil.rmtree(self.saved)
+        self.saved.mkdir()
+        self.checkout()
+        self.bump()
+        cache.restore()
+        self.assertFalse(any(self.build("dependency archive only").values()))
+        self.identities("2026.2.13:ABbaseline")
+
+    def test_hosted_control_strips_workspace_and_preserves_dependency_archive(self):
+        spec = importlib.util.spec_from_file_location(
+            "control", REPO / "scripts/cargo-layout-control.py"
+        )
+        control = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(control)
+        control.REPORT = Path(self.temp.name) / "report"
+        control.DEPENDENCIES = Path(self.temp.name) / "dependencies.tar"
+        self.build("hosted dependency isolation")
+        cache.capture()
+        (control.REPORT / "seed").mkdir(parents=True)
+        (control.REPORT / "seed/cargo.jsonl").write_text(self.cargo_messages)
+        with mock.patch.object(control, "guard"):
+            control.save_dependencies()
+            expected = control.dependency_inventory()
+            self.assertTrue(expected)
+            control.reset()
+            self.run_command("tar", "-xf", str(control.DEPENDENCIES))
+            self.assertEqual(control.dependency_inventory(), expected)
+            control.assert_no_workspace()
+        self.assertFalse(any(self.build("hosted dependency archive only").values()))
 
     def test_inherited_workspace_version_still_rebuilds_even_with_mtime_restore(self):
         self.write(
@@ -426,7 +532,11 @@ serde_json="1"
             'fn main(){println!("cargo:rerun-if-changed=inputs");}',
         )
         self.build("missing dep-info: cold")
-        for path in Path("target/release/deps").glob("cache_lib-*.d"):
+        dep_info = list(Path("target").rglob("cache_lib-*.d"))
+        self.assertTrue(
+            dep_info, "must remove real dep-info, including Cargo 1.100 paths"
+        )
+        for path in dep_info:
             path.unlink()
         self.save()
         self.checkout()
@@ -438,13 +548,42 @@ serde_json="1"
         )
         self.identities("2026.2.12:new")
 
+    def test_unknown_build_script_compile_input_fails_closed(self):
+        self.write("crates/cache-lib/generated.txt", "old")
+        self.write(
+            "crates/cache-lib/build.rs",
+            'fn main(){println!("cargo:rerun-if-changed=inputs");println!("cargo:rustc-env=CONTENT={}",include_str!("generated.txt"));}',
+        )
+        self.build("build script include: cold")
+        self.save()
+        self.checkout()
+        self.write("crates/cache-lib/generated.txt", "new")
+        os.utime("crates/cache-lib/generated.txt", (1, 1))
+        cache.restore()
+        self.assertFalse(self.build("build script untracked include")["cache_lib"])
+        self.identities("2026.2.12:new")
+
+    def test_foreign_snapshot_schema_discards_fingerprints(self):
+        self.build("foreign metadata: cold")
+        self.save()
+        self.checkout()
+        state = json.loads(cache.STATE.read_text())
+        state["format"] = 1
+        cache.STATE.write_text(json.dumps(state))
+        cache.restore()
+        self.assertFalse(any(self.build("old schema: safe rebuild").values()))
+
     def test_future_cache_clock_forces_rebuild(self):
         self.build("clock skew: cold")
         self.save()
         self.checkout()
         state = json.loads(cache.STATE.read_text())
-        state["anchor"] = time.time_ns() + 10_000_000_000
+        state["anchor"] = 0
         cache.STATE.write_text(json.dumps(state))
+        future = time.time_ns() + 10_000_000_000
+        fingerprint = next(cache.fingerprints("cache-lib", "lib-*.json"))
+        os.utime(fingerprint, ns=(future, future))
+        self.assertEqual(cache.anchors(), future)
         cache.restore()
         self.assertFalse(any(self.build("future cache anchor: safe rebuild").values()))
         self.identities("2026.2.12:ABbaseline")

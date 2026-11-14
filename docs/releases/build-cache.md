@@ -56,6 +56,70 @@ workspace cache. Swatinem separately restores third-party dependencies. Its key
 also includes runner-image/SDK environment, without a per-commit suffix.
 All builds still run Cargo; a cache hit never skips the build or validation.
 
+### Cargo 1.100 layout and cache format 2
+
+[Cargo 1.100 changed its intermediate build layout](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+([Cargo PR #17354](https://github.com/rust-lang/cargo/pull/17354)). Libraries,
+fingerprints and text dep-info now live under
+`target/<profile>/build/<package>/<unit>/{out,fingerprint}` (and the equivalent
+target-triple directory). Build-script execution output moved to the unit's
+`run` directory. Executable copies in `out` no longer have hash suffixes.
+
+The [v2026.2.14 x64 musl server job](https://github.com/s-matsubara/openidea/actions/runs/43573517718/job/132382773877)
+used Rust/Cargo 1.100.0, restored 748,307,975 bytes of dependency cache and hit a
+295,716-byte workspace archive. It reported 6,492 reused input mtimes, yet rebuilt
+all 36 internal libraries in an 8m 23s build and saved only 295,803 bytes. This
+was a cache hit without internal artifacts, not a normal cold miss: format 1
+only selected the pre-1.100 paths. Its capture also missed new fingerprints and
+dep-info, recording no compilation units in a minimal real-Cargo reproduction.
+
+Format 2 supports both layouts in artifact selection, fingerprints, dep-info,
+build-script inputs, clock anchors and fingerprint invalidation. It selects
+library/proc-macro files and build-script outputs individually. It does not
+cache bin-unit fingerprints or executable copies in the new `out` directories;
+app/server/plugin binaries still rebuild. Build-script **compilation** dep-info
+is checked as well as execution `rerun-if-changed` paths. Nondefault Cargo build
+directories are rejected. The versioned key and snapshot schema reject format 1;
+the first format 2 production build must seed a new archive. Toolchain, image,
+profile, target, root and dependency compatibility boundaries remain intact.
+
+The fixture's simulated dependency archive now independently removes both
+layouts and checks Cargo's actual workspace output filenames. Previously it
+could leave the new workspace directories in the dependency archive, falsely
+passing a reuse test when the private archive contained only the snapshot.
+Missing-dep-info tests require finding and deleting real files. Hosted archive
+inventory requires artifacts and fingerprints for **every** built library and
+reports library counts and bytes; snapshot-only archives fail verification.
+
+`verify-cargo-cache-layout.yml` is a non-distribution, read-only-permission
+experiment on one Ubuntu 22.04 runner, Rust/Cargo 1.100.0, the actual x64 musl
+server target, Thin LTO and incremental=0. It builds a seed, saves/restores the
+workspace archive through Actions cache, independently strips all workspace
+artifacts from a single immutable dependency tar, and recreates tracked sources
+and target before each measured arm. Both arms apply the same app-only version
+increment from the same commit, root, toolchain and runner image. Dependency
+contents/modes/nanosecond mtimes and archive SHA-256 must agree; all external
+compiler units must be fresh, the first arm must rebuild all internal libraries,
+and the second must reuse all of them while rebuilding the correct-version
+server. Only JSON diagnostics are uploaded, never distribution executables.
+
+The expensive job runs only for this fork's `fix/cargo-1100-release-cache` PR
+when its head commit contains the exact trailer `Cache-Control: cargo-1100-v2`.
+Report-only commits without that marker skip measurement. Its unique concurrency
+group and private cache namespace cannot cancel or mutate Release runs. This
+workflow neither dispatches releases nor writes tags/main. Historical 1.99
+measurements below describe their original configurations; they are not proof
+of the new layout implementation's performance. macOS desktop/GUI, signing,
+notarization and updater distribution are outside this Linux server experiment.
+
+Local verification used actual Cargo 1.99.1 and 1.100.0 (20 cache experiments on
+each), including explicit-target host proc-macro reuse, build-script compilation
+and rerun inputs, dependency-only negative control, backdated edits, directory
+deletion, missing dep-info/snapshot, foreign schema, clock skew and environment
+invalidation. Seven hosted-validator tests include rejecting a snapshot-only
+archive. These compiler-freshness tests are stronger than static glob checks,
+but the small fixture is not a complete application or production server build.
+
 ## Content verification, not commit timestamps
 
 [Stable Cargo uses source/dep-info mtimes](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html),
