@@ -28,7 +28,7 @@ import {
   type RangeSet,
   type Transaction,
 } from "@codemirror/state";
-import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { GutterMarker, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
@@ -37,6 +37,9 @@ import { cornerInset } from "@/editor/core/cm/cornerInset";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
+
+/** Document-wide syntax and semantic marks for sticky headers outside the viewport. */
+export const stickyHighlights = Facet.define<DecorationSet>();
 
 export interface EditorDocContext {
   doc: number;

@@ -9,6 +9,7 @@ import { Prec, StateEffect, StateField, type EditorState } from "@codemirror/sta
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { tags as t, type Tag } from "@lezer/highlight";
+import { stickyHighlights } from "@/editor/api";
 import { parameter } from "./highlight";
 import type { SyntaxHighlightKind, SyntaxHighlights } from "@/platform/ipc";
 
@@ -64,5 +65,5 @@ export const syntaxHighlightField = StateField.define<DecorationSet>({
     for (const e of tr.effects) if (e.is(setSyntaxHighlights)) return decorations(tr.state, e.value);
     return tr.docChanged ? deco.map(tr.changes) : deco;
   },
-  provide: (f) => Prec.high(EditorView.decorations.from(f)),
+  provide: (f) => Prec.high([EditorView.decorations.from(f), stickyHighlights.from(f)]),
 });

@@ -16,6 +16,7 @@ import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
 import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { stickyHighlights } from "@/editor/api";
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
@@ -329,5 +330,9 @@ export function semanticExtension(): Extension {
   // `Prec.high`, and at equal precedence the later source ends up outside —
   // its inner span then re-set the colour (a field's `variableName` grey hid
   // `cm-sem-property`).
-  return [semanticField, semanticPlugin, Prec.highest(EditorView.decorations.from(semanticField))];
+  return [
+    semanticField,
+    semanticPlugin,
+    Prec.highest([EditorView.decorations.from(semanticField), stickyHighlights.from(semanticField)]),
+  ];
 }

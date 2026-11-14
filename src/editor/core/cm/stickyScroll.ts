@@ -4,10 +4,11 @@
  * backend folding ranges, or from the syntax tree when there are none.
  * Clicking a sticky line scrolls to it, the caret where it was clicked.
  */
-import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { EditorSelection, Facet, RangeSet, RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
+import { stickyHighlights } from "@/editor/api";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
@@ -51,34 +52,33 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
 
 function renderLineContent(state: EditorState, lineNo: number, target: HTMLElement) {
   const line = state.doc.line(lineNo);
-  const text = line.text.length > 400 ? line.text.slice(0, 400) : line.text;
-  const end = line.from + text.length;
+  const end = Math.min(line.to, line.from + 400);
   const tree = syntaxTree(state);
-  let pos = line.from;
-  const push = (to: number, cls: string) => {
-    if (to <= pos) return;
-    const s = state.doc.sliceString(pos, to);
-    if (cls) {
-      const span = document.createElement("span");
-      span.className = cls;
-      span.textContent = s;
-      target.appendChild(span);
-    } else target.appendChild(document.createTextNode(s));
-    pos = to;
-  };
+  const syntax = new RangeSetBuilder<Decoration>();
+  // Lezer's editor decorations cover the viewport. Highlight the pinned line directly.
   if (tree.length >= end) {
     highlightTree(
       tree,
       openideaHighlightStyle,
-      (from, to, cls) => {
-        push(Math.max(from, pos), "");
-        push(Math.min(to, end), cls);
-      },
+      (from, to, cls) => syntax.add(Math.max(from, line.from), Math.min(to, end), Decoration.mark({ class: cls })),
       line.from,
       end,
     );
   }
-  push(end, "");
+  RangeSet.spans([...state.facet(stickyHighlights), syntax.finish()], line.from, end, {
+    span(from, to, marks) {
+      let parent = target;
+      // Match CodeMirror's nesting so higher-precedence marks set the final style.
+      for (let i = marks.length - 1; i >= 0; i--) {
+        const span = document.createElement("span");
+        span.className = marks[i]!.spec.class;
+        parent.appendChild(span);
+        parent = span;
+      }
+      parent.appendChild(document.createTextNode(state.doc.sliceString(from, to)));
+    },
+    point() {},
+  });
 }
 
 /** Character offset in a rendered sticky line closest to `clientX`. */
@@ -137,8 +137,11 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
-  /** Text and syntax tree the rows were rendered from (re-render when either changes). */
-  private renderedFrom: { texts: string[]; tree: unknown } | null = null;
+  private renderedFrom: {
+    texts: string[];
+    tree: ReturnType<typeof syntaxTree>;
+    highlights: readonly DecorationSet[];
+  } | null = null;
   private gutterWidth = 0;
   private numberLeft = 0;
   private scheduled = false;
@@ -165,6 +168,7 @@ class StickyScroll {
       u.viewportChanged ||
       u.geometryChanged ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
+      u.startState.facet(stickyHighlights) !== u.state.facet(stickyHighlights) ||
       u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
     )
       this.schedule();
@@ -212,12 +216,14 @@ class StickyScroll {
         const state = this.view.state;
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
         const tree = syntaxTree(state);
+        const highlights = state.facet(stickyHighlights);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
           lines.every((n, i) => n === this.lines[i]) &&
           !!prev &&
           prev.tree === tree &&
+          prev.highlights === highlights &&
           texts.every((t, i) => t === prev.texts[i]);
         if (!lines.length) {
           this.dom.style.display = "none";
@@ -229,7 +235,7 @@ class StickyScroll {
         const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, tree };
+          this.renderedFrom = { texts, tree, highlights };
           this.gutterWidth = gutterWidth;
           this.numberLeft = numberLeft;
           const frag = document.createDocumentFragment();
@@ -249,7 +255,7 @@ class StickyScroll {
             inner.className = "cm-openidea-stickyInner";
             inner.style.display = "inline-block";
             inner.style.paddingLeft = `${LINE_INSET}px`;
-            renderLineContent(this.view.state, n, inner);
+            renderLineContent(state, n, inner);
             text.appendChild(inner);
             row.append(num, text);
             frag.appendChild(row);

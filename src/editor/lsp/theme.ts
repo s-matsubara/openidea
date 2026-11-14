@@ -437,7 +437,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-property": semanticStyle("python-property", "property"),
   ".cm-sem-python-type-parameter": semanticStyle("python-type-parameter", "type"),
   // Deprecation wins over role effects, including static fields.
-  ".cm-content .cm-sem-deprecated, .cm-content .cm-sem-deprecated *": { textDecoration: "line-through" },
+  ":is(.cm-content, .cm-openidea-stickyInner) .cm-sem-deprecated, :is(.cm-content, .cm-openidea-stickyInner) .cm-sem-deprecated *":
+    { textDecoration: "line-through" },
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
   // syntax highlighter's span inside.
   ...Object.fromEntries(
