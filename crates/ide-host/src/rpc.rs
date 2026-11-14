@@ -318,7 +318,7 @@ struct ServerHandler {
 
 pub fn server_info() -> ServerInfo {
     ServerInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ide_core::version::app_version().into(),
         protocol: PROTOCOL_VERSION,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),

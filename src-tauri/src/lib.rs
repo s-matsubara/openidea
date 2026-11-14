@@ -71,6 +71,7 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ide_core::version::set_app_version(env!("CARGO_PKG_VERSION"));
     ide_workspace::process::mark_start();
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]

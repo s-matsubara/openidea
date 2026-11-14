@@ -38,12 +38,12 @@ describe("versions", () => {
     expect(() => parseVersion(undefined)).toThrow();
   });
 
-  it("changes only the workspace version in Cargo.toml", () => {
+  it("changes only the application package version in Cargo.toml", () => {
     const toml = [
       "[workspace]",
       'members = ["crates/*"]',
       "",
-      "[workspace.package]",
+      "[package]",
       'authors = ["a"]',
       'version = "0.1.37"',
       'edition = "2024"',

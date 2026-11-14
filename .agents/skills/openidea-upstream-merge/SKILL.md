@@ -69,6 +69,11 @@ risk warrants it.
 
 - Fork tags use vYYYY.x.x. Inspect established version history; choose an unused,
   increasing version consistent with that history and explain the choice.
+- Preserve the stable root workspace component version and explicit application
+  version in `src-tauri/Cargo.toml`; do not renumber all internal crates on imports.
+  Preserve runtime public-version initialization and the content-verified cache
+  policy (`docs/releases/build-cache.md`). Audit new upstream public uses of
+  `CARGO_PKG_VERSION` so they do not expose the stable component baseline.
 - Use `pnpm release:prepare <version>` to align manifests, Cargo.lock, and the
   released plugin API snapshot. Commit the version change and create the requested
   new tag on the final commit. Never retarget an existing tag.

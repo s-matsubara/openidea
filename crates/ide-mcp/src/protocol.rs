@@ -164,7 +164,7 @@ impl Session<'_> {
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "OpenIDEA", "version": ide_core::version::app_version() },
             "instructions": format!(
                 "Built-in OpenIDEA tools for {about}: they see the files and editors the IDE has open."
             ),

@@ -1,0 +1,301 @@
+[
+  {
+    "scenario": "source: cold",
+    "seconds": 6.08,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "backdated changed source",
+    "seconds": 2.772,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "changed source: subsequent unchanged build",
+    "seconds": 0.023,
+    "internal_fresh": {
+      "cache_lib": true,
+      "ide_core": true,
+      "ide_host": true
+    },
+    "binaries_fresh": {
+      "openidea": true,
+      "server": true
+    }
+  },
+  {
+    "scenario": "directory: cold",
+    "seconds": 6.257,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "build.rs directory deletion",
+    "seconds": 2.855,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "split: cold control",
+    "seconds": 5.633,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "split: cache without input-mtime verification",
+    "seconds": 2.9,
+    "internal_fresh": {
+      "ide_core": false,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "clock skew: cold",
+    "seconds": 5.702,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "future cache anchor: safe rebuild",
+    "seconds": 2.629,
+    "internal_fresh": {
+      "ide_core": false,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "inherited: cold",
+    "seconds": 5.539,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "inherited: version-only with verified cache",
+    "seconds": 2.624,
+    "internal_fresh": {
+      "ide_core": false,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "missing dep-info: cold",
+    "seconds": 5.804,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "cached library without text dep-info",
+    "seconds": 2.67,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "missing metadata: cold",
+    "seconds": 6.169,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "missing metadata: safe rebuild",
+    "seconds": 2.806,
+    "internal_fresh": {
+      "ide_core": false,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "environment: cold",
+    "seconds": 5.299,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "rerun-if-env-changed",
+    "seconds": 2.42,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "unknown input: cold",
+    "seconds": 5.233,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "unknown generated input",
+    "seconds": 2.665,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "unknown include: cold",
+    "seconds": 5.825,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "unknown include_str input",
+    "seconds": 2.379,
+    "internal_fresh": {
+      "ide_core": true,
+      "cache_lib": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "split: cold",
+    "seconds": 6.008,
+    "internal_fresh": {
+      "cache_lib": false,
+      "ide_core": false,
+      "ide_host": false
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  },
+  {
+    "scenario": "split: verified cache, version-only",
+    "seconds": 2.7,
+    "internal_fresh": {
+      "cache_lib": true,
+      "ide_core": true,
+      "ide_host": true
+    },
+    "binaries_fresh": {
+      "openidea": false,
+      "server": false
+    }
+  }
+]

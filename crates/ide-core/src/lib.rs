@@ -27,6 +27,7 @@ pub mod task;
 pub mod text;
 pub mod tool_path;
 pub mod updates;
+pub mod version;
 pub mod version_managers;
 pub mod workflow_settings;
 pub mod wsl;

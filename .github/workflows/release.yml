@@ -61,7 +61,7 @@ jobs:
           import json, os, tomllib
           tag = os.environ["TAG"]
           versions = [json.load(open(p))["version"] for p in ["package.json", "src-tauri/tauri.conf.json"]]
-          versions.append(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])
+          versions.append(tomllib.load(open("src-tauri/Cargo.toml", "rb"))["package"]["version"])
           if any(f"v{version}" != tag for version in versions):
               raise SystemExit(f"Tag {tag} does not match app versions: {versions}")
           PY
@@ -170,7 +170,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
-        with: { key: "${{ matrix.target }}" }
+        with:
+          key: "${{ matrix.target }}"
+          env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET OPENIDEA_OFFICIAL_PLUGIN_KEYS"
+      - id: workspace-cache
+        uses: ./.github/actions/release-cache
+        with: { scope: desktop, target: "${{ matrix.target }}" }
       - name: Linux deps
         if: runner.os == 'Linux'
         run: |
@@ -240,6 +245,14 @@ jobs:
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
           gh release upload $env:TAG $asset "$asset.sha256" --clobber
+      - name: Snapshot compiled workspace inputs
+        run: python3 scripts/release-cache.py capture
+      - uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.workspace-cache.outputs.paths }}
+          key: ${{ steps.workspace-cache.outputs.key }}
+      - name: Remove dependency-cache snapshot
+        run: rm -f target/.release-inputs.json
 
   # The remote development server, per host platform it can run on. The desktop
   # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
@@ -263,7 +276,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
-        with: { key: "server-${{ matrix.target }}" }
+        with:
+          key: "server-${{ matrix.target }}"
+          env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
+      - id: workspace-cache
+        uses: ./.github/actions/release-cache
+        with: { scope: server, target: "${{ matrix.target }}" }
       - name: musl toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -282,6 +300,14 @@ jobs:
           gzip -9 -c target/${{ matrix.target }}/release/openidea-server > "$ASSET"
           if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+      - name: Snapshot compiled workspace inputs
+        run: python3 scripts/release-cache.py capture
+      - uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.workspace-cache.outputs.paths }}
+          key: ${{ steps.workspace-cache.outputs.key }}
+      - name: Remove dependency-cache snapshot
+        run: rm -f target/.release-inputs.json
 
   # The official plugins, signed, and the marketplace index released apps read
   # (releases/latest/download/plugins-index.json). They are not in the
@@ -313,7 +339,13 @@ jobs:
         with: { targets: wasm32-wasip2 }
       - uses: Swatinem/rust-cache@v2
         if: steps.key.outputs.skip != 'true'
-        with: { key: release-plugins }
+        with:
+          key: release-plugins
+          env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
+      - id: workspace-cache
+        uses: ./.github/actions/release-cache
+        if: steps.key.outputs.skip != 'true'
+        with: { scope: plugins, target: native-wasm32-wasip2 }
       - uses: pnpm/action-setup@v5
         if: steps.key.outputs.skip != 'true'
         with: { version: 11 }
@@ -355,6 +387,17 @@ jobs:
           gzip -9 -c "$tool" > "$out/openidea-plugin-linux-x86_64.gz"
           gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" \
             "$out/openidea-plugin-linux-x86_64.gz" --clobber
+      - name: Snapshot compiled workspace inputs
+        if: steps.key.outputs.skip != 'true'
+        run: python3 scripts/release-cache.py capture
+      - uses: actions/cache/save@v5
+        if: steps.key.outputs.skip != 'true'
+        with:
+          path: ${{ steps.workspace-cache.outputs.paths }}
+          key: ${{ steps.workspace-cache.outputs.key }}
+      - name: Remove dependency-cache snapshot
+        if: steps.key.outputs.skip != 'true'
+        run: rm -f target/.release-inputs.json
 
   # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
   # Fails when a platform is missing, so a release never ships a manifest without it.

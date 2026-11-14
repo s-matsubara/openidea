@@ -155,7 +155,7 @@ test("all app manifests must match the tag before release creation", () => {
     mkdirSync(join(dir, "src-tauri"));
     writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "2026.2.11" }));
     writeFileSync(join(dir, "src-tauri/tauri.conf.json"), JSON.stringify({ version: "2026.2.11" }));
-    writeFileSync(join(dir, "Cargo.toml"), '[workspace.package]\nversion = "2026.2.11"\n');
+    writeFileSync(join(dir, "src-tauri/Cargo.toml"), '[package]\nversion = "2026.2.11"\n');
     const run = () =>
       spawnSync("bash", ["-c", block("- name: Tag matches app versions", "run")], {
         cwd: dir,
@@ -163,7 +163,7 @@ test("all app manifests must match the tag before release creation", () => {
         encoding: "utf8",
       });
     assert.equal(run().status, 0);
-    for (const file of ["package.json", "src-tauri/tauri.conf.json", "Cargo.toml"]) {
+    for (const file of ["package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"]) {
       const path = join(dir, file);
       const original = readFileSync(path, "utf8");
       writeFileSync(path, original.replaceAll("2026.2.11", "2026.2.12"));

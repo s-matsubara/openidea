@@ -2602,7 +2602,7 @@ fn with_details(message: String, data: Option<&Value>) -> String {
 }
 
 pub(crate) fn client_info() -> Value {
-    json!({ "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") })
+    json!({ "name": "OpenIDEA", "version": ide_core::version::app_version() })
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
