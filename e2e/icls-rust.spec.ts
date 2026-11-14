@@ -4,6 +4,9 @@ import { expect, test } from "./fixtures";
 const xml = process.env.OPENIDEA_RUST_ICLS_FIXTURE
   ? readFileSync(process.env.OPENIDEA_RUST_ICLS_FIXTURE, "utf8")
   : `<scheme name="Iceberg Rust" parent_scheme="Darcula"><attributes>
+      <option name="TEXT"><value><option name="FOREGROUND" value="c6c8d0"/></value></option>
+      <option name="DEFAULT_OPERATION_SIGN"><value><option name="FOREGROUND" value="889fc2"/></value></option>
+      <option name="org.rust.OPERATORS"><value><option name="FOREGROUND" value="889fc2"/></value></option>
       <option name="org.rust.STRUCT"><value><option name="FOREGROUND" value="6fafbd"/></value></option>
       <option name="org.rust.TYPE_PARAMETER"><value><option name="FOREGROUND" value="b7c685"/></value></option>
       <option name="org.rust.LIFETIME"><value><option name="FOREGROUND" value="b7c685"/><option name="FONT_TYPE" value="2"/></value></option>
@@ -34,13 +37,14 @@ test("ICLS applies Rust colours with and without rust-analyzer tokens", async ({
           colorScheme: "custom-rust",
           customSchemes: { "custom-rust": parseIcls(xml).scheme },
           semanticHighlighting: false,
+          rainbowBrackets: false,
         },
       },
     });
     const backend = docBackend();
     backend.files.set(
       "/dev/acme-api/palette.rs",
-      "struct Sample<'a, T> { value: &'a T }\nfn check<'a, T>(item: Sample<'a, T>) { assert!(true); }\n",
+      "struct Sample<'a, T> { value: &'a T }\nfn check<'a, T>(item: Sample<'a, T>) { assert!(true); let _ = [item]; }\n",
     );
     const tokens = new Promise<void>((resolve) => {
       window.addEventListener("test:rust-semantic-tokens", () => resolve(), { once: true });
@@ -74,5 +78,12 @@ test("ICLS applies Rust colours with and without rust-analyzer tokens", async ({
     "rgb(183, 198, 133)",
   );
   await expect(rust.locator(".cm-sem-rust-macro.cm-sem-builtin")).toHaveCSS("color", "rgb(226, 164, 120)");
+  for (const bracket of ["(", ")", "[", "]", "{", "}"]) {
+    await expect(rust.locator(".cm-content").getByText(bracket, { exact: true }).first()).toHaveCSS(
+      "color",
+      "rgb(198, 200, 208)",
+    );
+  }
+  await expect(rust.locator(".cm-sem-rust-operator").filter({ hasText: "&" })).toHaveCSS("color", "rgb(136, 159, 194)");
   await rust.screenshot({ path: info.outputPath("rust-icls.png"), animations: "disabled" });
 });

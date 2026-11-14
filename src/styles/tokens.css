@@ -1560,8 +1560,9 @@ html {
   --db-connected: var(--success);
   --db-connected-ring: var(--success);
 }
-/* Go uses the editor foreground for delimiters. */
-.cm-editor[data-language="Go"] {
+/* Go and Rust use the editor foreground for brackets. */
+.cm-editor[data-language="Go"],
+.cm-editor[data-language="Rust"] {
   --syn-bracket: var(--fg-editor);
 }
 /* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
