@@ -63,6 +63,7 @@ import styles from "./MergeEditor.module.css";
 
 import { JjMergeEditor } from "./JjMergeEditor";
 import type { MergeData } from "./mergeKind";
+import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
 const NOTHING_LEFT: MergeSummary = {
@@ -498,7 +499,7 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
         const { from, to } = view.state.selection.main;
         if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
         else if (id === "paste") {
-          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          const text = await readClipboardPlainText().catch(() => undefined);
           if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
         } else {
           await copyText(view.state.sliceDoc(from, to));

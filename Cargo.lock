@@ -4267,18 +4267,22 @@ dependencies = [
 name = "ide-db"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "bb8",
  "blake3",
  "dirs 7.0.0",
  "dunce",
+ "flate2",
  "futures",
  "ide-core",
  "ide-http",
  "ide-ssh",
  "notify",
+ "open",
  "oracledb",
  "parking_lot 0.13.0",
  "reqwest",
+ "rsa",
  "rustls",
  "serde",
  "serde_json",
@@ -4292,6 +4296,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -4416,6 +4421,7 @@ dependencies = [
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
+ "ide-web",
  "ide-workspace",
  "ignore",
  "jsonschema",
@@ -4574,6 +4580,7 @@ dependencies = [
  "tree-sitter-nix",
  "tree-sitter-ocaml",
  "tree-sitter-php",
+ "tree-sitter-prisma-io",
  "tree-sitter-proto",
  "tree-sitter-python",
  "tree-sitter-ruby",
@@ -4700,6 +4707,7 @@ name = "ide-remote"
 version = "0.0.0"
 dependencies = [
  "dunce",
+ "futures",
  "globset",
  "ide-core",
  "ide-run",
@@ -8724,7 +8732,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sqlx"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -8736,7 +8744,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8771,7 +8779,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8783,7 +8791,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros-core"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "cfg-if",
  "dotenvy",
@@ -8807,7 +8815,7 @@ dependencies = [
 [[package]]
 name = "sqlx-mysql"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -8832,7 +8840,7 @@ dependencies = [
 [[package]]
 name = "sqlx-postgres"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "atoi",
  "base64 0.22.1",
@@ -8866,7 +8874,7 @@ dependencies = [
 [[package]]
 name = "sqlx-sqlite"
 version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+source = "git+https://github.com/l0ng-ai/sqlx?rev=9894985a1babc7e6bc0437da4fd43e3143184073#9894985a1babc7e6bc0437da4fd43e3143184073"
 dependencies = [
  "atoi",
  "flume",
@@ -10419,6 +10427,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-prisma-io"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c35912d65a6adb07f781db46d843bf0464935e267da6ed192705516adafc7c24"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-proto"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10460,9 +10478,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-scala"
-version = "0.26.12"
+version = "0.26.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f2ff4a84ea2c999faff46abd37dd6ffdd1b3c1cf566696c45ef7432d3919802"
+checksum = "3a50564a8d499f956174da3bdff36b32d99c3cf713cd8e44337a61f8fc46b60d"
 dependencies = [
  "cc",
  "tree-sitter-language",

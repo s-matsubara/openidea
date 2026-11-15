@@ -559,10 +559,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [status, root, groupByDir, lists, repos, groupByStaging],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -717,6 +718,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       {mode !== "dialog" && <OperationBanner />}
       <div
         className={styles.treeWrap}
+        data-changes-tree={mode}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
@@ -873,6 +875,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     <T>partial</T>
                   </span>
                 )}
+                {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
               </span>
             );
@@ -968,12 +971,21 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
-export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+export function CommitMessageField({
+  included,
+  runner,
+  autoFocus = false,
+}: {
+  included: number;
+  runner: CommitRunner;
+  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  autoFocus?: boolean;
+}) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const historyRef = useRef<HTMLButtonElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
@@ -1004,10 +1016,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
 
   return (
     <>
-      <div className={styles.commitBar}>
+      <div ref={barRef} className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         <IconButton
-          ref={historyRef}
           icon="history"
           title="Commit Message History"
           size="small"
@@ -1019,8 +1030,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
         <Menu
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          anchor={historyRef}
-          placement="bottom-end"
+          anchor={barRef}
+          placement="top-start"
+          iconColumn={false}
           aria-label="Recent commit messages"
           items={history.map((m, i) => ({
             id: `h${i}`,
@@ -1041,6 +1053,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
       </div>
       <textarea
         ref={ref}
+        data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
         style={{ ["--guide" as string]: `${margin}ch` }}

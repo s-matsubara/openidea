@@ -175,6 +175,7 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   SEARCH_RESULT_ATTRIBUTES: [
     ["FOREGROUND", "--fg-editor-search-match"],
     ["BACKGROUND", "--bg-search-match"],
+    ["BACKGROUND", "--bg-search-result"],
   ],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [
     ["FOREGROUND", "--fg-editor-search-match-current"],

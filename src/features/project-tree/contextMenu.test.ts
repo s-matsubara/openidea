@@ -222,8 +222,27 @@ describe("project view context menu", () => {
     expect(sub(contextMenuItems([node("/p/ordinary.txt")]), "Git")).toBeDefined();
     expect(sub(contextMenuItems([node("/p/jj/nested-git/file.txt")]), "Git")).toBeDefined();
     useProject.setState({ project: { ...useProject.getState().project!, isGit: false } });
-    useVcs.setState({ available: true });
-    expect(sub(contextMenuItems([node("/p/jj/nested-git/file.txt")]), "Git")).toBeDefined();
+    setContext("vcsAvailable", true);
+    try {
+      expect(sub(contextMenuItems([node("/p/jj/nested-git/file.txt")]), "Git")).toBeDefined();
+      expect(sub(contextMenuItems([node("/p/jj/file.txt")]), "Git")).toBeUndefined();
+    } finally {
+      clearContext("vcsAvailable");
+    }
+  });
+
+  it("offers Import Module from Existing Sources on the project root only", () => {
+    const off = registerActions([
+      { id: "maven.importExternal", title: "Import Module from Existing Sources", run: () => undefined },
+    ]);
+    try {
+      expect(labels(contextMenuItems([node(ROOT, true, true)]))).toContain("Import Module from Existing Sources");
+      expect(labels(contextMenuItems([node(`${ROOT}/src`, true)]))).not.toContain(
+        "Import Module from Existing Sources",
+      );
+    } finally {
+      off();
+    }
   });
 
   it("keeps the project root menu short and disables what cannot apply", () => {
