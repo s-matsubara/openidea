@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "2026.2.14",
+  "version": "2026.2.15",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
