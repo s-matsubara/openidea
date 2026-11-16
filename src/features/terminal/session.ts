@@ -4,6 +4,7 @@
  * session survives its tool window being hidden or its pane being re-mounted.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -18,6 +19,7 @@ import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -29,6 +31,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
+  readLinkColor,
   readSearchDecorations,
   readTerminalTheme,
   remeasureWhenFontsLoad,
@@ -212,7 +215,8 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
-  private readonly opts: SessionOptions;
+  private readonly linkHighlights: LinkHighlightController;
+  private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
@@ -237,6 +241,15 @@ export class TerminalSession {
   private readonly ime = new ImeCommitGate(() => {
     if (this.term.textarea) this.term.textarea.value = "";
   });
+
+  /**
+   * Hands the session to another owner (a terminal tab moved to the editor): its
+   * snapshots, focus and exit go there from now on. The PTY keeps running.
+   */
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+    this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
+    this.opts.onChange(this.key, this.snapshot);
+  }
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -358,7 +371,8 @@ export class TerminalSession {
     this.selectionHighlights = installSelectionHighlights(this.term, {
       isSearchSelection: () => this.searchSelection,
     });
-    this.disposables.push(this.selectionHighlights);
+    this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
+    this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
@@ -427,6 +441,7 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
+    this.linkHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -469,17 +484,14 @@ export class TerminalSession {
     const text = line.translateToString(true);
     const found = findTerminalLinks(text);
     if (found.length === 0) return undefined;
-    return found.map((l) => ({
-      text: l.text,
-      range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-      decorations: { underline: true, pointerCursor: true },
-      activate: (event: MouseEvent) => {
+    return found.map((l) =>
+      xtermLink(this.term, line, y, l, (event) => {
         // Plain click opens; a click that ends a drag-selection never reaches here.
         event.preventDefault();
         if (l.kind === "url") void openExternal(l.url);
         else void openFileLink(l, this.snapshot.cwd);
-      },
-    }));
+      }),
+    );
   }
 
   /** Moves the host into `container` and fits / starts once the pane has a size. */
@@ -778,9 +790,27 @@ export class TerminalSession {
     this.term.clearSelection();
   }
 
+  /** The last `max` lines down to the cursor (wrapped rows joined), for an agent's context. */
+  recentOutput(max = 80): { title: string; text: string } {
+    const buffer = this.term.buffer.active;
+    const end = buffer.baseY + buffer.cursorY;
+    const lines: string[] = [];
+    for (let y = Math.max(0, end - max + 1); y <= end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+    while (lines.length && !lines[0]!.trim()) lines.shift();
+    return { title: this.snapshot.appTitle ?? this.snapshot.title, text: lines.join("\n") };
+  }
+
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
+    noteCopySource(text, { kind: "terminal", title: this.snapshot.appTitle ?? this.snapshot.title });
     void writeClipboardText(text).catch(() => undefined);
     return true;
   }
@@ -810,6 +840,7 @@ export class TerminalSession {
   applyTheme() {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
+    this.linkHighlights.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */

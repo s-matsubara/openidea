@@ -6,13 +6,15 @@ import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { projectFolder, useProject } from "@/platform/project";
+import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationLookup,
   provideRunOutput,
   registerMenuGroup,
   registerOverlay,
@@ -35,15 +37,18 @@ import {
 } from "./contextRun";
 import { runWithExecutor } from "./executors";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
+import { attachesToChild, debugAttachingToChild } from "./pluginAttach";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
 import { registerGoActions } from "./goActions";
+import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
+import { runDirectory } from "./navigate";
 import {
   cleanupRemovedProject,
   registerRunServiceActions,
@@ -61,6 +66,7 @@ import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
+import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
@@ -86,6 +92,7 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
+  stopRunningInstances,
   startSampleOutput,
   stopSession,
   subscribeOutput,
@@ -94,9 +101,11 @@ import {
   isLive,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
+import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND, showUnityAttach } from "./unity";
 
 function trackFailedTestSelection(): () => void {
   let signature = "";
@@ -163,10 +172,43 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   if (remoteDebugBlocked(config)) return;
+  if (config.allowParallel) return debugLaunch(config, chain, show);
+  // Clicked again while it is still preparing (building): that launch goes on, no second one.
+  if (debugLaunching.has(config.id)) return;
+  debugLaunching.add(config.id);
+  let stopWatching = () => {};
+  let launched: Promise<void> | null = null;
+  try {
+    if (!(await stopRunningInstances(config))) return;
+    // From its session on, a further Debug asks to stop it (`stopRunningInstances`).
+    const debugging = new Promise<void>((resolve) => {
+      stopWatching = useDebugRunSessions.subscribe((s) => {
+        if (s.serviceSessions.some((d) => d.config.id === config.id && d.status !== "terminated")) resolve();
+      });
+    });
+    launched = debugLaunch(config, chain, show);
+    await Promise.race([launched.catch(() => {}), debugging]);
+  } finally {
+    stopWatching();
+    debugLaunching.delete(config.id);
+  }
+  await launched;
+}
+
+/** Configurations whose Debug is between the click and the debugger's session. */
+const debugLaunching = new Set<string>();
+
+async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
   if (!(await prepareLaunch(config, chain, show))) return;
+  if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
+    return;
+  }
+  // A plugin configuration whose debugger attaches to a process the run starts.
+  if (attachesToChild(config) && getAction("debug.attach")) {
+    await debugAttachingToChild(config, { show, prepared: true });
     return;
   }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
@@ -174,7 +216,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
-  // A single compiled file (rustc / clang): build with debug info, then debug the binary.
+  // A single compiled file (rustc / clang / zig): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
     await launchProduced(compiled, true, show);
@@ -348,7 +390,7 @@ function useRunningCount(): number | null {
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
+  /(?:^|\/)(?:\.openidea\/run(?:\.local)?\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -381,6 +423,7 @@ export function activate(): () => void {
       icon: "toolwindow-run",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 5,
       component: lazyComponent(() => import("./RunView").then((m) => m.RunView)),
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
@@ -391,6 +434,7 @@ export function activate(): () => void {
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
+    registerRunTabActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
@@ -442,6 +486,7 @@ export function activate(): () => void {
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
+    registerEditorContribution({ id: "run.launchSettings", order: 58, extensions: launchSettingsGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -472,6 +517,14 @@ export function activate(): () => void {
         icon: "debug",
         when: "projectOpen",
         run: () => debugSelected(),
+      },
+      {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen",
+        run: () => showUnityAttach(),
       },
       {
         id: "run.runContext",
@@ -627,6 +680,24 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.expandAllTests",
+        title: "Expand All",
+        category: "Run",
+        icon: "expand-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.expandAll?.(),
+      },
+      {
+        id: "run.collapseAllTests",
+        title: "Collapse All",
+        category: "Run",
+        icon: "collapse-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.collapseAll?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",
@@ -659,6 +730,13 @@ export function activate(): () => void {
             debug: boolean;
             onExit: (code: number | null, stopped: boolean) => void;
           };
+          if (a.debug && attachesToChild(a.config)) {
+            if (!getAction("debug.attach")) throw new Error("Debugger unavailable");
+            const session = await debugAttachingToChild(a.config, { onExit: a.onExit });
+            if (!session || session.status === "failed") throw new Error("Run did not start");
+            if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+            return;
+          }
           if (a.debug) {
             if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
             await executeActionOrThrow("debug.pluginStart", a);
@@ -764,6 +842,18 @@ export function activate(): () => void {
   disposers.push(() => setBeforeLaunchRunner(null));
   provideRunOutput({ subscribe: subscribeOutput });
   disposers.push(() => provideRunOutput(undefined));
+  provideRunConfigurationLookup((kind, directory) => {
+    const { project } = useProject.getState();
+    if (!project?.trusted) return false;
+    const owner = projectFolder(project, directory);
+    if (!owner || !isSameOrInside(directory, owner.root)) return false;
+    return useRun.getState().configs.some((config) => {
+      if (config.kind !== kind) return false;
+      const path = runDirectory(config.module ?? config.cwd);
+      return isSameOrInside(path, owner.root) && projectFolder(project, path)?.root === owner.root;
+    });
+  });
+  disposers.push(() => provideRunConfigurationLookup(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).

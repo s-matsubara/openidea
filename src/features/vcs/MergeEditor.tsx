@@ -15,6 +15,7 @@ import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
+import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { syncMergeScroll } from "./mergeScroll";
@@ -92,6 +93,10 @@ const writeAutoApply = (on: boolean) => {
     // The choice then lasts only until the editor closes.
   }
 };
+
+// Each side against the base is compared line by line, as in the diff viewer. The default diff
+// gives up on long files and marks the whole file as one changed block.
+const SIDE_DIFF = ideaDiffConfig("none", "words");
 
 function GitMergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -177,7 +182,9 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) refreshMergeActions(actionHost);
       }),
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
       sideControls(which, controls),
       mergeStripe(which),
       mergeTheme,
@@ -350,6 +357,10 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
     applyChange: () => false,
     file: () => {},
     showSettings: () => void actionHost.run("settings"),
+    focusOpposite: () => false,
+    close: () => false,
+    swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {
@@ -542,6 +553,10 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
   }, [actionHost]);
 
   const focusProps = {
+    // WebKit doesn't focus a clicked button: focus then moves to the nearest focusable
+    // ancestor, which must be this editor for the footer and toolbar buttons to keep it the
+    // focused merge editor their actions run in.
+    tabIndex: -1,
     onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
       const target = e.target as Node;
       if (oursRef.current?.contains(target)) paneRef.current = "left";
@@ -583,7 +598,7 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
 
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
-      <MergeToolbar summary={summary} />
+      <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -619,7 +634,7 @@ function GitMergeEditor({ input }: { input: EditorInput }) {
           onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
-      <MergeFooter />
+      <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
 }

@@ -74,9 +74,15 @@ pub async fn lsp_completion(
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
+    let (covered, items) = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref()))
+        .await
+        .unwrap_or_default();
     if items.is_empty() {
-        return Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }));
+        return if covered {
+            Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }))
+        } else {
+            result
+        };
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
@@ -309,9 +315,13 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
+    // ⌘B on a declaration shows its usages, also when a plugin's index links the name elsewhere
+    // (a MyBatis mapper method to its XML statement): the server's answer comes along for the
+    // editor to tell.
     if target == doc
         && kind == GotoKind::Definition
         && let Some(plugins) = crate::plugins::editor_plugin_host()
+        && !on_declaration_name(host, window, doc, pos).await
     {
         let project = host.project(window)?;
         // A notebook cell is a language-server document only: no plugin navigates in it.
@@ -350,6 +360,30 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
         found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
     let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
     definition_targets(result, found, in_string)
+}
+
+/// Whether the syntax tree puts the identifier at `pos` as a declaration's name (`int f()`'s `f`).
+async fn on_declaration_name(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
+    let Ok(project) = host.project(window) else { return false };
+    blocking(move || {
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(false);
+        }
+        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        let cancel = ide_core::CancellationToken::new();
+        let Ok(Some(at)) = project.structure.node_at(&s, Range::new(pos, pos), &cancel) else { return Ok(false) };
+        Ok(is_declaration_name(&at))
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn is_declaration_name(at: &ide_syntax::NodeAt) -> bool {
+    at.node.field.as_deref() == Some("name")
+        && at.ancestors.first().is_some_and(|parent| {
+            ["declaration", "definition", "declarator"].iter().any(|kind| parent.kind.ends_with(kind))
+        })
 }
 
 async fn in_string_literal(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
@@ -513,6 +547,24 @@ pub async fn lsp_implementations(
         }
         return Ok(out);
     }
+    result
+}
+
+/// Refines the implementations `targets` of the method at `pos` to their declarations (Java
+/// dependencies' class files point at the start of the class). Cancel with
+/// `cancel_request(request)`.
+pub async fn lsp_implementation_locations(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    targets: Vec<Location>,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let (_, cancel) = begin_position_request(host, window, request, doc, pos).await?;
+    let result = lsp.implementation_locations(doc, pos, targets, cancel).await;
+    host.end_request(request);
     result
 }
 
@@ -1023,6 +1075,11 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
     open_plugin_action_target(&action, window);
+    if let Some(command) = &action.command
+        && let Some(result) = run_plugin_server_command(host, window, doc, None, command).await
+    {
+        return result;
+    }
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
@@ -1130,6 +1187,166 @@ pub async fn lsp_hierarchy_refactor(
             project.documents.prepare_workspace_edit(edit)?;
         }
         Ok(refactored)
+    })
+    .await
+}
+
+/// The signature of the method at `pos`, for Change Signature.
+pub async fn lsp_signature_info(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<MethodSignature> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.change_signature_info(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks changing the method at `pos` to `signature` and computes the edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_change_signature(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    signature: MethodSignature,
+    delegate: bool,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    let project = host.project(window)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.change_signature(doc, pos, signature, delegate, confirmation, cancel).await;
+    host.end_request(request);
+    let mut changed = result?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing the refactoring; request it again",
+            ));
+        }
+        if let Some(edit) = &mut changed.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(changed)
+    })
+    .await
+}
+
+fn json_argument(args: &str) -> IdeResult<serde_json::Value> {
+    serde_json::from_str(args).map_err(|e| IdeError::invalid(format!("invalid refactoring arguments: {e}")))
+}
+
+fn json_strings(values: Vec<serde_json::Value>) -> Vec<String> {
+    values.iter().map(serde_json::Value::to_string).collect()
+}
+
+/// Where a Java Move code action of `kind` can go; `args` (JSON) carries the code action's own
+/// arguments back unchanged, and each destination comes back as JSON.
+pub async fn lsp_java_move_destinations(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+) -> IdeResult<Vec<String>> {
+    let args = json_argument(&args)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_move_destinations(doc, kind, args, cancel).await;
+    host.end_request(request);
+    result.map(json_strings)
+}
+
+/// The project's Java source types, for moving a member or type into a class.
+pub async fn lsp_java_source_types(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    project_name: Option<String>,
+) -> IdeResult<Vec<String>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_source_types(doc, project_name, cancel).await;
+    host.end_request(request);
+    result.map(json_strings)
+}
+
+/// Checks a Java move and computes its edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_java_move(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    let args = json_argument(&args)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_move(doc, kind, args, confirmation, cancel).await;
+    host.end_request(request);
+    let mut moved = result?;
+    blocking(move || {
+        if let Some(edit) = &mut moved.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(moved)
+    })
+    .await
+}
+
+/// The Java class to extract an interface from: its members and the packages for the interface.
+pub async fn lsp_extract_interface_info(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<ExtractInterfaceInfo> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.extract_interface_info(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks extracting a Java interface and computes its edit without applying it; `destination`
+/// is one of the info's packages.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_extract_interface(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    members: Vec<String>,
+    name: String,
+    destination: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    let destination = json_argument(&destination)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.extract_interface(doc, pos, members, name, destination, confirmation, cancel).await;
+    host.end_request(request);
+    let mut extracted = result?;
+    blocking(move || {
+        if let Some(edit) = &mut extracted.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(extracted)
     })
     .await
 }
@@ -1438,6 +1655,15 @@ pub async fn lsp_type_hierarchy(
     host.project(window)?.lsp.type_hierarchy(doc, pos, direction).await
 }
 
+pub async fn lsp_prepare_type_hierarchy(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<HierarchyItem>> {
+    host.project(window)?.lsp.prepare_type_hierarchy(doc, pos).await
+}
+
 pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {
     Ok(host.project(window)?.lsp.servers())
 }
@@ -1483,21 +1709,36 @@ pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
 pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || {
-        // Multi-file refactorings leave a Local History point to go back to.
-        let paths: Vec<&std::path::Path> = edit
-            .files
-            .iter()
-            .filter_map(|f| match f {
-                ide_core::FileEdit::Edit { path, .. } => Some(&**path),
-                _ => None,
-            })
-            .collect();
-        if edit.files.len() > 1 {
-            project.record_before_refactoring(&paths, "Apply changes");
-        }
+        record_before_multi_file_edit(&project, &edit);
         apply_edit(&project.documents, &edit)
     })
     .await
+}
+
+/// [`apply_workspace_edit`] for the MCP server's tools: undoable the same way, but the UI does
+/// not announce it as a refactoring.
+pub async fn apply_agent_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || {
+        record_before_multi_file_edit(&project, &edit);
+        project.documents.apply_agent_workspace_edit(&edit)
+    })
+    .await
+}
+
+/// Multi-file edits leave a Local History point to go back to.
+fn record_before_multi_file_edit(project: &crate::Project, edit: &WorkspaceEdit) {
+    let paths: Vec<&std::path::Path> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, .. } => Some(&**path),
+            _ => None,
+        })
+        .collect();
+    if edit.files.len() > 1 {
+        project.record_before_refactoring(&paths, "Apply changes");
+    }
 }
 
 pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
@@ -1550,7 +1791,45 @@ pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command:
         return blocking(move || plugins.run_language_command(&plugin, &command_id, argument.as_deref(), invocation))
             .await;
     }
+    if let Some(result) = run_plugin_server_command(host, window, doc, None, &command).await {
+        return result;
+    }
     host.project(window)?.lsp.execute_command(doc, command).await
+}
+
+/// Runs `command` through the plugin that claims it (`[[contributes.serverCommands]]`)
+/// when no server of the document executes it itself: a code lens, code action or inlay
+/// hint may carry a command the server leaves to the client. `None` when no plugin does.
+async fn run_plugin_server_command(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    server: Option<ServerId>,
+    command: &Command,
+) -> Option<IdeResult<()>> {
+    let plugins = crate::plugins::editor_plugin_host()?;
+    let project = host.project(window).ok()?;
+    if project.lsp.provides_command(doc, server, &command.command).await {
+        return None;
+    }
+    let (plugin, run) = plugins.server_command(&project.lsp.server_names(doc, server), &command.command)?;
+    let snap = match project.documents.snapshot(doc) {
+        Ok(snap) => snap,
+        Err(e) => return Some(Err(e)),
+    };
+    let invocation = ide_plugin::Invocation {
+        client: Some(window.into()),
+        workspace_root: Some(project.root.clone()),
+        editor: Some(ide_plugin::EditorContext {
+            path: snap.path.0.clone(),
+            language: snap.language.0,
+            selections: vec![],
+        }),
+        selected_paths: vec![snap.path.0],
+        ..Default::default()
+    };
+    let arguments = serde_json::Value::Array(command.arguments.clone()).to_string();
+    Some(blocking(move || plugins.run_language_command(&plugin, &run, Some(&arguments), invocation)).await)
 }
 
 /// Resolves an interactive command without applying edits or executing it.
@@ -1593,6 +1872,11 @@ pub async fn lsp_execute_code_action(
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
+        }
+        if let Some(command) = &action.command
+            && let Some(result) = run_plugin_server_command(host, window, doc, Some(action.server), command).await
+        {
+            return result.map(|()| Vec::new());
         }
         match action.command {
             Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
@@ -1721,6 +2005,17 @@ pub(crate) fn register(d: &mut Dispatcher) {
         let on_partial = c.sender("onPartial")?;
         lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
     });
+    d.add("lsp_implementation_locations", |c| async move {
+        lsp_implementation_locations(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("targets")?,
+        )
+        .await
+    });
     d.add(
         "lsp_resolve_class_file",
         |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
@@ -1790,6 +2085,58 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
+    d.add("lsp_signature_info", |c| async move {
+        lsp_signature_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
+    });
+    d.add("lsp_change_signature", |c| async move {
+        lsp_change_signature(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("signature")?,
+            c.arg("delegate")?,
+            c.arg("confirmation")?,
+        )
+        .await
+    });
+    d.add("lsp_extract_interface_info", |c| async move {
+        lsp_extract_interface_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
+    });
+    d.add("lsp_extract_interface", |c| async move {
+        lsp_extract_interface(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("members")?,
+            c.arg("name")?,
+            c.arg("destination")?,
+            c.arg("confirmation")?,
+        )
+        .await
+    });
+    d.add("lsp_java_move_destinations", |c| async move {
+        lsp_java_move_destinations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("kind")?, c.arg("args")?)
+            .await
+    });
+    d.add("lsp_java_source_types", |c| async move {
+        lsp_java_source_types(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("projectName")?).await
+    });
+    d.add("lsp_java_move", |c| async move {
+        lsp_java_move(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("kind")?,
+            c.arg("args")?,
+            c.arg("confirmation")?,
+        )
+        .await
+    });
     d.add("lsp_format", |c| async move {
         lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await
     });
@@ -1806,6 +2153,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("lsp_type_hierarchy", |c| async move {
         lsp_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await
+    });
+    d.add("lsp_prepare_type_hierarchy", |c| async move {
+        lsp_prepare_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
     });
     d.add("lsp_servers", |c| async move { lsp_servers(&c.host, &c.window) });
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
@@ -2119,6 +2469,24 @@ mod tests {
             ["/p/routes/web.php"]
         );
         assert_eq!(paths(definition_targets(Ok(vec![helper, guess]), Vec::new(), false)), ["/p/app/helpers.php"]);
+    }
+
+    #[test]
+    fn declaration_names_are_told_apart_from_uses() {
+        let syntax = std::sync::Arc::new(ide_language::Syntax::new());
+        let structure = ide_syntax::StructureService::new(std::sync::Arc::new(ide_language::SyntaxCache::new(syntax)));
+        let java = ide_core::LanguageId::new("java");
+        let text = "interface ShareMapper {\n    int batchCancel(List<Long> ids);\n}\nclass S { int f(ShareMapper m) { return m.batchCancel(null); } }\n";
+        let snap = ide_syntax::Snapshot::text(&java, text);
+        let cancel = ide_core::CancellationToken::new();
+        let at = |line, col| {
+            let pos = Pos::new(line, col);
+            is_declaration_name(&structure.node_at(&snap, Range::new(pos, pos), &cancel).unwrap().unwrap())
+        };
+        assert!(at(1, 10), "the mapper method's name");
+        assert!(at(0, 12), "the interface's name");
+        assert!(!at(3, 45), "a call of the method");
+        assert!(!at(1, 4), "its return type");
     }
 
     #[test]

@@ -7,6 +7,8 @@ pub(crate) mod run;
 mod vcs;
 pub use requests::Requests;
 mod files;
+mod http;
+mod page;
 mod reports;
 mod search;
 mod symbols;
@@ -38,6 +40,7 @@ fn tools() -> Vec<tool::Tool> {
     tools.extend(edit::tools());
     tools.extend(run::tools());
     tools.extend(vcs::tools());
+    tools.extend(http::tools());
     tools
 }
 

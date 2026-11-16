@@ -110,6 +110,11 @@ async fn reads_unsaved_text_and_searches_the_overlay_with_a_limit() {
     let found = h.json("search_text", json!({"q":"needle","limit":2})).await;
     assert_eq!(found["items"].as_array().unwrap().len(), 2);
     assert_eq!(found["more"], true);
+    assert_eq!(found["nextOffset"], 2);
+    // The next page goes on where this one ended.
+    let every = h.json("search_text", json!({"q":"needle","limit":20})).await["items"].as_array().unwrap().clone();
+    let next = h.json("search_text", json!({"q":"needle","limit":2,"offset":2})).await;
+    assert_eq!(next["items"].as_array().unwrap()[..], every[2..every.len().min(4)]);
     let all = h.json("search_text", json!({"q":"fresh","limit":20})).await;
     assert_eq!(all["items"][0]["filePath"], "src/a.txt");
     // The matched line comes with the result (unsaved text included), and lines around it on request.
@@ -162,7 +167,9 @@ async fn window_reports_supply_editor_selection_and_problems_then_disappear_on_c
     assert_eq!(focused["selection"]["startColumn"], 3);
     let problems = h.json("get_file_problems", json!({"filePath":"src/a.txt","errorsOnly":false})).await;
     assert_eq!(problems["errors"][0]["description"], "reported warning");
-    assert_eq!(h.json("get_project_problems", json!({})).await["files"].as_array().unwrap().len(), 1);
+    assert_eq!(h.json("get_project_problems", json!({})).await["files"], json!([]), "errors only by default");
+    let all = h.json("get_project_problems", json!({"errorsOnly":false})).await;
+    assert_eq!((all["files"].as_array().unwrap().len(), &all["total"]), (1, &json!(1)));
     h.host.close_project("main");
     h.host.open_project("main", &h.root).unwrap();
     assert_eq!(h.json("get_all_open_file_paths", json!({})).await["openFiles"], json!([]));
@@ -231,7 +238,11 @@ async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
         .iter()
         .rev()
         .find_map(|event| match event {
-            IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
+            // Undoable like a refactoring, but marked as the agent's, so it isn't announced as one.
+            IdeEvent::WorkspaceEditApplied { id, by_agent, .. } => {
+                assert!(*by_agent, "an MCP edit is the agent's");
+                Some(*id)
+            }
             _ => None,
         })
         .unwrap();
@@ -284,6 +295,41 @@ async fn execution_requires_a_window_and_denial_never_runs_a_build() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_configurations_are_listed_a_page_at_a_time_and_filtered() {
+    let h = Harness::new();
+    h.trust().await;
+    let saved = |name: &str, command: &str, env: &[(&str, &str)]| ide_run::RunConfig {
+        id: format!("user:{name}"),
+        name: name.into(),
+        kind: "shell".into(),
+        command: command.into(),
+        args: Vec::new(),
+        cwd: None,
+        env: env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    let configs =
+        [saved("build", "tsc", &[("MODE", "ci")]), saved("lint", "oxlint .", &[]), saved("test", "vitest", &[])];
+    ide_run::save_user_configs(&h.root, &configs).unwrap();
+    let all = h.json("get_run_configurations", json!({})).await;
+    let total = all["total"].as_u64().unwrap();
+    assert!(total >= 3, "{all}");
+    // A saved configuration's own environment is listed.
+    let build = all["configurations"].as_array().unwrap().iter().find(|c| c["name"] == "build").unwrap();
+    assert_eq!(build["environment"], json!({ "MODE": "ci" }));
+    let first = h.json("get_run_configurations", json!({"limit": 1})).await;
+    assert_eq!((first["configurations"].as_array().unwrap().len(), &first["nextOffset"]), (1, &json!(1)));
+    let lint = h.json("get_run_configurations", json!({"query": "OXLINT"})).await;
+    let found = lint["configurations"].as_array().unwrap();
+    assert!(!found.is_empty() && (found.len() as u64) < total, "{lint}");
+    assert!(found.iter().all(|c| c.to_string().to_lowercase().contains("oxlint")), "{lint}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn git_status_and_diff_on_a_temporary_repository() {
     let h = Harness::new();
     let git = |args: &[&str]| {
@@ -304,6 +350,18 @@ async fn git_status_and_diff_on_a_temporary_repository() {
     std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
     let status = h.json("git_status", json!({"repositoryPathRelativeToProject":"."})).await;
     assert_eq!(status["repositories"][0]["unstagedCount"], 1);
+    // Two entries, one per page.
+    std::fs::write(h.root.join("src/new.txt"), "new\n").unwrap();
+    let page =
+        |offset: u64| h.json("git_status", json!({"repositoryPathRelativeToProject":".","limit":1,"offset":offset}));
+    let first = page(0).await["repositories"][0].clone();
+    assert_eq!(
+        (&first["totalEntries"], &first["hasMoreEntries"], &first["nextOffset"]),
+        (&json!(2), &json!(true), &json!(1))
+    );
+    let second = page(1).await["repositories"][0].clone();
+    assert_ne!(second["entries"][0], first["entries"][0]);
+    assert!(second.get("nextOffset").is_none(), "{second}");
     assert!(h.call("git_diff", json!({"filePath":"src/a.txt"})).await.contains("+changed"));
     assert!(h.call("git_diff", json!({})).await.contains("src/a.txt"));
     assert!(h.call("git_diff", json!({"staged":true})).await.is_empty());
@@ -538,6 +596,31 @@ fn agent_process(h: &Harness, name: &str) -> ide_core::RunId {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
+async fn run_command_returns_once_a_server_prints_its_ready_line() {
+    let h = Harness::new();
+    h.trust().await;
+    h.host.mcp_requests.set_ready("main", true);
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let _started = run_tool_window(&h);
+    // A server started with its ready line returns once it prints it, long before the timeout.
+    let started_at = std::time::Instant::now();
+    let up = h
+        .json(
+            "run_command",
+            json!({"name": "web", "command": "sleep 1; echo Listening on 8080; sleep 30", "pattern": "Listening on", "timeout": 60000}),
+        )
+        .await;
+    assert_eq!((up["waitEnded"].as_str(), up["state"].as_str()), (Some("matched"), Some("running")), "{up}");
+    assert!(up["output"].as_str().unwrap().contains("Listening on 8080"), "{up}");
+    assert!(started_at.elapsed() < std::time::Duration::from_secs(20), "returned after {:?}", started_at.elapsed());
+    h.json("stop_run", json!({"name": "web", "force": true, "timeout": 10000})).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     let h = Harness::new();
     h.trust().await;
@@ -606,6 +689,19 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     assert!(from_start["output"].as_str().unwrap().contains("hello"), "one log across the tab's commands");
     let runs = h.json("list_runs", json!({})).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 2, "{runs}");
+    // Newest first, brief, filtered by state and paged.
+    let newest = h.json("list_runs", json!({"limit": 1})).await;
+    assert_eq!(
+        (&newest["runs"][0]["name"], &newest["total"], &newest["nextOffset"]),
+        (&json!("_agent_server"), &json!(2), &json!(1))
+    );
+    assert!(newest["runs"][0].get("outputLength").is_none(), "{newest}");
+    assert_eq!(h.json("list_runs", json!({"state": "idle"})).await["total"], 2);
+    assert_eq!(h.json("list_runs", json!({"state": "running"})).await["total"], 0);
+    assert_eq!(h.json("list_runs", json!({"state": "stoppedByAgent"})).await["total"], 2);
+    assert_eq!(h.json("list_runs", json!({"state": "error"})).await["total"], 0);
+    let unknown = h.error("list_runs", json!({"state": "done"})).await;
+    assert!(unknown.contains("unknown state `done`"), "{unknown}");
     let missing = h.error("get_run_status", json!({"name": "nothing"})).await;
     assert!(missing.contains("no agent tab named `_agent_nothing`"), "{missing}");
 
@@ -625,4 +721,77 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     h.json("send_run_input", json!({"name": "interrupt", "keys": ["Ctrl+C"]})).await;
     let interrupted = h.json("wait_for_run", json!({"name": "interrupt", "timeout": 10000})).await;
     assert_eq!(interrupted["state"], "stoppedByAgent", "{interrupted}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_list_and_run_require_confirmation() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let h = Harness::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await;
+        let body = b"{\"ok\":true}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+
+    std::fs::write(
+        h.root.join("api.http"),
+        format!(
+            "### Health\nGET http://{addr}/health\nAccept: application/json\n\n### Echo\n# @name echo\nGET http://{addr}/echo\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(h.root.join("http-client.env.json"), r#"{"dev":{"unused":"x"}}"#).unwrap();
+
+    let listed = h.json("http_list_requests", json!({"path": "api.http"})).await;
+    assert_eq!(listed["requests"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["requests"][0]["index"], 0);
+    assert_eq!(listed["requests"][0]["name"], "Health");
+    assert_eq!(listed["requests"][0]["method"], "GET");
+    assert_eq!(listed["requests"][1]["name"], "echo");
+    assert!(listed["requests"][0]["url"].as_str().unwrap().contains("/health"));
+
+    // Write tool is hidden until the project is trusted.
+    assert!(Registry::new(h.host.clone()).tools(&h.root).unwrap().iter().all(|t| t.name != "http_run_request"));
+    h.trust().await;
+    assert!(
+        Registry::new(h.host.clone())
+            .tools(&h.root)
+            .unwrap()
+            .iter()
+            .any(|t| t.name == "http_run_request" && !t.read_only)
+    );
+
+    h.host.mcp_requests.set_ready("main", true);
+    let denied = h.error("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let deny = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, false, None).unwrap();
+    };
+    let (error, ()) = tokio::join!(denied, deny);
+    assert!(error.contains("denied by the user"), "{error}");
+
+    h.events.lock().unwrap().clear();
+    let run = h.json("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let allow = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, true, None).unwrap();
+    };
+    let (result, ()) = tokio::join!(run, allow);
+    assert_eq!(result["status"], 200, "{result}");
+    assert_eq!(result["method"], "GET");
+    assert!(result["body"].as_str().unwrap().contains("ok"), "{result}");
+    assert_eq!(result["bodyTruncated"], false);
+    // Secrets must not appear as request headers/body in the tool payload.
+    assert!(result.get("headers").is_none(), "{result}");
+    assert!(result.get("request").is_none(), "{result}");
 }

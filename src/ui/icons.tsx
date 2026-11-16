@@ -89,6 +89,7 @@ const ICONS = {
   exception: "nodes/exception",
   "jvm-test": "nodes/test",
   "runnable-mark": "nodes/runnableMark",
+  "symlink-mark": "nodes/symlink",
   "kotlin-object": "kotlin/objectKotlin",
   "spring-config": "openidea/runConfigurations/springBoot",
   "gradle-project": "gradle/gradle",
@@ -178,7 +179,9 @@ const ICONS = {
   "file-gdshader": "openidea/fileTypes/gdshader",
   "file-asciidoc": "openidea/fileTypes/asciidoc",
   "file-d": "openidea/fileTypes/d",
+  "file-gherkin": "openidea/fileTypes/gherkin",
   "file-prisma": "openidea/fileTypes/prisma",
+  "file-slint": "openidea/fileTypes/slint",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -245,6 +248,7 @@ const ICONS = {
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
+  "toolwindow-sbt": "openidea/toolwindows/sbt",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -305,6 +309,8 @@ const ICONS = {
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
+  "swap-panels": "actions/swapPanels",
+  "external-tools": "general/externalTools",
   "editor-preview": "general/editorPreview",
   "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
@@ -379,6 +385,7 @@ const ICONS = {
   "db-sequence": "openidea/database/sequence",
   "db-plan": "openidea/database/plan",
   "db-chart": "openidea/database/chart",
+  "db-in-editor-results": "openidea/database/inEditorResults",
   "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",
@@ -705,13 +712,20 @@ export function setFileIconTheme(theme: FileIconTheme | null) {
   useFileIconRevision.setState((n) => n + 1, true);
 }
 
-/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+/** The icon theme's (or plugin path provider's) icon for a plain folder, or null to keep the built-in one. */
 export function themedFolderIconName(
   folderName: string,
   expanded = false,
   holdsOpenFile = false,
   path: string | null = null,
 ): IconName | null {
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
@@ -808,8 +822,19 @@ const withIds = (p: Prepared, prefix: string) => (p.hasIds ? p.html.replace(/__I
 
 // ---------------------------------------------------------------------------
 
+/** Largest `data:` image accepted as an icon (an avatar or a status badge a plugin fetched). */
+const MAX_IMAGE_ICON = 64 * 1024;
+
+/** A small raster image given as a `data:` URI (PNG, JPEG, GIF, WebP), shown in place of an icon. */
+function isImageIcon(name: string): boolean {
+  return name.length <= MAX_IMAGE_ICON && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(name);
+}
+
 export interface IconProps {
-  /** Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon. */
+  /**
+   * Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon,
+   * and a raster `data:` image URI (see `isImageIcon`) renders that image.
+   */
   name: IconName | (string & {});
   size?: number;
   className?: string;
@@ -818,7 +843,26 @@ export interface IconProps {
   label?: string;
 }
 
-export function Icon({ name, size = 16, className, style, label }: IconProps) {
+export function Icon(props: IconProps) {
+  return isImageIcon(props.name) ? <ImageIcon {...props} /> : <SvgIcon {...props} />;
+}
+
+function ImageIcon({ name, size = 16, className, style, label }: IconProps) {
+  return (
+    <img
+      className={clsx(styles.icon, styles.image, className)}
+      style={style}
+      src={name}
+      width={size}
+      height={size}
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
+      draggable={false}
+    />
+  );
+}
+
+function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
   useFileIconRevision();
   const uid = useId();
   const path = iconPath(name);
@@ -1049,7 +1093,7 @@ const EXT_ICONS = table({
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
-  "file-yaml": "yaml yml",
+  "file-yaml": "yaml yml gotmpl",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
@@ -1106,7 +1150,9 @@ const EXT_ICONS = table({
   "file-gdshader": "gdshader gdshaderinc",
   "file-asciidoc": "adoc asciidoc",
   "file-d": "d di",
+  "file-gherkin": "feature",
   "file-prisma": "prisma",
+  "file-slint": "slint",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -1139,12 +1185,25 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
-/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+/** Icons for exact project paths (plugin `decorations.set-file-icon`), newest first: before filename globs. */
+let pathIconProviders: ReadonlyArray<(path: string) => string | null> = [];
+
+/** Icons for particular files (plugin `fileIcons`), newest first: after path providers, before the icon theme's. */
 let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
 /** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
 export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds an exact-path icon provider for files and plain folders; the returned function removes it. */
+export function addPathIconProvider(resolve: (path: string) => string | null): () => void {
+  pathIconProviders = [resolve, ...pathIconProviders];
+  bumpFileIconRevision();
+  return () => {
+    pathIconProviders = pathIconProviders.filter((p) => p !== resolve);
+    bumpFileIconRevision();
+  };
 }
 
 /** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
@@ -1161,6 +1220,13 @@ export function addFileIconProvider(resolve: (fileName: string, path: string | n
 export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   for (const provide of fileIconProviders) {
     const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;

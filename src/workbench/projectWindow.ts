@@ -73,7 +73,8 @@ export async function openRemoteProject(
     await call(commands.windowOpenRemote(target, path, mode));
     return true;
   }
-  if (!(await confirmLeaveProject())) return false;
+  // The remote host's project doesn't take this window's untitled buffers.
+  if (!(await confirmLeaveProject(false))) return false;
   try {
     await here();
     return true;

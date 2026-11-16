@@ -19,6 +19,11 @@ export const commands = {
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
+	/**
+	 *  Settings › Agents › MCP Server › Regenerate Token: forgets the kept token, and restarts the
+	 *  server with a new one. Clients configured with the old token stop working.
+	 */
+	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpSetFocusedEditor: (editor: FocusedEditor | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
@@ -65,6 +70,11 @@ export const commands = {
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
 	 */
 	lightEditOpen: (path: string) => typedError<Settings, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
+	/**
+	 *  LightEdit without a file (File › New File from a welcome window); returns
+	 *  the effective (global) settings.
+	 */
+	lightEditOpenUntitled: () => typedError<Settings, IdeError>(__TAURI_INVOKE("light_edit_open_untitled")),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<ProjectInfo | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -76,6 +86,12 @@ export const commands = {
 	 *  projects (and projects without their own value) get.
 	 */
 	settingsGetGlobal: () => __TAURI_INVOKE<Settings>("settings_get_global"),
+	/**
+	 *  The removed built-in theme id a settings file of this window still names, if any:
+	 *  `settings_get` reports the built-in that stands in for it, so the notice about
+	 *  a theme that moved to a plugin can address the installs it concerns.
+	 */
+	settingsRemovedTheme: () => __TAURI_INVOKE<string | null>("settings_removed_theme"),
 	/**
 	 *  `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 	 *  value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
@@ -117,6 +133,8 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
+	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -152,12 +170,25 @@ export const commands = {
 	agentMcpList: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_list")),
 	/**  Creates or updates a User or Workspace MCP server and returns the updated list. */
 	agentMcpSave: (input: McpServerInput) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save", { input })),
+	/**
+	 *  Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
+	 *  single server object).
+	 */
+	agentMcpSaveJson: (scope: McpScope, rawJson: string, fallbackName: string | null, agents: string[]) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save_json", { scope, rawJson, fallbackName, agents })),
 	/**  Enables or disables an MCP server and returns the updated list. */
 	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
 	/**  Removes a User or Workspace MCP server and returns the updated list. */
 	agentMcpRemove: (id: string) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_remove", { id })),
 	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
 	agentMcpImport: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import")),
+	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
+	agentMcpDiscoverSources: () => typedError<McpExternalSource[], IdeError>(__TAURI_INVOKE("agent_mcp_discover_sources")),
+	/**  Imports selected servers from discovered external MCP configuration files into User or Workspace scope. */
+	agentMcpImportSelected: (scope: McpScope, selections: McpImportSelection[], overwrite: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import_selected", { scope, selections, overwrite })),
+	/**  Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`). */
+	agentMcpTest: (id: string) => typedError<McpProbeResult, IdeError>(__TAURI_INVOKE("agent_mcp_test", { id })),
+	/**  Updates per-session MCP server enable/disable overrides on `task`. */
+	agentSetMcpOverrides: (task: string, overrides: { [key in string]: boolean }) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_set_mcp_overrides", { task, overrides })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -180,6 +211,11 @@ export const commands = {
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Creates a temporary side conversation of `source`: lives in memory only, never
+	 *  persisted, not listed, and its session starts with the first message sent to it.
+	 */
+	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<AgentPrompt | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
 	/**
@@ -271,9 +307,14 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
-	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
-	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
-	 *  None when the clipboard holds no image, and always on other platforms.
+	 *  Whether the clipboard holds an image (a screenshot): cheap, for the Paste item's
+	 *  enabled state.
+	 */
+	clipboardHasImage: () => __TAURI_INVOKE<boolean>("clipboard_has_image"),
+	/**
+	 *  The clipboard's image as a PNG data URL: for a paste whose event carried no files
+	 *  (WebKitGTK leaves `clipboardData` empty for a raw image, a screenshot), and for
+	 *  the project view's Paste, which has no paste event. None when it holds no image.
 	 */
 	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
 	/**
@@ -281,6 +322,8 @@ export const commands = {
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
 	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
+	/**  When a balloon is shown and OpenIDEA is unfocused, mirror it to the OS. */
+	showSystemNotification: (title: string, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("show_system_notification", { title, body })),
 	/**
 	 *  Every installed family, sorted, each flagged monospaced or not. Read on
 	 *  first use (off the command threads), cached, and re-queried on `refresh`.
@@ -296,6 +339,11 @@ export const commands = {
 	 *  editor buffer, so syntax features and language-server requests work in it.
 	 */
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
+	/**
+	 *  Opens an editable untitled buffer (a new-file tab); it reaches the disk
+	 *  through `doc_save_as`, which turns it into a regular file document.
+	 */
+	docOpenUntitled: (name: string | null) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_untitled", { name })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
@@ -303,6 +351,11 @@ export const commands = {
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
+	/**
+	 *  Save As for an untitled buffer: writes it to `path` and re-keys the buffer
+	 *  (undo history and version are kept; the language is re-detected).
+	 */
+	docSaveAs: (doc: DocId, path: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_save_as", { doc, path })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
@@ -322,6 +375,8 @@ export const commands = {
 	 *  re-parse); large documents get no syntax structure.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
+	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
+	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -413,11 +468,15 @@ export const commands = {
 	indexFileExtensions: () => typedError<ExtensionCount[], IdeError>(__TAURI_INVOKE("index_file_extensions")),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
+	/**  Cucumber feature files and step definition files, for step navigation. */
+	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	findFilesNamed: (name: string) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("find_files_named", { name })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
+	/**  Index symbols named exactly one of `names` inside `within` (an agent task's folder). */
+	findSymbolsNamed: (names: string[], within: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols_named", { names, within })),
 	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
@@ -434,6 +493,11 @@ export const commands = {
 	 *  plus its configured dependencies).
 	 */
 	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
+	/**
+	 *  Every Python class in the project (attached dependency roots included) and its base names,
+	 *  for native inheritance gutter markers.
+	 */
+	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<IpcPath | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -491,6 +555,12 @@ export const commands = {
 	 */
 	lspGotoImplementation: (request: RequestId, doc: DocId, pos: Pos, onPartial: Channel<Location[]>) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto_implementation", { request, doc, pos, onPartial })),
 	/**
+	 *  Refines the implementations `targets` of the method at `pos` to their declarations (Java
+	 *  dependencies' class files point at the start of the class). Cancel with
+	 *  `cancel_request(request)`.
+	 */
+	lspImplementationLocations: (request: RequestId, doc: DocId, pos: Pos, targets: Location[]) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_implementation_locations", { request, doc, pos, targets })),
+	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
 	 */
@@ -523,6 +593,13 @@ export const commands = {
 	lspHierarchyMembers: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring) => typedError<HierarchyMembers, IdeError>(__TAURI_INVOKE("lsp_hierarchy_members", { request, doc, pos, kind })),
 	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
 	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
+	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspChangeSignature: (request: RequestId, doc: DocId, pos: Pos, signature: MethodSignature, delegate: boolean, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_change_signature", { request, doc, pos, signature, delegate, confirmation })),
+	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
+	lspJavaMoveDestinations: (request: RequestId, doc: DocId, kind: string, args: string) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_move_destinations", { request, doc, kind, args })),
+	lspJavaSourceTypes: (request: RequestId, doc: DocId, projectName: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_source_types", { request, doc, projectName })),
+	lspJavaMove: (request: RequestId, doc: DocId, kind: string, args: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_java_move", { request, doc, kind, args, confirmation })),
 	lspFormat: (doc: DocId, range: Range | null, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format", { doc, range, options })),
 	lspInlayHints: (doc: DocId, range: Range) => typedError<InlayHint[], IdeError>(__TAURI_INVOKE("lsp_inlay_hints", { doc, range })),
 	lspSemanticTokens: (doc: DocId) => typedError<SemanticTokens | null, IdeError>(__TAURI_INVOKE("lsp_semantic_tokens", { doc })),
@@ -530,6 +607,7 @@ export const commands = {
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
 	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
+	lspPrepareTypeHierarchy: (doc: DocId, pos: Pos) => typedError<HierarchyItem | null, IdeError>(__TAURI_INVOKE("lsp_prepare_type_hierarchy", { doc, pos })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
@@ -551,6 +629,8 @@ export const commands = {
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
+	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
+	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
@@ -605,6 +685,7 @@ export const commands = {
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
 	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
+	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
@@ -634,7 +715,7 @@ export const commands = {
 	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
+	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex, paths })),
 	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
 	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
@@ -644,6 +725,12 @@ export const commands = {
 	vcsDiffText: (path: string, staged: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_diff_text", { path, staged })),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
+	/**
+	 *  Show Diff in External Tool: starts the tool set in the global settings (never a
+	 *  project's, which a cloned repository could carry) on the two sides, on this machine
+	 *  (a remote window passes the sides as text).
+	 */
+	diffExternalTool: (left: ExternalDiffSide, right: ExternalDiffSide, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("diff_external_tool", { left, right, title })),
 	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
@@ -873,6 +960,11 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**
+	 *  Newer versions of the tools the IDE installed (release downloads and npm packages).
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	/**  JDK distributions Download JDK offers. */
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
@@ -912,6 +1004,12 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<IpcPath | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<IpcPath | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
+	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
+	sdkJdkAt: (path: string) => typedError<Sdk | null, IdeError>(__TAURI_INVOKE("sdk_jdk_at", { path })),
+	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
+	sdkContainerPython: () => typedError<ContainerPython | null, IdeError>(__TAURI_INVOKE("sdk_container_python")),
+	/**  Copies the container's Python libraries again (after the image changed). */
+	sdkContainerPythonRefresh: () => typedError<ContainerPython | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**
 	 *  The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
 	 *  project root).
@@ -1050,11 +1148,13 @@ export const commands = {
 	appInstallUpdate: (source: UpdateSource, request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { source, request, onProgress })),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
-	 *  through the configured source. An install records the notes it saw, so this
-	 *  is only for an update installed outside the app. `Ok(None)` when the manifest
-	 *  covers another version or carries no notes.
+	 *  through the configured source: the `notes` text under `"en"` plus any
+	 *  `notes.<lang>` translations keyed by their base language code, so the page
+	 *  can show the UI's language and fall back to English. An install records the
+	 *  notes it saw, so this is only for an update installed outside the app.
+	 *  `Ok(None)` when the manifest covers another version or carries no notes.
 	 */
-	appReleaseNotes: (version: string, source: UpdateSource) => typedError<string | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
+	appReleaseNotes: (version: string, source: UpdateSource) => typedError<{ [key in string]: string } | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -1066,6 +1166,19 @@ export const commands = {
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
+	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
+	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
+	/**  The body of a response a debugged page received. */
+	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
+	/**
+	 *  The responses a debugged page gets in place of the server's, by a part of the URL; none
+	 *  switches the replacing off.
+	 */
+	debugJsResponseOverrides: (session: DebugSessionId, rules: JsResponseRule[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_response_overrides", { session, rules })),
+	/**  Starts recording a debugged page's CPU profile. */
+	debugJsStartProfile: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_start_profile", { session })),
+	/**  Ends the recording: a directory holding the profile as `page.cpuprofile`. */
+	debugJsStopProfile: (session: DebugSessionId) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("debug_js_stop_profile", { session })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -1075,6 +1188,7 @@ export const commands = {
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
 	/**  A loopback port that is free right now, for a debug agent the launch line starts. */
 	debugFreePort: () => typedError<number, IdeError>(__TAURI_INVOKE("debug_free_port")),
+	debugUnityProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_unity_processes")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -1108,6 +1222,8 @@ export const commands = {
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
+	/**  Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open. */
+	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig, mode: ProfileMode) => typedError<ProfilePrepared, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
@@ -1200,6 +1316,8 @@ export const commands = {
 	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
 	/**  Revalidates a plugin run's executable before debugging, including reruns. */
 	pluginPrepareDebugRun: (config: RunConfig) => typedError<RunConfig, IdeError>(__TAURI_INVOKE("plugin_prepare_debug_run", { config })),
+	/**  Waits for the process an `attach-child` plugin configuration's debugger attaches to. */
+	pluginDebugAttachTarget: (config: string, run: RunId) => typedError<AttachableProcess, IdeError>(__TAURI_INVOKE("plugin_debug_attach_target", { config, run })),
 	/**  Starts only the pinned command recorded for this window's terminal operation. */
 	pluginTerminalSessionSpawn: (operation: string, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_terminal_session_spawn", { operation, cols, rows, onOutput })),
 	/**  Marks a keyed tab closed before ending its process. */
@@ -1296,11 +1414,15 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
+	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
+	 *  Ends a process OpenIDEA started (a row of the memory breakdown) and its
+	 *  children; its owner (language server, run, terminal) sees it exit. Returns
+	 *  false for a process that isn't ours.
 	 */
-	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
+	endProcess: (pid: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("end_process", { pid })),
 	/**
 	 *  Inspect Code: diagnostics of every file in `scope` that a language server
 	 *  serves. Files stream through `on_event` as they finish; ends with `Done`.
@@ -1421,6 +1543,8 @@ export const commands = {
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
+	/**  Whether a password is saved under `key` (an FTP deployment server's). */
+	sshPasswordSaved: (key: string) => __TAURI_INVOKE<boolean>("ssh_password_saved", { key }),
 	/**  Trusts the host key that failed the last connection of configuration `id`. */
 	sshTrustHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("ssh_trust_host", { id })),
 	/**  Ids of the configurations with an open connection. */
@@ -1446,7 +1570,7 @@ export const commands = {
 	deployInfo: (path: IpcPath, server: string | null) => typedError<DeployedPath | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
 	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
-	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
+	deployTestConnection: (connection: FsConnection, path: string, password: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path, password })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
@@ -1491,6 +1615,8 @@ export const commands = {
 	 */
 	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
 	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
+	dbTestTunnel: (source: DataSource, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
@@ -1522,6 +1648,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
+	/**  The query consoles of data source `id`; `create` adds the next one first. */
+	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
 };
 
 /* Types */
@@ -1572,6 +1700,9 @@ export type AgentAcceptSkipped = {
 	reason: string,
 };
 
+/**  Why a task needs the user's attention (native / in-app notify). */
+export type AgentAttentionReason = "finished" | "input" | "failed";
+
 /**  A task the agent runs in the background while the conversation goes on. */
 export type AgentBackgroundTask = {
 	id: string,
@@ -1597,6 +1728,11 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**
+	 *  The task runs read-only: it asks before anything, and requests that would change
+	 *  the project are denied (a temporary side conversation).
+	 */
+	readOnly?: boolean,
 };
 
 /**
@@ -1671,6 +1807,8 @@ export type AgentConfigOption = {
 	/**  ACP category: `model`, `mode`, `thought_level`, or agent-specific. */
 	category: string | null,
 	current: string | null,
+	/**  Initial default value reported by the agent, preserved across session updates for Reset. */
+	defaultValue?: string | null,
 	values: AgentConfigValue[],
 	via: AgentConfigVia,
 };
@@ -1680,6 +1818,12 @@ export type AgentConfigValue = {
 	value: string,
 	name: string,
 	description: string | null,
+	/**  Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`). */
+	costCategory?: string | null,
+	/**  Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`). */
+	usageMultiplier?: string | null,
+	/**  Detailed per-tier token pricing from `_meta.pricing` when available. */
+	pricing?: AgentModelPricing | null,
 };
 
 /**  How a setting is changed. */
@@ -1741,6 +1885,11 @@ command?: string | null; options: AgentPermissionOption[];
  *  of question to answer instead of an option.
  */
 questions?: AgentQuestion[]; 
+/**
+ *  Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+ *  field name to its values, `decline`, or nothing to cancel.
+ */
+form?: AgentForm | null; 
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
@@ -1759,8 +1908,45 @@ export type AgentEvent =
 { type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 { type: "limits"; provider: string; limits: AgentLimit[] } | 
+/**  A model lookup started or completed, including unsuccessful lookups. */
+{ type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
-{ type: "providers" };
+{ type: "providers" } | 
+/**  The task needs attention once (finished turn, explicit input, or failure). */
+{ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason };
+
+/**  A form the agent asks the user to fill in (ACP `elicitation/create`, form mode). */
+export type AgentForm = {
+	fields: AgentFormField[],
+};
+
+export type AgentFormField = {
+	/**  The property name the answer is keyed by. */
+	name: string,
+	title: string,
+	description?: string,
+	required?: boolean,
+	kind: AgentFormFieldKind,
+	/**  The choices of a `choice` or `choices` field. */
+	options?: AgentFormOption[],
+	/**  The initial answer: option values, a text, a number, or `true` / `false`. */
+	default?: string[],
+	/**  Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`. */
+	min?: number | null,
+	max?: number | null,
+};
+
+export type AgentFormFieldKind = "text" | "number" | "integer" | "boolean" | 
+/**  One of `options`. */
+"choice" | 
+/**  Any of `options`. */
+"choices";
+
+export type AgentFormOption = {
+	value: string,
+	label: string,
+	description?: string,
+};
 
 export type AgentImage = {
 	mimeType: string,
@@ -1793,6 +1979,27 @@ export type AgentMcpServer = {
 	 *  empty means enabled for all agents.
 	 */
 	agents?: string[],
+};
+
+/**  Authoritative choices for new tasks, independent of any running session's settings. */
+export type AgentModelCatalog = {
+	provider: string,
+	config: AgentConfigOption[],
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
+	refreshing: boolean,
+	refreshedAtMs: number | null,
+	retryAtMs: number | null,
+	error: string | null,
+};
+
+/**  Pricing and context-tier metadata attached to a model [`AgentConfigValue`]. */
+export type AgentModelPricing = {
+	/**  `"low"`, `"medium"`, `"high"`, or `"very_high"`. */
+	costTier?: string | null,
+	/**  Request-based billing multiplier (e.g. `1.0`, `0.33`, `3.0`), when applicable. */
+	multiplier?: number | null,
+	/**  Token pricing keyed by context tier (`"default"`, `"long_context"`). */
+	tiers?: { [key in string]: AgentTokenPricing },
 };
 
 export type AgentPermissionOption = {
@@ -1918,6 +2125,20 @@ export type AgentSettings = {
 	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
+	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
+	fitWindowWidth?: boolean,
+	/**  While the agent works, playful words fill the pauses in what it reports. */
+	playfulStatus?: boolean,
+	/**
+	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
+	 *  from the start.
+	 */
+	playfulAfterSeconds?: number,
+	/**
+	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
+	 *  the built-in ones of that activity; an empty list keeps its status factual.
+	 */
+	playfulWords?: { [key in string]: string[] },
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2010,6 +2231,17 @@ export type AgentTask = {
 	retry?: AgentRetry | null,
 	/**  What the agent runs in the background (shells, subagents, monitors), oldest first. */
 	background?: AgentBackgroundTask[],
+	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
+	mcpOverrides?: { [key in string]: boolean },
+};
+
+/**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
+export type AgentTokenPricing = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+	contextTokens?: number | null,
 };
 
 export type AgentToolDiff = {
@@ -2142,6 +2374,8 @@ export type AppearanceSettings = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage?: BackgroundImageSettings,
 };
 
 export type ApplyOutcome = {
@@ -2192,7 +2426,7 @@ export type AskpassKind =
 /**  Yes / no (an unknown host key); answered with `yes` or `no`. */
 "confirm";
 
-export type AttachKind = "java" | "node" | "python" | "go" | "native";
+export type AttachKind = "unity" | "java" | "node" | "python" | "dotnet" | "go" | "native";
 
 export type AttachableProcess = {
 	pid: number,
@@ -2220,6 +2454,20 @@ export type AutoUpload = "never" |
 "onExplicitSave" | 
 /**  Every save, including autosave and external changes. */
 "always";
+
+/**  Appearance › Background Image. An empty `path` shows no image. */
+export type BackgroundImageSettings = {
+	path?: string,
+	/**  Percent, 0–100. */
+	opacity?: number,
+	/**  `scale` (cover the window) | `plain` (original size) | `tile`. */
+	fill?: string,
+	/**
+	 *  Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+	 *  `bottom-left`, `bottom`, `bottom-right`.
+	 */
+	anchor?: string,
+};
 
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
@@ -2362,6 +2610,8 @@ export type BuildMessage = {
 export type BuildModel = {
 	maven: MavenModel | null,
 	gradle?: GradleModel[],
+	/**  sbt builds, read from their `build.sbt` (sbt is not started). */
+	sbt?: SbtBuild[],
 };
 
 /**  How a Java launch builds the project before starting (IDEA's Before launch › Build). */
@@ -2390,7 +2640,9 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
-export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake";
+export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
+/**  A Java project without a build tool, compiled from its Project Structure. */
+"javac";
 
 export type BuildTool = "maven" | "gradle";
 
@@ -2511,6 +2763,8 @@ export type CheckoutOptions = {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
 };
 
 /**
@@ -2528,11 +2782,35 @@ export type CheckoutOutcome = { kind: "done" } |
  *  Switched, but restoring the local changes (Smart Checkout) or the rebase stopped
  *  on conflicts in these files.
  */
-{ kind: "conflicts"; files: string[] };
+{ kind: "conflicts"; files: string[] } | 
+/**
+ *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+ *  changed; the branch can be worked on there.
+ */
+{ kind: "checkedOutInWorktree"; branch: string; path: string };
 
 export type ChoiceOption = {
 	value: string,
 	label: string,
+};
+
+/**
+ *  A Python class definition and the base names written in its source. The UI builds a
+ *  name → locations index from every class in the project (attached dependency roots
+ *  included) to compute ↑ overrides / ↓ overridden gutter markers without a language
+ *  server's type-hierarchy provider.
+ */
+export type ClassInheritance = {
+	/**  Start of the class definition's selection range (0-based line, UTF-16 column). */
+	path: IpcPath,
+	line: number,
+	col: number,
+	name: string,
+	/**
+	 *  Base names as written in source (bare name, e.g. `AllToAllTokenDispatcher`; a
+	 *  qualified name keeps only its last segment).
+	 */
+	bases: string[],
 };
 
 export type ClassifiedReference = {
@@ -2930,6 +3208,24 @@ export type ConsoleSettings = {
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
 
+/**  The project interpreter when it is a run target's. */
+export type ContainerPython = {
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+};
+
 /**  ContentAction data exchanged with the IDE. */
 export type ContentAction = {
 	id: string,
@@ -3129,6 +3425,20 @@ export type DataSource = {
 	pluginOwner?: string | null,
 	/**  Id private to the owner, never used as a connection target. */
 	pluginSourceId?: string | null,
+};
+
+/**  Database settings: Query Execution and SQL Resolution Scopes. */
+export type DatabaseSettings = {
+	/**
+	 *  A console's result sets show under the statements that produced them, in the editor,
+	 *  instead of in the Services view's result tabs.
+	 */
+	inEditorResults?: boolean,
+	/**
+	 *  Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
+	 *  resolves against (completion, inspections, navigation), most specific path first.
+	 */
+	resolutionScopes?: SqlResolutionScope[],
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */
@@ -3491,6 +3801,13 @@ export type DebugCapabilities = {
 	jvmInstances: boolean,
 	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
 	jvmHeap: boolean,
+	/**
+	 *  The session debugs a page in a browser: js-debug's requests for pages apply
+	 *  ([`DebugManager::js_set_custom_breakpoints`]).
+	 */
+	jsPage: boolean,
+	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
+	liveEvaluate: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3526,7 +3843,11 @@ export type DebugEvent =
  *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
  *  `variables`; empty means all) is stale and has to be fetched again.
  */
-{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState } | 
+/**  A step in the life of one request of a debugged page. */
+{ kind: "jsNetwork"; event: JsNetworkEvent } | 
+/**  The adapter does not report the requests of this page: there will be no `JsNetwork`. */
+{ kind: "jsNetworkUnavailable" };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -3536,18 +3857,24 @@ export type DebuggerSettings = {
 	showOnBreakpoint?: boolean,
 	focusAppOnBreakpoint?: boolean,
 	hideOnTermination?: boolean,
+	/**  A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front. */
+	variablesOnBreakpoint?: boolean,
 	breakpointsAnyFile?: boolean,
 	/**  While suspended, hovering the start of a line shows a Run to Cursor button. */
 	runToCursorInlay?: boolean,
 	inlineValues?: boolean,
 	/**  Data Views: list variables by name instead of the adapter's order. */
 	sortValues?: boolean,
+	/**  Data Views: evaluate watches while the program runs, where the debugger can (JavaScript). */
+	liveWatches?: boolean,
 	valueTooltip?: boolean,
 	/**  While suspended, selecting an expression shows its value. */
 	valueTooltipOnSelection?: boolean,
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
+	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
+	debugServerPage?: boolean,
 	python?: PythonDebuggerSettings,
 };
 
@@ -3655,6 +3982,14 @@ export type DeploymentCoverage = {
 	skipped: TransferError[],
 };
 
+/**  Named set of deployment servers that files are uploaded to together. */
+export type DeploymentGroup = {
+	id?: string,
+	name?: string,
+	/**  [`DeploymentServer::id`]s, in upload order. */
+	servers?: string[],
+};
+
 /**  Local files to compare with a deployment server (Sync with Deployed). */
 export type DeploymentLaunch = {
 	/**  Deployment server id. */
@@ -3698,6 +4033,8 @@ export type DeploymentServer = {
 /**  Build, Execution, Deployment › Deployment (and its Options page). */
 export type DeploymentSettings = {
 	servers?: DeploymentServer[],
+	/**  Server groups: Upload to… on a group uploads to each of its servers. */
+	groups?: DeploymentGroup[],
 	/**  Server used by Upload / Download / Sync and automatic upload; empty = none. */
 	defaultServer?: string,
 	autoUpload?: AutoUpload,
@@ -4127,6 +4464,8 @@ export type EditorConfigProps = {
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
 	wheelZoom?: boolean,
+	/**  Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors. */
+	wheelZoomScope?: string,
 	markdownImageFolder?: string,
 	markdownImageNamePattern?: string,
 	/**  Drag-and-drop of selected text inside the editor. */
@@ -4264,7 +4603,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+/**  Problems of the window's files changed (a language server or a report). */
+"problems-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4320,6 +4661,26 @@ export type ExtensionPointInfo = {
 	contributors: string[],
 };
 
+/**  Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences. */
+export type ExternalDiffSettings = {
+	/**  Offer Show Diff in External Tool in diff viewers. */
+	enabled?: boolean,
+	/**  The program to start. */
+	path?: string,
+	/**  Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title. */
+	parameters?: string,
+};
+
+/**  One side of the diff: a file on disk, or text written to a temporary file. */
+export type ExternalDiffSide = {
+	/**  A saved file, passed to the tool as it is. */
+	path: string | null,
+	/**  Content without a file of its own (a revision, a text), written to a temporary file. */
+	text: string | null,
+	/**  The temporary file's name; its extension lets the tool pick a syntax. */
+	name: string,
+};
+
 /**  A formatter that runs outside the language servers, with its own settings group. */
 export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
 
@@ -4363,6 +4724,16 @@ export type ExternalTool = {
 	openConsole?: boolean,
 };
 
+/**
+ *  What Extract Interface starts from: the file's class, the members the interface can declare and
+ *  the packages it can go to (as JSON, passed back unchanged).
+ */
+export type ExtractInterfaceInfo = {
+	className: string,
+	members: InterfaceMember[],
+	packages: string[],
+};
+
 /**  Framework facet attached to a module (Project Structure › Facets). */
 export type FacetConfig = {
 	/**  `"web"` | `"spring"` | `"jpa"`. */
@@ -4403,6 +4774,24 @@ export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyTex
 	selected: string,
 } };
 
+export type FileColor = {
+	/**
+	 *  A built-in scope (`Tests`, `Production`, `Project Files`, `Non-Project Files`) or a
+	 *  `scopes` entry, by name.
+	 */
+	scope?: string,
+	/**  A palette name (`blue`, `green`, `orange`, `rose`, `violet`, `yellow`, `gray`) or `#rrggbb`. */
+	color?: string,
+};
+
+export type FileColorSettings = {
+	enabled?: boolean,
+	editorTabs?: boolean,
+	projectView?: boolean,
+	/**  Scope → colour; the first scope that holds a file gives its colour. */
+	colors?: FileColor[],
+};
+
 export type FileCoverage = {
 	path: IpcPath,
 	/**  Sorted by line. */
@@ -4420,6 +4809,8 @@ export type FileDecoration = {
 	tooltip: string | null,
 	/**  Text shown after the name (API 1.7 `set-file-note`). */
 	note?: string | null,
+	/**  `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`). */
+	icon?: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
@@ -4871,6 +5262,11 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**
+	 *  The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
+	 */
+	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {
@@ -5345,7 +5741,12 @@ workspaceEdit?: boolean } |
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
 /**  A complete workspace edit can be undone as one operation. */
-{ type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
+{ type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**
+ *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
+ *  not announced as one.
+ */
+byAgent: boolean } | 
 /**
  *  An open document's language changed (Settings › File Types, Override File
  *  Type), or its UI mode (a framework's root marker appeared or went).
@@ -5362,7 +5763,9 @@ cancellable: boolean } |
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
-{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; 
+/**  What the user sees as the server when another program serves in its place. */
+label?: string | null; status: ServerStatus; message: string | null } | 
 /**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
 { type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
@@ -5712,6 +6115,17 @@ export type IntellijThemeSource = {
 	themes: IntellijThemeFile[],
 };
 
+/**  A member Extract Interface can declare in the new interface. */
+export type InterfaceMember = {
+	name: string,
+	/**  The method's return type or the field's type. */
+	typeName: string,
+	/**  The method's parameter types; `None` for a field. */
+	parameters: string[] | null,
+	/**  The server's handle of the member, passed back unchanged. */
+	handleIdentifier: string,
+};
+
 /**  Optional parts of the invalidation; the symbol index is always rebuilt. */
 export type InvalidateCachesOptions = {
 	/**  Local History of every project. */
@@ -5798,6 +6212,11 @@ export type JavaSettings = {
 	jdtlsVmArgs?: string,
 	/**  Share one JDT LS across builds in an ordinary project window; other windows remain separate. */
 	jdtlsShared?: boolean,
+	/**
+	 *  JDK homes added by hand (Platform Settings › SDKs › Add JDK from Disk…), listed with the
+	 *  detected ones.
+	 */
+	addedJdks?: string[],
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
 	/**  Build Tools › Gradle. */
@@ -5826,7 +6245,10 @@ export type JdkVendor = {
  */
 export type JetBrainsSettings = {
 	entries: string[],
-	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
+	/**
+	 *  Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
+	 *  `codestyles/*.xml` and some of `options/`.
+	 */
 	files: { [key in string]: string },
 };
 
@@ -5966,6 +6388,57 @@ export type JjWorkspace = {
 	changeId: string,
 	commitId: string,
 	current?: boolean,
+};
+
+/**  The script frame that made a request, where the browser ran it (0-based line and column). */
+export type JsInitiator = {
+	function: string,
+	url: string,
+	line: number,
+	column: number,
+};
+
+/**
+ *  What a debugged page's browser reports about a request, reduced to what the Network view
+ *  shows. Events of one request share `request_id`; each kind fills its own fields.
+ */
+export type JsNetworkEvent = {
+	kind: JsNetworkKind,
+	requestId: string,
+	/**  The browser's monotonic clock, comparable between the events of a page. */
+	timestampMs: number,
+	/**  Request and response. */
+	url: string | null,
+	method: string | null,
+	/**  `Fetch`, `XHR`, `Script`, `Document`, … */
+	resourceType: string | null,
+	status: number | null,
+	mimeType: string | null,
+	/**  The request's headers, or the response's. */
+	headers: { [key in string]: string },
+	/**  Bytes received over the network, once finished. */
+	encodedLength: number | null,
+	errorText: string | null,
+	initiator: JsInitiator | null,
+};
+
+/**  Which step of a request a [`JsNetworkEvent`] reports. */
+export type JsNetworkKind = "request" | "response" | "finished" | "failed";
+
+/**  The body of a response, as text or as the browser's base64 for binary content. */
+export type JsResponseBody = {
+	body: string,
+	base64Encoded: boolean,
+	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
+	truncated: boolean,
+};
+
+/**  A response given in place of the server's to every request whose URL contains `url_contains`. */
+export type JsResponseRule = {
+	urlContains: string,
+	status: number,
+	contentType: string,
+	body: string,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
@@ -6178,6 +6651,7 @@ export type LanguagesSettings = {
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
+	zig?: ZigSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -6234,7 +6708,7 @@ export type LaunchConfig = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath` | `zig` | `zigPackages`. */
 	kind: string,
 	roots: LibraryRoot[],
 };
@@ -6642,10 +7116,57 @@ export type MavenSettings = {
 	delegateBuild?: boolean,
 };
 
+/**  Summary of one server discovered inside an external MCP configuration file. */
+export type McpDiscoveredServer = {
+	name: string,
+	transport: McpTransport,
+	enabled: boolean,
+	command: string | null,
+	args: string[],
+	url: string | null,
+	/**  Environment variable names declared on this server (values stay on the host). */
+	envKeys: string[],
+	/**  HTTP header names declared on this server (values stay on the host). */
+	headerKeys: string[],
+};
+
+/**  An external MCP configuration file discovered on disk (user CLI config or workspace file). */
+export type McpExternalSource = {
+	/**  Stable source identifier (e.g. `"copilot-cli"`, `"jetbrains-air"`, `"claude-code"`, `"cursor"`, `"workspace-mcp"`, `"vscode-mcp"`). */
+	id: string,
+	/**  Human-readable source label (e.g. `"GitHub Copilot CLI"`). */
+	label: string,
+	/**  Absolute path of the discovered configuration file. */
+	path: IpcPath,
+	/**  Suggested target scope when importing this source into OpenIDEA settings. */
+	suggestedScope: McpScope,
+	/**  Agent provider ID this external CLI reads natively (`Some("copilot")`, `Some("claude")`, `Some("cursor")`, or `None`). */
+	nativeProvider: string | null,
+	/**  Servers found inside this external configuration file (values omitted for safety; imported directly on the host). */
+	servers: McpDiscoveredServer[],
+};
+
+/**  Selection of one server from an external MCP configuration source to import. */
+export type McpImportSelection = {
+	sourceId: string,
+	name: string,
+};
+
 /**  A named environment variable or HTTP header for an MCP server. */
 export type McpKeyValue = {
 	name: string,
 	value: string,
+};
+
+/**  Result of testing/probing an MCP server (`initialize` + `tools/list`). */
+export type McpProbeResult = {
+	ok: boolean,
+	serverName: string | null,
+	serverVersion: string | null,
+	protocolVersion: string | null,
+	tools: McpToolSummary[],
+	durationMs: number,
+	error: string | null,
 };
 
 /**  Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`). */
@@ -6665,6 +7186,8 @@ export type McpServer = {
 	headers: McpKeyValue[],
 	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
 	agents?: string[],
+	/**  True when this Workspace server was added outside OpenIDEA and has not been approved yet. */
+	unapproved?: boolean,
 };
 
 /**  Payload for creating or updating a user or workspace MCP server. */
@@ -6685,7 +7208,7 @@ export type McpServerInput = {
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
-	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
 	 *  Run the tools that change the project or start processes without asking first
@@ -6696,6 +7219,23 @@ export type McpServerSettings = {
 	agentTabLimit?: number,
 	/**  Archived agent tabs kept; older ones are closed. */
 	agentArchiveLimit?: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address?: string,
+	/**
+	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+	 *  port forwards keep working after a restart.
+	 */
+	fixedPort?: boolean,
+	/**  The port of [`Self::fixed_port`]. */
+	port?: number,
+	/**
+	 *  Keep the bearer token across runs (in the app data, readable by this user only) rather than
+	 *  make a new one each run.
+	 */
+	fixedToken?: boolean,
 };
 
 /**  What Settings › Agents › MCP Server shows. */
@@ -6703,15 +7243,28 @@ export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
 	error: string | null,
+	/**  The address listened on (`0.0.0.0` / `::`: every address). */
+	address: string | null,
 	port: number | null,
+	/**
+	 *  Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
+	 *  reserved, so a free port was taken for this run.
+	 */
+	portUnavailable: string | null,
 	/**  The window's local project, which the URL and command below are for. */
 	project: IpcPath | null,
-	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	/**  `http://<address>:<port>/mcp?project=<root>`, with loopback for every address. */
 	url: string | null,
-	/**  Bearer token of `url` (changes with every run). */
+	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],
+};
+
+/**  One tool advertised by an MCP server during `tools/list`. */
+export type McpToolSummary = {
+	name: string,
+	description: string | null,
 };
 
 /**  Transport of an MCP server configured in Settings › Agents › MCP Servers. */
@@ -6810,6 +7363,27 @@ export type MergeVersions = {
 	merged: string | null,
 };
 
+/**  What a method body does, for the shapes a check can decide without guessing. */
+export type MethodBody = 
+/**  `pass`, `...`, a docstring, or nothing at all. */
+{ kind: "empty" } | 
+/**  Exactly one `super().name(args)` call, optionally `return`ed. */
+{ kind: "superCall"; returns: boolean; target: string; args: string[] } | 
+/**  Anything else. */
+{ kind: "other" };
+
+/**  The signature of the method at a position, as Change Signature edits it. */
+export type MethodSignature = {
+	/**  The server's handle of the method, passed back unchanged. */
+	methodIdentifier: string,
+	/**  `public`, `protected`, `private`, or empty for package-private. */
+	modifier: string,
+	returnType: string,
+	methodName: string,
+	parameters: SignatureParameter[],
+	exceptions: SignatureException[],
+};
+
 /**  Per-function totals (a recursive function's samples count once in `total`). */
 export type MethodStat = {
 	frame: number,
@@ -6838,6 +7412,15 @@ export type ModuleStructureSettings = {
 	testCompilerOutput?: string,
 	/**  Additional module dependencies. */
 	dependencies?: ModuleDependency[],
+};
+
+/**
+ *  A named set of files: `file:src//*.ts && !file:*.test.ts` (project-relative path patterns
+ *  joined with `||`, `&&`, `!` and parentheses).
+ */
+export type NamedScope = {
+	name?: string,
+	pattern?: string,
 };
 
 /**
@@ -6876,6 +7459,8 @@ export type NewAgentTask = {
 	isolation: Isolation,
 	/**  Branch to start the worktree from; the current branch when `None`. */
 	base: string | null,
+	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
+	mcpOverrides?: { [key in string]: boolean },
 };
 
 /**  The approvals new agent tasks start with. */
@@ -6899,6 +7484,11 @@ export type NodeSettings = {
 	runTarget?: string,
 	/**  `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`. */
 	packageManager?: string,
+	/**
+	 *  Runtime for running JavaScript / TypeScript files: `node` | `bun` | `deno`; empty = from the
+	 *  project (`deno.json` → Deno, `bun.lock` → Bun, else Node.js).
+	 */
+	runtime?: string,
 };
 
 /**  Why an identifier is not treated as a local. */
@@ -6981,6 +7571,8 @@ export type NotificationLevel = "info" | "warning" | "error";
 export type NotificationSettings = {
 	balloons?: boolean,
 	sound?: boolean,
+	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
+	systemNotifications?: boolean,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };
@@ -7642,9 +8234,16 @@ export type ProcessMemory = {
 	label: string,
 	/**  Project, run kind or similar. */
 	detail: string | null,
+	/**  The row's top process (the language server, run or terminal shell). */
+	pid: number,
 	/**  Number of processes counted in this row. */
 	processes: number,
 	bytes: number | null,
+	/**
+	 *  CPU use since the previous measurement, in percent of one core (Activity
+	 *  Monitor's "% CPU"); `None` on the first measurement of every process.
+	 */
+	cpuPercent: number | null,
 };
 
 export type Profile = {
@@ -7893,10 +8492,42 @@ export type PullRequestSummary = {
 /**  Push dialog › Push tags: every tag, or only annotated tags on the pushed commits. */
 export type PushTags = "all" | "currentBranch";
 
+/**  A class definition and the methods it declares. */
+export type PythonClassFacts = {
+	name: string,
+	/**  The class name identifier (selection range). */
+	selection: Range,
+	/**  Base names as written, a qualified name reduced to its last segment. */
+	bases: string[],
+	methods: PythonMethodFacts[],
+};
+
 /**  Python Debugger (debugpy launch options). */
 export type PythonDebuggerSettings = {
 	attachSubprocess?: boolean,
 	gevent?: boolean,
+};
+
+/**  One Python module's classes, in source order. */
+export type PythonFacts = {
+	classes: PythonClassFacts[],
+};
+
+/**  A method definition the inspections can reason about. */
+export type PythonMethodFacts = {
+	name: string,
+	/**  The method name identifier (selection range). */
+	selection: Range,
+	/**
+	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
+	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
+	 */
+	params: string[] | null,
+	/**  Decorated with `abstractmethod` (`abc.abstractmethod` included). */
+	abstractMethod: boolean,
+	/**  Decorated with `override` from `typing` / `typing_extensions`. */
+	overrideDecorated: boolean,
+	body: MethodBody,
 };
 
 export type PythonPackage = {
@@ -7905,7 +8536,10 @@ export type PythonPackage = {
 };
 
 export type PythonSettings = {
-	/**  Project interpreter executable; empty = auto-detect (project venv, else `python3`). */
+	/**
+	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+	 *  `target:<run-target-id>` = the Python of a Docker or Compose run target.
+	 */
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
@@ -8371,6 +9005,8 @@ export type RunSettings = {
 	/**  Ask before closing a Run tab whose process is still running. */
 	confirmTerminate?: boolean,
 	showOnStart?: boolean,
+	/**  New Run/Debug tabs start pinned: a later run doesn't take their place once finished. */
+	pinTabs?: boolean,
 	/**  Grace period between interrupt and kill when stopping a process. */
 	terminationTimeoutMs?: number,
 };
@@ -8439,6 +9075,26 @@ export type RustSettings = {
 	rustfmtArgs?: string,
 };
 
+export type SbtBuild = {
+	/**  Folder of `build.sbt`, relative to the project root (`""` for the root itself). */
+	dir: string,
+	/**  The launcher: a `sbt` / `sbtx` script in the build folder, else `sbt` on `PATH`. */
+	command: string,
+	/**  `sbt.version` of `project/build.properties`. */
+	version: string | null,
+	/**  The root project first, then the declared projects in source order. */
+	projects: SbtProject[],
+};
+
+export type SbtProject = {
+	/**  The project id tasks are scoped with (`core/compile`). */
+	id: string,
+	/**  Base folder relative to the build folder (`""` for the build's own). */
+	dir: string,
+	/**  The build's root project: its tasks run unscoped (and aggregate when sbt does). */
+	root: boolean,
+};
+
 /**  Progress of `scaffold_create`. */
 export type ScaffoldEvent = 
 /**  A new step began. */
@@ -8482,7 +9138,9 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven" | "ruby";
+"maven" | "ruby" | 
+/**  Zig toolchain directories. */
+"zig";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -8552,6 +9210,18 @@ export type ServerInfo = {
 	status: ServerStatus,
 	/**  OS process of the running instance (for memory attribution). */
 	pid: number | null,
+	/**  What the user sees as the server when another program serves in its place. */
+	label?: string | null,
+};
+
+/**
+ *  A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
+ *  none is fatal, and the token that confirms going on despite warnings.
+ */
+export type ServerRefactored = {
+	problems: RefactoringProblem[],
+	edit: WorkspaceEdit | null,
+	confirmation: string | null,
 };
 
 export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped" | "missing" | 
@@ -8636,6 +9306,8 @@ export type Settings = {
 	terminal?: TerminalSettings,
 	actionsOnSave?: ActionsOnSaveSettings,
 	externalTools?: ExternalTool[],
+	/**  Tools › Diff & Merge › External Diff Tools. */
+	externalDiff?: ExternalDiffSettings,
 	/**
 	 *  Language servers / debug adapters at a user-chosen location, by the
 	 *  command the language definition launches (`elixir-ls`, `codelldb`).
@@ -8663,6 +9335,12 @@ export type Settings = {
 	mcpServer?: McpServerSettings,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity?: AgentSecuritySettings,
+	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
+	scopes?: NamedScope[],
+	/**  Appearance & Behavior › File Colors. */
+	fileColors?: FileColorSettings,
+	/**  Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes. */
+	database?: DatabaseSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -8712,10 +9390,27 @@ export type Signature = {
 	parameters: ([number, number])[],
 };
 
+/**  A declared exception (`throws`), with the server's handle of its type. */
+export type SignatureException = {
+	type: string,
+	typeHandleIdentifier: string,
+};
+
 export type SignatureHelp = {
 	signatures: Signature[],
 	activeSignature: number,
 	activeParameter: number,
+};
+
+/**
+ *  A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+ *  added, and its index in the current signature (-1 for an added one).
+ */
+export type SignatureParameter = {
+	type: string,
+	name: string,
+	defaultValue: string,
+	originalIndex: number,
 };
 
 /**
@@ -8777,6 +9472,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
+	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
 	escapeOnPaste?: boolean,
@@ -8816,6 +9513,16 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+};
+
+/**  One row of SQL Resolution Scopes. */
+export type SqlResolutionScope = {
+	/**  Project-relative file or folder, `/`-separated; empty for the whole project. */
+	path?: string,
+	/**  Data source id. */
+	dataSource?: string,
+	/**  Schema unqualified names resolve in; empty for the data source's default. */
+	schema?: string,
 };
 
 export type SqlStatement = {
@@ -8904,6 +9611,13 @@ export type StepInTarget = {
 };
 
 export type StepKind = "over" | "into" | "out";
+
+export type StepSource = {
+	path: IpcPath,
+	text: string,
+	/**  A Gherkin `.feature` file; otherwise a script defining steps. */
+	feature: boolean,
+};
 
 export type StructuralEvent = { type: "file"; file: StructuralFile } | { type: "done"; summary: StructuralSummary };
 
@@ -9056,7 +9770,9 @@ export type SyntaxErrors = {
 };
 
 /**  Highlight classes sent to the UI, which maps each onto a Lezer tag. */
-export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter";
+export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter" | 
+/**  A shell command name (`pgrep`, a script's own function). */
+"command";
 
 /**  Highlighted ranges of a whole document, packed like LSP semantic tokens. */
 export type SyntaxHighlights = {
@@ -9164,8 +9880,10 @@ export type TestCaseReport = {
 	durationMs: number | null,
 	/**  Failure / error / skip message. */
 	message: string | null,
-	/**  Failure stack trace and captured output. */
+	/**  Failure / error stack trace. */
 	output: string | null,
+	/**  What the test printed (`<system-out>`, `<system-err>`). */
+	stdout: string | null,
 };
 
 export type TestCaseStatus = "passed" | "failed" | "skipped";
@@ -9312,6 +10030,12 @@ export type ToolInfo = {
 	 *  server and the `fallback` ones after it. Empty when it has none.
 	 */
 	alternatives: string[],
+	/**
+	 *  A language server used for part of what its languages need (`features` in its
+	 *  definition: pylsp-rope's refactorings next to basedpyright). Not offered for install
+	 *  when missing; the Language Servers page lists it.
+	 */
+	companion: boolean,
 };
 
 export type ToolKind = "languageServer" | "debugger" | 
@@ -9332,6 +10056,15 @@ export type ToolStatus =
 "onPath" | 
 /**  The executable chosen in settings. */
 "custom" | "missing";
+
+/**  A newer version of a tool the IDE installed, as its install source offers it now. */
+export type ToolUpdate = {
+	name: string,
+	/**  The installed version. */
+	current: string,
+	/**  The version installing the tool again would get. */
+	latest: string,
+};
 
 export type TransferError = {
 	path: string,
@@ -9363,6 +10096,12 @@ export type TypeScriptSettings = {
 	 *  or a path to a TypeScript `lib` directory.
 	 */
 	version?: string,
+	/**
+	 *  tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+	 *  plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+	 */
+	tsserverMaxMemory?: number,
 };
 
 /**  A misspelt word. */
@@ -9668,7 +10407,9 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value?: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value?: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+/**  Problems of the window's files changed; plugins re-read `problems`. */
+{ kind: "problemsChanged" } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,
@@ -9713,6 +10454,11 @@ export type Worktree = {
 	main: boolean,
 	locked: boolean,
 	prunable: boolean,
+};
+
+export type ZigSettings = {
+	/**  Directory holding the `zig` executable; empty = the one on `PATH`. */
+	zig?: string,
 };
 
 /* Tauri Specta runtime */

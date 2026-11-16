@@ -4,8 +4,9 @@ use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
-    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
-    McpServer, McpServerInput, NewAgentTask,
+    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
+    ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
+    NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -35,6 +36,18 @@ pub fn agent_subscribe(
 #[specta::specta]
 pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<AgentProvider>> {
     agent::providers(&state.host, window.label())
+}
+
+/// Refreshes the model catalog; force bypasses freshness, not the cooldown.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_refresh_models(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    force: bool,
+) -> IdeResult<AgentModelCatalog> {
+    agent::refresh_models(&state.host, window.label(), provider, force)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
@@ -162,6 +175,63 @@ pub fn agent_mcp_import(window: Window, state: State<'_, AppState>) -> IdeResult
     agent::mcp_import(&state.host, window.label())
 }
 
+/// Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
+/// single server object).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_save_json(
+    window: Window,
+    state: State<'_, AppState>,
+    scope: McpScope,
+    raw_json: String,
+    fallback_name: Option<String>,
+    agents: Vec<String>,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_save_json(&state.host, window.label(), scope, raw_json, fallback_name, agents)
+}
+
+/// Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_discover_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<McpExternalSource>> {
+    agent::mcp_discover_sources(&state.host, window.label()).await
+}
+
+/// Imports selected servers from discovered external MCP configuration files into User or Workspace scope.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_import_selected(
+    window: Window,
+    state: State<'_, AppState>,
+    scope: McpScope,
+    selections: Vec<McpImportSelection>,
+    overwrite: bool,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_import_selected(&state.host, window.label(), scope, selections, overwrite).await
+}
+
+/// Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_test(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<McpProbeResult> {
+    agent::mcp_test(&state.host, window.label(), id).await
+}
+
+/// Updates per-session MCP server enable/disable overrides on `task`.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_mcp_overrides(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    overrides: std::collections::BTreeMap<String, bool>,
+) -> IdeResult<AgentTask> {
+    agent::set_mcp_overrides(&state.host, window.label(), task, overrides)
+}
+
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
 /// before a task exists (skills and custom commands on disk included).
 #[tauri::command]
@@ -272,6 +342,19 @@ pub async fn agent_fork(
     turns: Option<u32>,
 ) -> IdeResult<AgentTask> {
     agent::fork(&state.host, window.label(), task, turns).await
+}
+
+/// Creates a temporary side conversation of `source`: lives in memory only, never
+/// persisted, not listed, and its session starts with the first message sent to it.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_create_ephemeral(
+    window: Window,
+    state: State<'_, AppState>,
+    request: NewAgentTask,
+    source: String,
+) -> IdeResult<AgentTask> {
+    agent::create_ephemeral(&state.host, window.label(), request, source).await
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.

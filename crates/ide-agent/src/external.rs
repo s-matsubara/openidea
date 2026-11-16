@@ -3,11 +3,13 @@
 //!
 //! Only the native providers keep transcripts on disk in a readable form: Claude Code
 //! (`<config>/projects/*/<id>.jsonl`, see `native::claude::history`) and Codex
-//! (`<home>/.codex/sessions/**`, rollout files with a `session_meta` line).
+//! (`<home>/.codex/sessions/**`, rollout files with a `session_meta` line, named in
+//! `<home>/.codex/session_index.jsonl`).
 
 use super::native::claude::history;
 use serde::Serialize;
 use specta::Type;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -132,7 +134,10 @@ fn codex_meta(line: &serde_json::Value) -> Option<(String, Option<String>)> {
     let payload =
         line.get("payload").filter(|p| p.get("type").and_then(serde_json::Value::as_str) == Some("session_meta"));
     let inner = payload.and_then(|p| p.get("payload")).or_else(|| {
-        line.get("type").and_then(serde_json::Value::as_str).filter(|t| *t == "session_meta").and(Some(line))
+        line.get("type")
+            .and_then(serde_json::Value::as_str)
+            .filter(|t| *t == "session_meta")
+            .map(|_| line.get("payload").unwrap_or(line))
     })?;
     let id = inner.get("id").and_then(serde_json::Value::as_str)?.to_owned();
     let cwd = inner.get("cwd").and_then(serde_json::Value::as_str).map(str::to_owned);
@@ -206,11 +211,39 @@ fn rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Codex sessions of the project at `root`: `<home>/.codex/sessions/**`.
+/// Thread names Codex keeps in `session_index.jsonl`, by thread id. A rename adds a line,
+/// so the last one wins.
+fn codex_names(codex_home: &Path) -> HashMap<String, String> {
+    let Ok(file) = std::fs::File::open(codex_home.join("session_index.jsonl")) else { return HashMap::new() };
+    let mut names = HashMap::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let id = v.get("id").and_then(serde_json::Value::as_str);
+        let name = v.get("thread_name").and_then(serde_json::Value::as_str).map(str::trim).filter(|n| !n.is_empty());
+        if let (Some(id), Some(name)) = (id, name) {
+            names.insert(id.to_owned(), name.to_owned());
+        }
+    }
+    names
+}
+
+/// Codex sessions of the project at `root`: `<home>/.codex/sessions/**`, titled by their
+/// thread names, else by their first prompts.
 pub fn codex_sessions(codex_home: &Path, root: &Path) -> Vec<ExternalSession> {
     let mut files = Vec::new();
     rollout_files(&codex_home.join("sessions"), 4, &mut files);
-    files.iter().filter_map(|p| codex_file(p)).filter(|s| in_project(s.cwd.as_deref(), root)).collect()
+    let mut sessions: Vec<ExternalSession> =
+        files.iter().filter_map(|p| codex_file(p)).filter(|s| in_project(s.cwd.as_deref(), root)).collect();
+    if !sessions.is_empty() {
+        let names = codex_names(codex_home);
+        for s in &mut sessions {
+            if let Some(name) = names.get(&s.session_id) {
+                s.title = short(name);
+            }
+        }
+    }
+    sessions
 }
 
 #[cfg(test)]
@@ -264,15 +297,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_meta_accepts_current_and_legacy_shapes() {
+        let meta = json!({"id": "thread-1", "cwd": "/work/app"});
+        for line in [
+            json!({"type": "session_meta", "payload": meta}),
+            json!({"payload": {"type": "session_meta", "payload": meta}}),
+            json!({"type": "session_meta", "id": "thread-1", "cwd": "/work/app"}),
+        ] {
+            assert_eq!(codex_meta(&line), Some(("thread-1".to_owned(), Some("/work/app".to_owned()))));
+        }
+    }
+
+    #[test]
     fn lists_codex_rollouts_with_meta() {
         let tmp = tempfile::tempdir().unwrap();
         write(
             &tmp.path().join("sessions/2026/01/02/rollout-01.jsonl"),
             &[
-                json!({"timestamp": "t", "payload": {"type": "session_meta",
-                    "payload": {"id": "thread-1", "cwd": "/work/app"}}}),
-                json!({"timestamp": "t", "payload": {"type": "user_message",
-                    "payload": {"message": "add tests"}}}),
+                json!({"timestamp": "t", "type": "session_meta",
+                    "payload": {"id": "thread-1", "cwd": "/work/app"}}),
+                json!({"timestamp": "t", "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "add tests"}}),
             ],
         );
         write(&tmp.path().join("sessions/notes.jsonl"), &[json!({"nope": true})]);
@@ -282,6 +327,16 @@ mod tests {
         assert_eq!((s.provider.as_str(), s.session_id.as_str()), ("codex", "thread-1"));
         assert_eq!(s.title, "add tests");
         assert_eq!(s.cwd.as_deref(), Some("/work/app"));
+
+        write(
+            &tmp.path().join("session_index.jsonl"),
+            &[
+                json!({"id": "thread-1", "thread_name": "Add tests", "updated_at": "t1"}),
+                json!({"id": "thread-2", "thread_name": "Other", "updated_at": "t1"}),
+                json!({"id": "thread-1", "thread_name": "Add parser tests", "updated_at": "t2"}),
+            ],
+        );
+        assert_eq!(codex_sessions(tmp.path(), Path::new("/work"))[0].title, "Add parser tests");
     }
 
     #[test]

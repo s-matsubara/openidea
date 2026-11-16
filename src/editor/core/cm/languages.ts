@@ -93,6 +93,11 @@ const OWN_MODES = [
     load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
   }),
   LanguageDescription.of({
+    name: "Gherkin",
+    extensions: ["feature"],
+    load: () => import("./gherkin").then((m) => m.gherkinSupport()),
+  }),
+  LanguageDescription.of({
     name: "Log",
     extensions: ["log"],
     load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
@@ -124,6 +129,7 @@ const OWN_MODES = [
     load: () => import("./angular/inline").then((m) => m.angularTypescript()),
   }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
+  LanguageDescription.of({ name: "Thymeleaf", load: () => import("./thymeleaf").then((m) => m.thymeleafSupport()) }),
   LanguageDescription.of({
     name: "ERB",
     alias: ["erb", "rhtml"],
@@ -136,6 +142,12 @@ const OWN_MODES = [
     alias: ["django-html", "djhtml"],
     extensions: ["djhtml"],
     load: () => import("./django").then((m) => m.django()),
+  }),
+  LanguageDescription.of({
+    name: "Helm Template",
+    alias: ["helm-template", "gotmpl"],
+    extensions: ["gotmpl"],
+    load: () => import("./helm").then((m) => m.helmTemplate()),
   }),
   LanguageDescription.of({
     name: "Astro",
@@ -287,9 +299,11 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/java tags annotations as plain identifiers.
+// @lezer/java tags annotations as plain identifiers, and `this` as `self` (Python's `self` colour);
+// IntelliJ colours `this` as a keyword.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
+  this: t.keyword,
 };
 
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
@@ -300,6 +314,9 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  // CLion colours `this` as a keyword, RustRover `self`.
+  "C++": { this: t.keyword },
+  Rust: { self: t.keyword },
   PHP: {
     "; ,": t.separator,
     "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,

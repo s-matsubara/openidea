@@ -14,6 +14,7 @@ vi.mock("@/editor/api", async (original) => ({
   activeEditor: activeEditorMock,
 }));
 const vcsStatus = vi.fn();
+const vcsStatusPaths = vi.fn();
 const vcsRoots = vi.fn();
 const vcsBranchInfo = vi.fn();
 
@@ -24,6 +25,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsStatus: () => vcsStatus(),
+      vcsStatusPaths: (paths: string[]) => vcsStatusPaths(paths),
       vcsBranchInfo: (repo: string | null) => vcsBranchInfo(repo),
       vcsRoots: () => vcsRoots(),
     },
@@ -47,7 +49,7 @@ import {
   toEntries,
   undoCommitProblem,
 } from "../rebasePlan";
-import { refreshNow, useVcs } from "../store";
+import { refreshNow, schedulePathsRefresh, useVcs } from "../store";
 
 const info = (patch: Partial<BranchInfo> = {}): BranchInfo => ({
   head: "main",
@@ -262,6 +264,7 @@ describe("log ordering and staleness", () => {
 describe("status refresh", () => {
   beforeEach(() => {
     vcsStatus.mockReset();
+    vcsStatusPaths.mockReset();
     vcsRoots.mockReset().mockResolvedValue({ status: "ok", data: [{ root: "/p", kind: "git", operation: null }] });
     vcsBranchInfo.mockReset().mockResolvedValue({ status: "ok", data: info() });
     useVcs.setState({ available: true, jjRoots: [], branchesLoaded: false, stashesLoaded: false, status: [] });
@@ -271,7 +274,14 @@ describe("status refresh", () => {
     const dispose = registerVcsActions();
     try {
       const context = { vcsAvailable: true, vcsJjPath: true };
-      for (const id of ["vcs.addToVcs", "vcs.rollback", "vcs.showDiff", "vcs.showHistory", "vcs.annotate"]) {
+      for (const id of [
+        "vcs.addToVcs",
+        "vcs.rollback",
+        "vcs.showDiff",
+        "vcs.showDiffForLines",
+        "vcs.showHistory",
+        "vcs.annotate",
+      ]) {
         expect(evaluateWhen(getAction(id)?.when, context), id).toBe(false);
       }
       expect(evaluateWhen(getAction("vcs.jjAnnotate")?.when, { vcsAvailable: false, vcsJjPath: true })).toBe(true);
@@ -331,6 +341,37 @@ describe("status refresh", () => {
     expect(useVcs.getState().available).toBe(true);
     expect(isJjPath("/jj/file.txt")).toBe(true);
     expect(isJjPath("/git/file.txt")).toBe(false);
+  });
+
+  it("refreshes the jj snapshot when a file watcher batch crosses from Git into jj", async () => {
+    const jjRoot = "/p/nested/jj";
+    const roots = (commitId: string) => [
+      { root: "/p", kind: "git", operation: null },
+      { root: jjRoot, kind: "jj", workingCopy: { commitId, files: [] } },
+    ];
+    vcsRoots.mockResolvedValue({ status: "ok", data: roots("before") });
+    vcsStatus.mockResolvedValue({ status: "ok", data: [] });
+    vcsStatusPaths.mockResolvedValue({ status: "ok", data: [fs("file.txt", { unstaged: "modified" })] });
+    useVcs.setState({ repo: "/p" });
+    await refreshNow();
+    vcsRoots.mockClear();
+    vi.useFakeTimers();
+    try {
+      schedulePathsRefresh(["/p/file.txt"]);
+      await vi.runOnlyPendingTimersAsync();
+      expect(vcsStatusPaths).toHaveBeenCalledExactlyOnceWith(["/p/file.txt"]);
+      expect(vcsRoots).not.toHaveBeenCalled();
+
+      vcsRoots.mockResolvedValue({ status: "ok", data: roots("after") });
+      schedulePathsRefresh(["/p/file.txt"]);
+      schedulePathsRefresh([`${jjRoot}/file.txt`]);
+      await vi.runOnlyPendingTimersAsync();
+      expect(vcsStatusPaths).toHaveBeenCalledTimes(1);
+      expect(vcsRoots).toHaveBeenCalledTimes(1);
+      expect(useVcs.getState().jjRoots[0]?.workingCopy?.commitId).toBe("after");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("disables unsupported Git actions when all roots use jj", async () => {

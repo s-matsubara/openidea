@@ -17,6 +17,8 @@
 pub(crate) mod discover;
 mod normalize;
 
+pub(crate) use normalize::base64 as normalize_base64;
+
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
 use normalize::Normalizer;
 use parking_lot::Mutex;
@@ -58,6 +60,8 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Forms the agent asks the user to fill in (`elicitation/create`); not URL mode.
+        "elicitation": { "form": {} },
         // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
         // only when the client advertises this flag (undocumented Cursor ACP extension).
         "_meta": { "parameterizedModelPicker": true },
@@ -319,6 +323,13 @@ impl Handler for Dialect {
             return self.inner.on_request(method, v1_permission_request(params));
         }
         self.inner.on_request(method, params)
+    }
+
+    fn on_request_raw(&self, method: &str, params: Value, raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        if self.v2() && method == "session/request_permission" {
+            return self.on_request_with_data(method, params);
+        }
+        self.inner.on_request_raw(method, params, raw)
     }
 }
 

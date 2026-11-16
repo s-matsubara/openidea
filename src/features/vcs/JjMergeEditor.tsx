@@ -287,6 +287,10 @@ export function JjMergeEditor({ input }: { input: EditorInput }) {
     applyChange: () => false,
     file: () => {},
     showSettings: () => {},
+    focusOpposite: () => false,
+    close: () => false,
+    swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {

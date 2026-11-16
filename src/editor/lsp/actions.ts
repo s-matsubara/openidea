@@ -30,7 +30,7 @@ import {
 import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
-export const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /**
  * Languages whose servers offer Generate (constructors, accessors, overrides…).
@@ -319,6 +319,9 @@ export function registerLspActions(): () => void {
     editorAction("refactor.extractField", "Introduce Field…", "Refactor", (v) => runRefactoring(v, "extractField")),
     editorAction("refactor.extractParameter", "Introduce Parameter…", "Refactor", (v) =>
       runRefactoring(v, "extractParameter"),
+    ),
+    editorAction("refactor.extractInterface", "Extract Interface…", "Refactor", (v) =>
+      runRefactoring(v, "extractInterface"),
     ),
     editorAction("refactor.move", "Move…", "Refactor", (v) => runRefactoring(v, "move")),
     editorAction("refactor.changeSignature", "Change Signature…", "Refactor", (v) =>

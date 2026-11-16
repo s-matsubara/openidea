@@ -1,7 +1,7 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -130,65 +130,60 @@ export function remoteBranchesOf(branches: readonly Branch[], remote: string): s
 
 // --- Pull -------------------------------------------------------------------
 
-export function showPullDialog() {
-  openDialog((close) => <PullRepositoryDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showPullDialog(repo?: string | null) {
+  openDialog((close) => <PullDialog initialRepo={repo} onClose={close} />);
 }
 
-function PullRepositoryDialog({ onClose }: { onClose: () => void }) {
-  const roots = useVcs((state) => state.roots);
-  const project = useVcs((state) => state.root);
-  const [repo, setRepo] = useState(currentRepo);
-  if (roots.length < 2) return <PullDialog onClose={onClose} />;
-  const selected = repo && roots.includes(repo) ? repo : roots[0]!;
-  const selector = (
+/** IDEA's Git Root choice: shown only when the project holds several repositories. */
+export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+  const [roots] = useState(() => useVcs.getState().roots);
+  if (roots.length < 2) return null;
+  return (
     <Select
       aria-label="Repository"
-      value={selected}
-      options={roots.map((root) => ({ value: root, label: repoName(root), detail: root }))}
-      onChange={setRepo}
-    />
-  );
-  return (
-    <PullDialog
-      key={`${project}\0${selected}`}
-      selectedRepo={selected}
-      onClose={onClose}
-      repositorySelector={selector}
+      value={repo ?? roots[0] ?? null}
+      options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
+      onChange={onChange}
     />
   );
 }
 
-function PullDialog({
-  onClose,
-  selectedRepo,
-  repositorySelector,
-}: {
-  onClose: () => void;
-  selectedRepo?: string;
-  repositorySelector?: React.ReactNode;
-}) {
-  const [repo] = useState(() => selectedRepo ?? currentRepo());
-  const [info, setInfo] = useState(() =>
-    selectedRepo === undefined || selectedRepo === currentRepo() ? useVcs.getState().branch : null,
-  );
+/** The repository's branch info: the store's for the selected repository, else read from git. */
+export function useBranchInfo(repo: string | null) {
+  const [initial] = useState(() => ({ repo: currentRepo(), info: useVcs.getState().branch }));
+  const [loaded, setLoaded] = useState<{ repo: string | null; info: BranchInfo | null } | null>(null);
   useEffect(() => {
-    if (selectedRepo === undefined || selectedRepo === currentRepo()) return;
-    let alive = true;
-    void call(commands.vcsBranchInfo(selectedRepo))
-      .then((value) => {
-        if (alive) setInfo(value);
-      })
-      .catch(() => undefined);
+    if (repo === initial.repo) return;
+    let live = true;
+    void call(commands.vcsBranchInfo(repo))
+      .then((info) => live && setLoaded({ repo, info }))
+      .catch(() => live && setLoaded({ repo, info: null }));
     return () => {
-      alive = false;
+      live = false;
     };
-  }, [selectedRepo]);
+  }, [repo, initial.repo]);
+  if (repo === initial.repo) return initial.info;
+  return loaded?.repo === repo ? loaded.info : null;
+}
+
+function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
+  const info = useBranchInfo(repo);
   const branches = useBranches(repo);
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
   const [chosenBranch, setBranch] = useState<string | null>(null);
   const [rebase, setRebase] = useState(false);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setRemotes(null);
+    setRemote(null);
+    setBranch(null);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -203,7 +198,7 @@ function PullDialog({
     return () => {
       alive = false;
     };
-  }, [info?.upstream, repo]);
+  }, [repo, info?.upstream]);
 
   const remoteBranches = useMemo(() => (remote ? remoteBranchesOf(branches, remote) : []), [branches, remote]);
   // Default: the upstream's branch, else the same name as the current branch.
@@ -235,7 +230,7 @@ function PullDialog({
 
   return (
     <PullFrame title={tx`Pull to ${info?.head ?? "HEAD"}`} onClose={onClose} disabled={!remote} run={() => void run()}>
-      {repositorySelector}
+      <RepoPicker repo={repo} onChange={chooseRepo} />
       {remotes && !remotes.length ? (
         <div className={styles.hint}>
           <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
@@ -272,13 +267,14 @@ function PullDialog({
 
 // --- Merge ------------------------------------------------------------------
 
-export function showMergeDialog() {
-  openDialog((close) => <MergeDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showMergeDialog(repo?: string | null) {
+  openDialog((close) => <MergeDialog initialRepo={repo} onClose={close} />);
 }
 
-function MergeDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [head] = useState(() => useVcs.getState().branch?.head ?? null);
+function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
+  const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [branch, setBranch] = useState<string | null>(null);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
@@ -288,6 +284,12 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
     () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
     [branches],
   );
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setBranch(null);
+  };
 
   const run = async () => {
     if (!branch) return;
@@ -314,6 +316,7 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <div className={styles.fieldLabel}>
           <T>Branch to merge:</T>
         </div>
@@ -344,13 +347,14 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
 
 // --- Rebase -----------------------------------------------------------------
 
-export function showRebaseDialog() {
-  openDialog((close) => <RebaseDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showRebaseDialog(repo?: string | null) {
+  openDialog((close) => <RebaseDialog initialRepo={repo} onClose={close} />);
 }
 
-function RebaseDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [head] = useState(() => useVcs.getState().branch?.head ?? null);
+function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
+  const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [upstream, setUpstream] = useState<string | null>(null);
   const [useOnto, setUseOnto] = useState(false);
@@ -362,6 +366,13 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
     [branches],
   );
   const ready = !!upstream && (!useOnto || !!onto);
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setUpstream(null);
+    setOnto(null);
+  };
 
   const run = async () => {
     if (!upstream) return;
@@ -396,6 +407,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <div className={styles.fieldLabel}>
           {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
         </div>

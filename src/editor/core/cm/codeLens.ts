@@ -134,7 +134,8 @@ class LensWidget extends WidgetType {
     const guides = this.inline
       ? null
       : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
-    if (!this.inline) dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
+    if (!this.inline)
+      dom.style.paddingLeft = `calc(${LINE_INSET}px + ${this.indent} * var(--openidea-space, ${view.defaultCharacterWidth}px))`;
     if (guides) {
       dom.style.setProperty("--openidea-guide-images", guides.images);
       dom.style.setProperty("--openidea-guide-positions", guides.positions);
@@ -232,7 +233,10 @@ const lensTheme = EditorView.theme({
   // positioned inner box, the way IDEA paints line-end inlays. Nothing here takes part in the
   // line's flow: the hint can neither wrap to the next line (a soft-wrapped line has no room for
   // it) nor stretch the line's height, and it overflows past the editor edge instead.
+  // The anchor's own offset is a custom property: the blame and plugin messages step past the
+  // hint by measuring this inner box plus that offset (inlineBlame.ts, decorations.ts).
   ".cm-openidea-lensInline": {
+    "--openidea-hint-offset": "12px",
     display: "inline-block",
     width: "0",
     position: "relative",
@@ -243,7 +247,7 @@ const lensTheme = EditorView.theme({
   },
   ".cm-openidea-lensInlineInner": {
     position: "absolute",
-    left: "12px",
+    left: "var(--openidea-hint-offset)",
     bottom: "-2px",
     display: "flex",
     alignItems: "center",

@@ -42,11 +42,13 @@ import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
+import { iconAreaExtension } from "./iconArea";
 import { renderedDocsExtension } from "./renderedDocs";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
 import { commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
+import { bracketBlockSelect } from "./bracketBlockSelect";
 import { visibleGoalColumns } from "./verticalMotion";
 import { tabKeymap } from "./smartKeys";
 import { editorBaseKeymap } from "./baseKeymap";
@@ -379,6 +381,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     EditorState.allowMultipleSelections.of(true),
     multiCaretMouse,
     columnModeExtension,
+    bracketBlockSelect,
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
@@ -397,6 +400,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     overviewLane,
     cornerInset,
     codeLensExtension,
+    iconAreaExtension,
     renderedDocsExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",

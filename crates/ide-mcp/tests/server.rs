@@ -1,7 +1,7 @@
 //! The server over real HTTP, and the stdio bridge in front of it, with a
 //! registry standing in for the IDE host.
 
-use ide_mcp::{Discovery, McpServer, Tool, ToolCallError, ToolRegistry, discovery_path, stdio};
+use ide_mcp::{Discovery, McpServer, ServerOptions, Tool, ToolCallError, ToolRegistry, discovery_path, stdio};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -365,4 +365,62 @@ async fn a_cancellation_that_arrives_before_the_call_is_remembered() {
     let call = json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}});
     let (_, body) = post(&s, "/mcp", &headers, &call).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["result"]["isError"], true);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fixed_port_and_token_are_used_and_a_taken_port_falls_back_to_a_free_one() {
+    let mut s = setup();
+    s.server.take().unwrap().stop();
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let token = "ab".repeat(32);
+    let options = ServerOptions { port: Some(free), token: Some(token.clone()), ..Default::default() };
+    let registry = Arc::new(Registry { project: s.project.clone() });
+    let runtime = tokio::runtime::Handle::current();
+    s.server =
+        Some(McpServer::start_with(registry.clone(), Some(s.discovery.clone()), &runtime, options.clone()).unwrap());
+    assert_eq!((s.server().port(), s.server().token()), (free, token.as_str()));
+    assert!(s.server().port_unavailable().is_none());
+    assert_eq!(Discovery::read(&s.discovery).unwrap().port, free);
+    let list = rpc(&s, "tools/list", json!({})).await;
+    assert_eq!(list["result"]["tools"][0]["name"], "echo");
+
+    // The port is taken (by the first server): a second one listens elsewhere and says why.
+    let second = McpServer::start_with(registry, None, &runtime, options).unwrap();
+    assert_ne!(second.port(), free);
+    assert!(
+        second.port_unavailable().is_some_and(|why| why.contains(&free.to_string())),
+        "{:?}",
+        second.port_unavailable()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_listen_address_is_used_and_one_not_on_this_computer_fails() {
+    let mut s = setup();
+    s.server.take().unwrap().stop();
+    let registry = Arc::new(Registry { project: s.project.clone() });
+    let runtime = tokio::runtime::Handle::current();
+
+    // Every address: clients here use loopback; other computers name the server by an address of it.
+    let every = ServerOptions { address: Some("0.0.0.0".parse().unwrap()), ..Default::default() };
+    s.server = Some(McpServer::start_with(registry.clone(), Some(s.discovery.clone()), &runtime, every).unwrap());
+    let port = s.server().port();
+    assert_eq!(s.server().address().to_string(), "0.0.0.0");
+    assert!(s.server().url(&s.project).starts_with(&format!("http://127.0.0.1:{port}/mcp?")));
+    assert_eq!(Discovery::read(&s.discovery).unwrap().address.to_string(), "127.0.0.1");
+    let ping = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }).to_string();
+    let request = |host: String| {
+        format!(
+            "POST /mcp HTTP/1.1\r\nHost: {host}\r\n{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ping}",
+            bearer(&s),
+            ping.len()
+        )
+    };
+    assert_eq!(http(port, &request(format!("192.0.2.7:{port}"))).await.0, 200);
+    assert_eq!(http(port, &request(format!("evil.example:{port}"))).await.0, 403, "never a host name");
+
+    // Not an address of this computer: the server does not start, and says which address.
+    let elsewhere = ServerOptions { address: Some("192.0.2.1".parse().unwrap()), ..Default::default() };
+    let error = McpServer::start_with(registry, None, &runtime, elsewhere).err().expect("no such address here");
+    assert!(error.to_string().contains("192.0.2.1"), "{error}");
 }

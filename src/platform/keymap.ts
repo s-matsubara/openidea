@@ -199,11 +199,31 @@ export function bindingsFor(actionId: string): string[] {
   return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
+let bindingsCache: {
+  preset: string;
+  overrides: Keymap;
+  extensions: Keymap;
+  pairs: Array<[string, string]>;
+} | null = null;
+
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
   const { preset, overrides, extensions } = useKeymap.getState();
+  // The dispatcher asks for these on every keystroke; merging and normalizing
+  // the whole keymap each time costs more than handling the key. The store
+  // replaces `overrides` / `extensions` wholesale, so identity tracks changes.
+  if (
+    bindingsCache?.preset === preset &&
+    bindingsCache.overrides === overrides &&
+    bindingsCache.extensions === extensions
+  )
+    return bindingsCache.pairs;
   const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
-  return Object.entries(merged).flatMap(([id, keys]) => keys.map((k) => [normalizeBinding(k), id] as [string, string]));
+  const pairs = Object.entries(merged).flatMap(([id, keys]) =>
+    keys.map((k) => [normalizeBinding(k), id] as [string, string]),
+  );
+  bindingsCache = { preset, overrides, extensions, pairs };
+  return pairs;
 }
 
 let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;
@@ -709,4 +729,44 @@ export function installKeyboardDispatcher(
     target.removeEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
     target.removeEventListener("blur", onBlur);
   };
+}
+
+/** A keymap being edited: a bundled preset and the overrides on top of it. */
+export interface KeymapDraft {
+  preset: string;
+  overrides: Keymap;
+}
+
+/**
+ * The defaults of `id`: the preset's, or for an action the preset leaves out,
+ * the shortcut its plugin declares (`keymaps`). Removing or changing one is an
+ * override like any other.
+ */
+export function presetBindings(preset: string, id: string): string[] {
+  const own = PRESETS[preset];
+  const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
+  return (keys ?? []).map(normalizeBinding);
+}
+
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Sets the full binding list of `id`; drops the override when it equals the preset. */
+export function withBindings(draft: KeymapDraft, id: string, bindings: readonly string[]): Keymap {
+  const list = [...new Set(bindings.map(normalizeBinding))];
+  const overrides = { ...draft.overrides };
+  if (sameList(list, presetBindings(draft.preset, id))) delete overrides[id];
+  else overrides[id] = list;
+  return overrides;
+}
+
+/** A free id for a user keymap called `name`. */
+export function customKeymapId(name: string, customs: Record<string, unknown>): string {
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "keymap";
+  let id = `custom.${slug}`;
+  for (let i = 2; customs[id] || PRESETS[id]; i++) id = `custom.${slug}-${i}`;
+  return id;
 }

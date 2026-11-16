@@ -8,6 +8,7 @@
  * editor tabs only. One LightEdit window collects them all.
  */
 import { executeAction, type Action } from "@/platform/actions";
+import type { ProjectOpenMode } from "@/bindings";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
 import {
@@ -15,6 +16,7 @@ import {
   confirmLeaveProject,
   dirname,
   openLightEdit,
+  openLightEditUntitled,
   openProject,
   provideStartupLaunch,
   useProject,
@@ -26,6 +28,7 @@ import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
+import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -53,10 +56,10 @@ function openFailed(path: string, e: unknown) {
 /** Opens project `path` in this window; true once it is this window's project. */
 async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
-  if (!(await confirmLeaveProject())) return false;
+  // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
+  const wsl = await commands.wslResolve(path).catch(() => null);
+  if (!(await confirmLeaveProject(!wsl))) return false;
   try {
-    // A folder of a WSL distro runs there, not as a network folder.
-    const wsl = await commands.wslResolve(path).catch(() => null);
     if (wsl) await connectRemote(wsl.target, wsl.path);
     else await openProject(path);
     return true;
@@ -130,6 +133,17 @@ export async function openPaths(
 }
 
 /**
+ * `window_open_project`. When that may create a window, the trust question is asked here
+ * first (IntelliJ IDEA asks before the project frame opens): the new window would otherwise
+ * show its Welcome screen under the question. A WSL folder opens as a remote project, whose
+ * window asks about the distribution's folder itself.
+ */
+async function openProjectWindow(path: string, mode: ProjectOpenMode, files: readonly string[] = []) {
+  if (mode !== "same" && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
+  return call(commands.windowOpenProject(path, mode, [...files]));
+}
+
+/**
  * Opens `path`, focusing the window that already has it. In auto mode, use this
  * window if empty and open a new window otherwise. `"tab"` joins this window's
  * project tabs. `files` then open in the project's editor.
@@ -143,7 +157,7 @@ export async function openProjectInWindow(
   const s = useProject.getState();
   const mode = placement === "auto" ? (s.project !== null || s.lightEdit ? "new" : "same") : placement;
   try {
-    const outcome = await call(commands.windowOpenProject(path, mode, [...files]));
+    const outcome = await openProjectWindow(path, mode, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch (e) {
     openFailed(path, e);
@@ -287,7 +301,7 @@ async function openCliDiff(diff: { left: string; right: string }): Promise<void>
     import("@/features/vcs/diffInput"),
     import("@/features/vcs/compareData"),
   ]);
-  await openVcsDiff(compareFilesData(diff.left, diff.right));
+  await openVcsDiff({ ...compareFilesData(diff.left, diff.right), swappable: true });
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
@@ -486,6 +500,20 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "file.newUntitled",
+      title: t("app.action.newFile"),
+      category: t("app.category.file"),
+      icon: "plus",
+      keywords: ["new", "create", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        // A welcome window becomes a LightEdit one first (its buffers need a backend project).
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true });
+      },
+    },
+    {
       // Files and folders dropped on the Welcome screen.
       id: "file.openPaths",
       title: "Open Paths",
@@ -524,7 +552,7 @@ export function windowActions(): Action[] {
         const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
         if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
         try {
-          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow ? "new" : "same", []));
+          const outcome = await openProjectWindow(arg.path, arg.newWindow ? "new" : "same");
           if (outcome.kind === "current") await openHere(arg.path);
         } catch (error) {
           openFailed(arg.path, error);
@@ -583,7 +611,9 @@ async function closeThisWindow(): Promise<void> {
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
   const off = editor?.onActiveInputChange?.((input) => {
-    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length) return;
+    // A mode switch clears and re-fills the tabs in place: while it runs, the
+    // momentarily empty editor must not read as "the user closed everything".
+    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length || editorSwitching()) return;
     void closeWindow().catch((e) => console.warn("could not close the window", e));
   });
   return () => off?.();

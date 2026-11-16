@@ -12,6 +12,25 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
+    let unity_pid = if config.adapter == "unity" {
+        if config.request != "attach" {
+            return Err(ide_core::IdeError::invalid("Unity debugging only supports attachment to a running Editor"));
+        }
+        let arguments = launch_arguments(&config)?;
+        let pid = arguments["name"]
+            .as_str()
+            .and_then(|name| name.strip_prefix("Unity Editor ("))
+            .and_then(|name| name.strip_suffix(')'))
+            .and_then(|pid| pid.parse::<u32>().ok());
+        if let Some(pid) = pid {
+            require_unity_editor(pid)?;
+        }
+        let cwd = config.cwd.as_ref().map(|path| path.as_ref()).unwrap_or_else(|| std::path::Path::new("."));
+        unity::require_runtime(cwd)?;
+        pid
+    } else {
+        None
+    };
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -100,10 +119,24 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let server_port = debug_server_port(&config);
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
+    if result.is_err()
+        && let Some(pid) = unity_pid
+    {
+        require_unity_editor(pid)?;
+    }
     if let (Ok(id), Some(port)) = (&result, server_port) {
         attach_jvm_inspector(host, window, *id, port);
     }
     result
+}
+
+fn require_unity_editor(pid: u32) -> IdeResult<()> {
+    if !ide_core::process::process_alive(pid) {
+        return Err(ide_core::IdeError::unavailable(format!(
+            "Unity Editor (PID {pid}) is no longer running. Refresh the Unity process list and select a running Editor."
+        )));
+    }
+    Ok(())
 }
 
 /// The port of the java-debug server this machine's jdtls started; `debugServer` as `host:port`
@@ -372,6 +405,46 @@ pub async fn debug_restart_frame(host: &Host, _window: &str, session: DebugSessi
     host.debugger.restart_frame(session, frame_id).await
 }
 
+pub async fn debug_js_custom_breakpoints(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    ids: Vec<String>,
+    xhr: Vec<String>,
+) -> IdeResult<()> {
+    host.debugger.js_set_custom_breakpoints(session, ids, xhr).await
+}
+
+pub async fn debug_js_response_overrides(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    rules: Vec<ide_dap::JsResponseRule>,
+) -> IdeResult<()> {
+    host.debugger.js_set_response_overrides(session, rules).await
+}
+
+pub async fn debug_js_response_body(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    request_id: String,
+) -> IdeResult<ide_dap::JsResponseBody> {
+    host.debugger.js_response_body(session, request_id).await
+}
+
+pub async fn debug_js_start_profile(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.js_start_profile(session).await
+}
+
+pub async fn debug_js_stop_profile(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+) -> IdeResult<ide_core::IpcPath> {
+    host.debugger.js_stop_profile(session).await.map(Into::into)
+}
+
 pub fn debug_capabilities(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
     host.debugger.capabilities(session)
 }
@@ -418,6 +491,17 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
 pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
     host.require_trust(window)?;
     ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
+}
+
+pub async fn debug_unity_processes(host: &Host, window: &str) -> IdeResult<Vec<attach::AttachableProcess>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    if ide_workspace::unity::detect(&project.root).is_none() {
+        return Err(ide_core::IdeError::invalid("Open a Unity project before attaching to the Editor"));
+    }
+    let command = ide_sdk::apply::tool_command(&project.root, &project.settings.effective(), "unity-debug")
+        .map(|p| p.to_string_lossy().into_owned());
+    unity::editors(command, project.root.clone()).await
 }
 
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
@@ -588,6 +672,23 @@ pub(crate) fn register(d: &mut Dispatcher) {
         debug_restart_frame(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
     });
     d.add("debug_capabilities", |c| async move { debug_capabilities(&c.host, &c.window, c.arg("session")?) });
+    d.add("debug_js_response_overrides", |c| async move {
+        debug_js_response_overrides(&c.host, &c.window, c.arg("session")?, c.arg("rules")?).await
+    });
+    d.add("debug_js_response_body", |c| async move {
+        debug_js_response_body(&c.host, &c.window, c.arg("session")?, c.arg("requestId")?).await
+    });
+    d.add("debug_js_custom_breakpoints", |c| async move {
+        debug_js_custom_breakpoints(&c.host, &c.window, c.arg("session")?, c.arg("ids")?, c.arg("xhr")?).await
+    });
+    d.add(
+        "debug_js_start_profile",
+        |c| async move { debug_js_start_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
+    d.add(
+        "debug_js_stop_profile",
+        |c| async move { debug_js_stop_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
     d.add("debug_set_function_breakpoints", |c| async move {
         debug_set_function_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
     });
@@ -607,6 +708,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
     d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
+    d.add("debug_unity_processes", |c| async move { debug_unity_processes(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });

@@ -34,6 +34,7 @@ import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
+export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -73,6 +74,11 @@ export interface EditorContribution {
    * language-server document and URI (see {@link cellEditorExtensions}).
    */
   cellExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
+  /**
+   * Extensions for a diff viewer pane that shows a file's open document (the working copy,
+   * Compare Files): `ctx` is that document's (see {@link diffSideExtensions}).
+   */
+  diffExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
 }
 
 /**
@@ -119,6 +125,8 @@ export function lazyEditorExtension(
 export interface TextEditorHandle {
   view: EditorView;
   ctx: EditorDocContext;
+  /** The editor tab it shows, for the editors of tabs (not diff sides, previews…). */
+  tabId?: string;
 }
 
 interface EditorRegistry {
@@ -187,6 +195,20 @@ export function embeddedEditorExtensions(path: string): Extension {
 }
 
 const embeddedOf = (m: Map<string, EditorContribution>) => [...m.values()].filter((c) => c.embedded);
+
+/** The `diffExtensions` of every contribution, for a diff pane showing the open document of `ctx`. */
+export function diffSideExtensions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.diffExtensions) continue;
+    try {
+      out.push(c.diffExtensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
 
 /** The `cellExtensions` of every contribution, for the editor of a notebook code cell. */
 export function cellEditorExtensions(ctx: EditorDocContext): Extension[] {
@@ -270,6 +292,20 @@ export const transientChange = Annotation.define<boolean>();
  * copy, so position-based requests that edit (format, rename) await it first.
  */
 export const documentSynced = Facet.define<() => Promise<void>, (() => Promise<void>) | null>({
+  combine: (values) => values[0] ?? null,
+});
+
+/**
+ * Undo / Redo of an editor whose history is kept outside CodeMirror (notebook cells share
+ * the notebook's backend history). Commands that would call CodeMirror's history (Vim's
+ * `u` / `Ctrl-R`) go through it instead.
+ */
+export interface ExternalHistory {
+  undo(): void;
+  redo(): void;
+}
+
+export const externalHistory = Facet.define<ExternalHistory, ExternalHistory | null>({
   combine: (values) => values[0] ?? null,
 });
 
@@ -515,6 +551,15 @@ export function _provideNavigationHistory(provider: () => NavigationHistorySnaps
   navigationHistoryProvider = provider;
 }
 
+/** A project↔file-editor switch is clearing and re-filling the tabs. @internal editor/core only. */
+let editorSwitchingFlag = false;
+export function _setEditorSwitching(value: boolean) {
+  editorSwitchingFlag = value;
+}
+export function editorSwitching(): boolean {
+  return editorSwitchingFlag;
+}
+
 // --- editor events ------------------------------------------------------------
 
 export type EditorEvent =
@@ -603,7 +648,7 @@ export function _saveParticipants(): SaveParticipant[] {
 export async function revealRange(
   path: string,
   range: { start: { line: number; col: number }; end?: { line: number; col: number } },
-  options: { preview?: boolean; focus?: boolean } = {},
+  options: { preview?: boolean; focus?: boolean; external?: boolean } = {},
 ): Promise<void> {
   const service = maybeEditorService();
   if (!service) return;
@@ -666,6 +711,10 @@ export function setShownLine(path: string, line: number | null) {
   }, true);
 }
 
+export function shownLine(path: string): number | null {
+  return useShownLines.getState()[path] ?? null;
+}
+
 export function useShownLine(path: string | null): number | null {
   return useShownLines((s) => (path ? (s[path] ?? null) : null));
 }
@@ -720,6 +769,8 @@ export interface DocumentAttachment {
   lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
+  /** The document's context, as editor contributions receive it. */
+  context(): EditorDocContext;
   readOnly: boolean;
   /** Last view state, kept current while unmounted; use it when remounting this attachment. */
   editorState(): EditorState | null;

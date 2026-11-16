@@ -19,10 +19,13 @@ use std::time::{Duration, Instant};
 pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
+mod extract_interface;
 mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
+mod signature;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -807,6 +810,21 @@ impl LspManager {
         run.peer
             .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
             .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+    }
+
+    /// Asks jdtls to re-read library archives replaced in place (`openidea.java.refreshArchives`):
+    /// a SNAPSHOT installed again keeps its path, and JDT would keep showing the classes it read
+    /// from the old archive. Best-effort: skipped while jdtls is not already running.
+    pub async fn java_refresh_archives(&self, path: &Path, archives: &[PathBuf]) -> IdeResult<()> {
+        let java = LanguageId::new("java");
+        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
+            return Ok(());
+        };
+        if server.running().is_none() {
+            return Ok(());
+        }
+        let archives = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        self.jdtls_command(path, "openidea.java.refreshArchives", archives).await.map(|_| ())
     }
 
     /// Pause autobuild before resolving the launch classpath. That query takes the

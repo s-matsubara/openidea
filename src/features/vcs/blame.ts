@@ -130,6 +130,13 @@ const blameField = StateField.define<BlameState>({
   },
 });
 
+/** Re-blames `path` and repaints the gutter while annotations are still shown. */
+async function refreshAnnotations(view: EditorView, path: string) {
+  const lines = await call(commands.vcsBlame(path, null, null)).catch(() => null);
+  if (!lines || !view.state.field(blameField, false)) return;
+  view.dispatch({ effects: setBlame.of(lines) });
+}
+
 function jjWorkingCommit(root: string, state = useVcs.getState()) {
   return state.jjRoots.find((repo) => repo.root === root)?.workingCopy?.commitId;
 }
@@ -308,6 +315,23 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean, jj: boo
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
                     },
+                    {
+                      label: "Ignore This Commit",
+                      icon: "hide",
+                      run: () => void ignoreCommit(view, path, l.commit, live),
+                    },
+                    {
+                      label: tx("Annotate at Revision…"),
+                      icon: "clock",
+                      run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                    },
+                    {
+                      label: tx("Annotate Previous Revision"),
+                      icon: "history",
+                      // Loads the history and diff viewer code only when it is used.
+                      run: () =>
+                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
+                    },
                     { kind: "separator" as const },
                   ]
                 : []),
@@ -370,6 +394,24 @@ export async function toggleJjAnnotations(view: EditorView, target: JjBlameTarge
       setAnnotations(view, lines, target.path, live, true, live ? target.root : undefined);
   } catch (e) {
     reportAnnotationError(e);
+  }
+}
+
+/**
+ * Appends `commit` to the repository's ignore list so annotate skips it, then re-blames
+ * the gutter (a live one shows the commit before it on those lines).
+ */
+async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
+  try {
+    await call(commands.vcsIgnoreBlameRevision(path, commit));
+    if (live) await refreshAnnotations(view, path);
+  } catch (e) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: "Cannot ignore the commit",
+      body: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 

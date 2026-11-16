@@ -15,6 +15,7 @@ use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
 use std::path::Path;
+use std::sync::Arc;
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
@@ -330,19 +331,59 @@ pub async fn build_sync(
     // holds for Gradle: it reuses its cached classpath on restart, so a
     // dependency added to `build.gradle` stays unresolved until told to sync.
     let lsp = project.lsp.clone();
+    let documents = project.documents.clone();
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
+        let first = updates.first().cloned();
         for file in updates {
             let uri = ide_lsp::path_to_uri_string(&file);
             if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
                 tracing::debug!("java/projectConfigurationsUpdate: {e}");
             }
         }
+        let changed = {
+            let lsp = lsp.clone();
+            tokio::task::spawn_blocking(move || lsp.changed_library_archives()).await.unwrap_or_default()
+        };
+        if let Some(file) = first
+            && let Err(e) = lsp.java_refresh_archives(&file, &changed).await
+        {
+            tracing::debug!("openidea.java.refreshArchives: {e}");
+        }
+        refresh_library_classes(&lsp, &documents).await;
     });
     Ok(model)
+}
+
+/// Open library classes whose jar was replaced in place (a SNAPSHOT installed
+/// again keeps its path) show the new contents, like a reopened one.
+async fn refresh_library_classes(lsp: &Arc<ide_lsp::LspManager>, documents: &Arc<ide_workspace::Documents>) {
+    let changed = {
+        let (lsp, documents) = (lsp.clone(), documents.clone());
+        tokio::task::spawn_blocking(move || {
+            documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|doc| Some((doc, documents.virtual_uri(doc).ok().flatten()?)))
+                .filter(|(_, uri)| lsp.library_class_changed(uri))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    for (doc, uri) in changed {
+        match lsp.virtual_document(&uri).await {
+            Ok(vd) => {
+                if let Err(e) = documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom) {
+                    tracing::debug!("refreshing {uri}: {e}");
+                }
+            }
+            Err(e) => tracing::debug!("refreshing {uri}: {e}"),
+        }
+    }
 }
 
 /// The POM declaring `dependency` for the Maven module `pom` (project-relative): the
@@ -600,6 +641,82 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+/// Build / Rebuild / Build Artifacts of a Java project without a build tool, from its
+/// Project Structure; `None` when it has no Java sources under its source roots.
+fn structure_plan(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    kind: BuildKind,
+    cache: &Path,
+) -> IdeResult<Option<compile::BuildPlan>> {
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, kind, cache)
+}
+
+/// The Project Structure, roots and JDK a build of a project without a build tool uses.
+/// An Eclipse project's `.classpath` libraries and its web content folder count as if they
+/// were configured, and a web project with no artifacts gets IDEA's `<name>:war exploded`.
+pub(crate) fn structure_inputs(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+) -> (ide_core::settings::ProjectStructureSettings, compile::StructureRoots, Option<compile::StructureJdk>) {
+    use ide_core::settings::{ArtifactConfig, ArtifactKind, FacetConfig, ProjectLibrary};
+    use ide_workspace::roots::{ProjectRoots, RootKind, eclipse};
+    let mut ps = settings.project_structure.clone();
+    let mut included = Vec::new();
+    if let Some(cp) = eclipse::classpath(root).filter(|cp| !cp.libraries.is_empty()) {
+        let name = "Eclipse classpath".to_owned();
+        if !ps.libraries.iter().any(|l| l.name == name) {
+            ps.libraries.push(ProjectLibrary { name: name.clone(), classes: cp.libraries, ..Default::default() });
+        }
+        included.push(name);
+    }
+    if !ps.facets.iter().any(|f| f.kind == "web")
+        && let Some(web) = eclipse::web_root(root)
+    {
+        ps.facets.push(FacetConfig {
+            kind: "web".into(),
+            module: ".".into(),
+            descriptor: format!("{web}/WEB-INF/web.xml"),
+            web_root: web,
+        });
+        if ps.artifacts.is_empty() {
+            let name = root.file_name().map_or_else(|| "app".into(), |n| n.to_string_lossy().into_owned());
+            ps.artifacts.push(ArtifactConfig {
+                name: format!("{name}:war exploded"),
+                kind: ArtifactKind::WarExploded,
+                module: ".".into(),
+                include_libraries: included,
+                ..Default::default()
+            });
+        }
+    }
+    let roots = ProjectRoots::compute(detected.to_vec(), &ps);
+    let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
+    let module = ps.module_settings(root, root);
+    let level = module
+        .map(|m| m.language_level.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or(&settings.languages.java.language_level);
+    // Without a configured SDK, an installed JDK that can compile the language level.
+    let jdk = ide_sdk::apply::module_jdk(root, root, settings)
+        .or_else(|| {
+            let installed = ide_sdk::java::installed_jdks();
+            ide_sdk::java::pick_jdk(&installed, compile::language_release(level)).cloned()
+        })
+        .map(|j| compile::StructureJdk { home: j.home, major: j.major });
+    let roots = compile::StructureRoots {
+        sources: of(RootKind::Source),
+        tests: of(RootKind::Test),
+        resources: of(RootKind::Resources),
+        test_resources: of(RootKind::TestResources),
+        excluded: of(RootKind::Excluded),
+    };
+    (ps, roots, jdk)
+}
+
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
     let commands = ide_run::cmake_build_configs(configs, id)?;
     let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
@@ -634,6 +751,7 @@ pub async fn build_run(
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
+    let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
@@ -697,17 +815,15 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            prepare_plan(
-                compile::plan(
-                    &root,
-                    &with_profiles(load(&root, &cache, &settings), &cache),
-                    kind,
-                    file.as_deref(),
-                    settings.cmake.profiles.as_deref(),
-                )?,
-                &root,
-                &settings,
-            )
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            match compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref()) {
+                Ok(plan) => prepare_plan(plan, &root, &settings),
+                // No build tool: a Java project builds from its Project Structure.
+                Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
+                    structure_plan(&root, &settings, &detected, kind, &cache)?.ok_or(e)?
+                }
+                Err(e) => return Err(e),
+            }
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
@@ -985,6 +1101,38 @@ mod build_tool_settings_tests {
         }
     }
 
+    /// Changing Project JDK updates the next Maven build without reopening the project.
+    #[test]
+    fn changing_project_jdk_updates_the_next_maven_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        for (name, version) in [("jdk8", "1.8"), ("jdk21", "21")] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+
+        let mut settings = Settings::default();
+        settings.languages.java.maven.runner_jre.clear();
+        for name in ["jdk8", "jdk21"] {
+            settings.languages.java.jdk = name.into();
+            let expected = root.join(name);
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
+        }
+    }
+
     #[test]
     fn model_for_sync_tasks_and_compile_uses_gradle_settings() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1019,7 +1167,6 @@ mod maven_completion_tests {
     use ide_build::maven::completion::PomCompletionKind;
     use ide_core::CancellationToken;
     use ide_workspace::dependencies::DependencyVersionSource;
-    use std::sync::Arc;
 
     /// Cache answers the test plants before completing, so the op's Central
     /// lookups hit the session cache and the network is never reached.
