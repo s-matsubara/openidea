@@ -2186,6 +2186,7 @@
   "Selected text": "Selected text",
   "Annotate with Jujutsu Blame": "Annotate with Jujutsu Blame",
   "Jujutsu working copy is unavailable": "Jujutsu working copy is unavailable",
+  "Some Jujutsu diffs could not be opened": "Some Jujutsu diffs could not be opened",
   "Line statistics unavailable": "Line statistics unavailable",
   "Merge of {join}": "Merge of {join}",
   "Edit Description…": "Edit Description…",

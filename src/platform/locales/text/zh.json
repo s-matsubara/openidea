@@ -8567,6 +8567,7 @@
   "Selection only": "仅选中范围",
   "Annotate with Jujutsu Blame": "使用 Jujutsu Blame 注解",
   "Jujutsu working copy is unavailable": "Jujutsu 工作副本不可用",
+  "Some Jujutsu diffs could not be opened": "部分 Jujutsu 差异无法打开",
   "Description changed externally. Your draft is preserved.": "描述已被外部修改。你的草稿已保留。",
   "Existing bookmark": "现有书签",
   "Move Bookmark": "移动书签",

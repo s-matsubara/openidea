@@ -26,7 +26,7 @@ import styles from "./GitLog.module.css";
 import jjStyles from "./JjLog.module.css";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { openDiff } from "./diffInput";
-import { jjFileDiffData } from "./jjDiffInput";
+import { jjFileDiffData, openJjChangeDiff } from "./jjDiffInput";
 import { setLogOptions, useLogOptions } from "./logOptions";
 import { LineStats } from "./LogLineStats";
 import { jjLogMenu } from "./jjLogActions";
@@ -373,13 +373,19 @@ function HistoryFiles({ root, commit }: { root: string; commit: string }) {
   const open = (file: FileStatus, isPreview = false) => {
     clearTimeout(timer.current);
     const request = ++opening.current;
+    const project = useVcs.getState().root;
+    const current = () => alive.current && request === opening.current && useVcs.getState().root === project;
     setError(null);
     void call(commands.vcsJjHistoryFileDiff(root, file.path, commit))
-      .then((pair) => {
-        if (alive.current && request === opening.current)
-          return openDiff(jjFileDiffData(file.path, pair), { preview: isPreview, focus: !isPreview });
+      .then(async (pair) => {
+        if (!current()) return;
+        const data = jjFileDiffData(file.path, pair);
+        if (isPreview) return openDiff(data, { preview: true, focus: false });
+        const change =
+          files && files.length > 1 ? { kind: "history" as const, root, commit, project, files } : undefined;
+        await openJjChangeDiff(change ? { ...data, jjChange: change } : data, { current });
       })
-      .catch((e) => alive.current && request === opening.current && setError(`${file.relPath}: ${String(e)}`));
+      .catch((e) => current() && setError(`${file.relPath}: ${String(e)}`));
   };
   const select = (keys: ReadonlySet<string>) => {
     setSelected(keys);

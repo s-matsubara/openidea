@@ -274,17 +274,13 @@ describe("status refresh", () => {
     const dispose = registerVcsActions();
     try {
       const context = { vcsAvailable: true, vcsJjPath: true };
-      for (const id of [
-        "vcs.addToVcs",
-        "vcs.rollback",
-        "vcs.showDiff",
-        "vcs.showDiffForLines",
-        "vcs.showHistory",
-        "vcs.annotate",
-      ]) {
+      for (const id of ["vcs.addToVcs", "vcs.rollback", "vcs.showDiff", "vcs.showHistory", "vcs.annotate"]) {
         expect(evaluateWhen(getAction(id)?.when, context), id).toBe(false);
       }
       expect(evaluateWhen(getAction("vcs.jjAnnotate")?.when, { vcsAvailable: false, vcsJjPath: true })).toBe(true);
+      expect(evaluateWhen(getAction("vcs.showDiffForLines")?.when, { vcsAvailable: false, vcsJjPath: true })).toBe(
+        true,
+      );
       expect(evaluateWhen(getAction("vcs.jjAnnotate")?.when, { vcsAvailable: true, vcsJjPath: false })).toBe(false);
       expect(evaluateWhen(getAction("vcs.push")?.when, context)).toBe(true);
       expect(evaluateWhen(getAction("vcs.addToVcs")?.when, { ...context, activeToolWindow: "project" })).toBe(true);

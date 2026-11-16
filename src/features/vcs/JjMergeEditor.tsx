@@ -16,6 +16,7 @@ import { Button, IconButton, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { languageFor, viewerBase } from "./cm";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { ideaDiffConfig } from "./diffOptions";
 import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles, resolutionText, type Resolution } from "./conflicts";
 import { errorMessage } from "./ops";
@@ -23,6 +24,8 @@ import { jjConflicts, type ResultConflict } from "./jjConflicts";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
+
+const SIDE_DIFF = ideaDiffConfig("none", "words");
 
 /** Drops the conflict at an index once a resolution replaced its text. */
 const resolvedConflict = StateEffect.define<number>();
@@ -207,7 +210,9 @@ export function JjMergeEditor({ input }: { input: EditorInput }) {
     const side = () => [
       viewerBase({ readOnly: true }),
       lang,
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side() });
     const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side() });

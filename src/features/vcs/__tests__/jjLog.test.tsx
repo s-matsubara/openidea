@@ -12,6 +12,7 @@ import { JjTabs, JjToolWindow } from "../JjToolWindow";
 import { useLogOptions } from "../logOptions";
 import { useGitLog } from "../logStore";
 import { useVcs } from "../store";
+import { setAllInOneDiff } from "../allInOneDiff";
 
 const history = vi.fn();
 const historyFiles = vi.fn();
@@ -77,6 +78,7 @@ const deferred = () => {
 
 beforeEach(() => {
   history.mockReset();
+  setAllInOneDiff(false);
   historyFiles.mockReset().mockResolvedValue({ status: "ok", data: [] });
   historyDiff.mockReset();
   historyLineStats.mockReset();
@@ -284,7 +286,7 @@ it("renders a directory tree above metadata and activates historical read-only d
   fireEvent.doubleClick(file);
   await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
   expect(historyDiff).toHaveBeenCalledWith("/one", "/one/src/nested/a.ts", "first");
-  expect(openInput.mock.calls[0]![0].data).toEqual({
+  expect(openInput.mock.calls[0]![0].data).toMatchObject({
     path: "/one/src/nested/a.ts",
     left: { type: "text", text: pair.before, label: pair.beforeLabel, jjBlame: null },
     right: { type: "text", text: pair.after, label: pair.afterLabel, jjBlame: null },
@@ -298,6 +300,31 @@ it("renders a directory tree above metadata and activates historical read-only d
   fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
   expect(screen.getByText("a.ts")).toBeInTheDocument();
   expect(screen.queryByTitle("Revert Selected Changes")).toBeNull();
+});
+
+it("opens all files of the chosen historical revision through the combined diff viewer", async () => {
+  setAllInOneDiff(true);
+  history.mockResolvedValue(ok([commit("first")]));
+  historyFiles.mockResolvedValue({ status: "ok", data: [changed("old"), changed("sub/new")] });
+  historyDiff.mockResolvedValue({ status: "ok", data: pair });
+  render(<JjToolWindow />);
+  fireEvent.doubleClick(await screen.findByText("new"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(historyDiff.mock.calls).toEqual([
+    ["/one", "/one/sub/new", "first"],
+    ["/one", "/one/old", "first"],
+  ]);
+  expect(openInput.mock.calls[0]![0]).toMatchObject({
+    kind: "combined-diff",
+    data: {
+      reveal: "/one/sub/new",
+      items: ["/one/old", "/one/sub/new"].map((path) => ({
+        path,
+        left: { type: "text", text: pair.before },
+        right: { type: "text", text: pair.after },
+      })),
+    },
+  });
 });
 
 it("shows line stats only for the selected change and keeps files usable if stats fail", async () => {

@@ -22,16 +22,16 @@ import {
   type MenuItem,
 } from "@/ui";
 import clsx from "clsx";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckMark } from "./ChangeTreeCheck";
 import { buildChangeTree, type ChangeNode } from "./changes";
 import styles from "./CommitView.module.css";
 import { useCommit } from "./commitStore";
 import { openMergeEditor } from "./conflictsUi";
 import { DiffEditor } from "./DiffEditor";
-import { diffInput, openDiff } from "./diffInput";
+import { diffInput } from "./diffInput";
 import { confirmDialog } from "./dialogs";
-import { jjWorkingDiffData } from "./jjDiffInput";
+import { jjDiffChangeCurrent, jjWorkingDiffData, openJjChangeDiff } from "./jjDiffInput";
 import jjStyles from "./JjWorkingCopyView.module.css";
 import { KIND_COLOR, KIND_LABEL, effectiveKind } from "./model";
 import { runOp } from "./ops";
@@ -214,6 +214,7 @@ function JjDescription({
 /** Check state is local rollback intent, independent of Git inclusion and row focus. */
 function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: string | null) => void }) {
   const copy = root.workingCopy!;
+  const project = useVcs((s) => s.root);
   const [groupByDir, setJjGroupByDir] = useState(true);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const [intent, setIntent] = useState({ commit: copy.commitId, paths: new Set<string>() });
@@ -247,6 +248,27 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
   };
   const file = preview && selected.size === 1 ? selectedFile(nodes) : undefined;
   const current = () => useVcs.getState().jjRoots.find((r) => r.root === root.root) === root;
+  const opening = useRef(0);
+  useEffect(() => {
+    const requests = opening;
+    return () => {
+      requests.current++;
+    };
+  }, []);
+  const open = async (file: FileStatus) => {
+    const change = { kind: "working" as const, root: root.root, commit: copy.commitId, project, files: copy.files };
+    const request = ++opening.current;
+    const live = () => request === opening.current && jjDiffChangeCurrent(change);
+    if (!live()) return;
+    onError(null);
+    try {
+      const pair = await call(commands.vcsJjFileDiff(file.path, copy.commitId));
+      const data = jjWorkingDiffData(file.path, pair, effectiveKind(file) === "deleted");
+      await openJjChangeDiff({ ...data, ...(copy.files.length > 1 ? { jjChange: change } : {}) }, { current: live });
+    } catch (error) {
+      if (live()) onError(`${file.relPath}: ${String(error)}`);
+    }
+  };
   const rollback = async () => {
     const paths = copy.files.filter((f) => checked.has(f.path)).map((f) => f.path);
     if (!paths.length || busy || !trusted || !current()) return;
@@ -372,15 +394,7 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
               ? [
                   {
                     label: "Show Diff",
-                    run: () => {
-                      if (!current()) return;
-                      void call(commands.vcsJjFileDiff(file.path, copy.commitId))
-                        .then((pair) => {
-                          if (current())
-                            return openDiff(jjWorkingDiffData(file.path, pair, effectiveKind(file) === "deleted"));
-                        })
-                        .catch((e) => onError(`${file.relPath}: ${String(e)}`));
-                    },
+                    run: () => void open(file),
                   },
                   { kind: "separator" },
                 ]
@@ -405,12 +419,7 @@ function JjChangesTree({ root, onError }: { root: VcsRoot; onError: (message: st
           onActivate={(n) => {
             const f = n.type === "file" ? n.files[0] : undefined;
             if (!f) return;
-            onError(null);
-            void call(commands.vcsJjFileDiff(f.path, copy.commitId))
-              .then((pair) => {
-                if (current()) return openDiff(jjWorkingDiffData(f.path, pair, effectiveKind(f) === "deleted"));
-              })
-              .catch((e) => onError(`${f.relPath}: ${String(e)}`));
+            void open(f);
           }}
           renderNode={(n, state) => {
             const count = n.files.filter((f) => checked.has(f.path)).length;

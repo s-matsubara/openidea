@@ -21,7 +21,7 @@ const styled = (attr: string, extra: Pick<DecorationSegment, "text"> & Decoratio
   ...extra,
 });
 
-/** How many files of the working tree changed (staged, unstaged or untracked): nothing when clean. */
+/** Changed-file badge shared by Git repositories and jj workspaces. */
 function changedFiles(count: number): DecorationSegment[] {
   if (count <= 0) return [];
   return [{ text: String(count), icon: "edit", label: tx`${count} changed files`, color: "var(--vcs-modified)" }];
@@ -128,7 +128,7 @@ export function installRootSync(): () => void {
 
   const update = async () => {
     const { available, roots } = useVcs.getState();
-    if (!available || !workflowSettings().vcs.git.showBranchInProjectView) return publish(new Map());
+    if (!available || !workflowSettings().vcs.git.showBranchInProjectView) return render();
     const infos = await Promise.all(roots.map(branchInfoOf));
     const next = new Map<string, BranchInfo>();
     roots.forEach((root, i) => {
@@ -140,16 +140,24 @@ export function installRootSync(): () => void {
     render();
   };
 
-  /** The suffixes from the branches last read and the current working tree status (no git query). */
+  /** Render the last known Git branches and the current Git and jj file counts. */
   const render = () => {
-    const { available, roots, status } = useVcs.getState();
-    if (!available || !workflowSettings().vcs.git.showBranchInProjectView) return publish(new Map());
-    const changed = changedByRoot(status, roots);
+    const { available, roots, status, jjRoots } = useVcs.getState();
     const next = new Map<string, FileDecoration>();
-    for (const root of roots) {
-      const info = branches.get(root);
-      const suffix = info ? rootSyncSuffix(info, changed.get(root) ?? 0) : null;
-      if (suffix) next.set(root, { suffix, suffixColor: SUFFIX_COLOR });
+    if (available && workflowSettings().vcs.git.showBranchInProjectView) {
+      const changed = changedByRoot(status, roots);
+      for (const root of roots) {
+        const info = branches.get(root);
+        const suffix = info ? rootSyncSuffix(info, changed.get(root) ?? 0) : null;
+        if (suffix) next.set(root, { suffix, suffixColor: SUFFIX_COLOR });
+      }
+    }
+    for (const repo of jjRoots) {
+      // The root discovery refresh can deliver jj ownership before dropping an old Git root.
+      next.delete(repo.root);
+      if (repo.unavailableReason || !repo.workingCopy) continue;
+      const suffix = changedFiles(repo.workingCopy.files.length);
+      if (suffix.length) next.set(repo.root, { suffix });
     }
     publish(next);
   };
@@ -179,6 +187,8 @@ export function installRootSync(): () => void {
   };
 
   const unsubVcs = useVcs.subscribe((s, prev) => {
+    // File counts update immediately, even while a Git branch query is running.
+    if (s.status !== prev.status || s.jjRoots !== prev.jjRoots) render();
     if (
       s.available !== prev.available ||
       s.roots.join("\n") !== prev.roots.join("\n") ||
@@ -187,11 +197,10 @@ export function installRootSync(): () => void {
       (prev.remoteBusy && !s.remoteBusy)
     )
       schedule();
-    // The changed-file counts follow the working tree as the status refreshes, without asking git.
-    else if (s.status !== prev.status) render();
   });
   const offGit = onIdeEvent("vcsChanged", scheduleSoon);
   const offSettings = onWorkflowSettingsChange((s) => s.vcs.git.showBranchInProjectView, schedule);
+  render();
   schedule();
   return () => {
     disposed = true;

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { ChangeSet } from "@codemirror/state";
+import { getChunks } from "@codemirror/merge";
 import { createMemoryBackend } from "@/editor/core/backend";
 import { DocumentManager, useDocMeta } from "@/editor/core/model/document";
 import { attachDocument as attachManagedDocument } from "@/editor/core/model/attachment";
@@ -29,6 +30,8 @@ right${n}
 `;
 let working = "";
 let saved = "";
+const defaultSides = { base: "base", ours: "left", theirs: "right" };
+let sides = defaultSides;
 const save = vi.fn(async () => {
   saved = working;
 });
@@ -42,9 +45,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     vcsConflictVersions: async () => ({
       status: "ok",
       data: {
-        ours: "left",
-        theirs: "right",
-        base: "base",
+        ...sides,
         merged: "<<<<<<< ours\nleft\n||||||| base\nbase\n=======\nright\n>>>>>>> theirs\n",
         sides: { reversed: false, operation: null, branch: null, commit: null, otherBranch: null },
       },
@@ -80,6 +81,7 @@ vi.mock("@/editor/api", async (original) => ({
   },
 }));
 beforeEach(async () => {
+  sides = defaultSides;
   working = "unsaved user edit\n" + conflict(1) + "common\n" + conflict(2);
   _resetLanguages();
   manager = new DocumentManager(
@@ -120,8 +122,10 @@ afterEach(() => {
 
 it("keeps the unsaved live buffer unchanged on open, then normally saves a partial resolution with raw remaining markers", async () => {
   const original = working;
-  render(<MergeEditor input={mergeInput("/jj/a.txt", "jj")} />);
-  await screen.findByText("2 conflicts left");
+  await act(async () => {
+    render(<MergeEditor input={mergeInput("/jj/a.txt", "jj")} />);
+  });
+  expect(screen.getByText("2 conflicts left")).toBeInTheDocument();
   expect(working).toBe(original);
   expect(saved).toBe("disk unchanged");
   expect(save).not.toHaveBeenCalled();
@@ -157,6 +161,29 @@ it("keeps Git's explicit Apply and staging behavior", async () => {
   await waitFor(() => expect(stage).toHaveBeenCalledWith(["/git/a.txt"]));
   expect(write).toHaveBeenCalledWith("/git/a.txt", "left", { save: true, exact: true });
   expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps distant changes separate in both long, read-only jj merge sides", async () => {
+  const base = Array.from({ length: 1200 }, (_, i) => `line_${i}: ${"content ".repeat(8)}${i}`);
+  const edits = Array.from({ length: 10 }, (_, i) => (i + 1) * 100);
+  const edited = (text: string) =>
+    base.map((line, i) => (edits.includes(i) ? `insert_${i} ${text.repeat(90)}\n${line}` : line)).join("\n");
+  sides = { base: base.join("\n"), ours: edited("x"), theirs: edited("y") };
+
+  await act(async () => {
+    render(<MergeEditor input={mergeInput("/jj/a.txt", "jj")} />);
+  });
+  expect(screen.getByText("2 conflicts left")).toBeInTheDocument();
+  for (const name of ["Your version", "Their version"]) {
+    const pane = screen.getByRole("region", { name });
+    const editor = EditorView.findFromDOM(pane.querySelector<HTMLElement>(".cm-editor")!)!;
+    expect(editor.state.readOnly).toBe(true);
+    const chunks = getChunks(editor.state)!.chunks;
+    expect(chunks.map((chunk) => editor.state.doc.lineAt(chunk.fromB).number)).toEqual(
+      edits.map((line, i) => line + i + 1),
+    );
+    expect(chunks.every((chunk) => chunk.fromA === chunk.toA)).toBe(true);
+  }
 });
 
 it("keeps jj and Git merge tabs separate because they have different save contracts", () => {

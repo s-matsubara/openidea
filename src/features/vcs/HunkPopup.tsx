@@ -8,6 +8,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Popup } from "@/ui";
 import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
 import { isJjPath } from "./store";
+import { openJjWorkingDiffForLine } from "./jjDiffInput";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -142,17 +143,21 @@ function HunkPopupView({ state }: { state: PopupState }) {
           onClick={() => step(1)}
         />
         {!view.state.readOnly && <IconButton icon="undo" title="Rollback" size="small" onClick={rollback} />}
-        {!isJjPath(path) && (
-          <IconButton
-            icon="diff"
-            title="Show Diff"
-            size="small"
-            onClick={() => {
-              closeHunkPopup();
-              void executeAction("vcs.showDiff", { path, line: hunk.start });
-            }}
-          />
-        )}
+        <IconButton
+          icon="diff"
+          title="Show Diff"
+          size="small"
+          onClick={() => {
+            closeHunkPopup();
+            if (isJjPath(path)) {
+              void openJjWorkingDiffForLine(
+                path,
+                hunk.start,
+                () => view.dom.isConnected && view.state.doc === state.doc,
+              );
+            } else void executeAction("vcs.showDiff", { path, line: hunk.start });
+          }}
+        />
         <IconButton
           icon={copied ? "check" : "copy"}
           title="Copy Original Text"

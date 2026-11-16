@@ -62,6 +62,7 @@ import {
 } from "./gitMenuDialogs";
 import { currentRepo, isJjPath, refreshNow, repoName, repoOf, useVcs } from "./store";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
+import { openJjWorkingDiffForLine } from "./jjDiffInput";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -559,9 +560,9 @@ export function registerVcsActions(): () => void {
       // The diff of the file at the changed lines under the caret or selection (the change marker popup's Show Diff).
       id: "vcs.showDiffForLines",
       title: "Show Diff for Lines",
-      category: "Git",
+      category: "Version Control",
       icon: "diff",
-      when: "vcsAvailable && !vcsJjPath",
+      when: "vcsAvailable || vcsJjPath",
       enabled: () => {
         const ed = activeEditor();
         return !!ed && hunksInSelection(ed.view.state).length > 0;
@@ -573,6 +574,12 @@ export function registerVcsActions(): () => void {
         const { state } = ed.view;
         const head = state.selection.main.head;
         const line = hunk.from <= head && head <= hunk.to ? state.doc.lineAt(head).number - 1 : hunk.start;
+        if (isJjPath(ed.ctx.path))
+          return openJjWorkingDiffForLine(
+            ed.ctx.path,
+            line,
+            () => activeEditor()?.view === ed.view && ed.view.state.doc === state.doc,
+          );
         return executeAction("vcs.showDiff", { path: ed.ctx.path, line });
       },
     },

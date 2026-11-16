@@ -35,7 +35,7 @@ export function setAllInOneDiff(on: boolean) {
 }
 
 /** The chain of `data` as an all-in-one diff, when that view is on and the chain has several files. */
-export function combinedOf(data: DiffData): CombinedDiffData | null {
-  if (data.embedded || !data.chain || data.chain.length < 2 || !allInOneDiff()) return null;
+export function combinedOf(data: DiffData, enabled = allInOneDiff()): CombinedDiffData | null {
+  if (data.embedded || !data.chain || data.chain.length < 2 || !enabled) return null;
   return { items: data.chain, reveal: data.path };
 }

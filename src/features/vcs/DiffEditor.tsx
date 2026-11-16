@@ -78,6 +78,7 @@ import {
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
 import { setAllInOneDiff } from "./allInOneDiff";
+import { openJjChangeDiff } from "./jjDiffInput";
 import { annotationsShown, blameSlot, toggleAnnotations, toggleJjAnnotations } from "./blame";
 import { diffBlameTarget } from "./diffBlame";
 import { changedChainNeighbour } from "./diffNavigation";
@@ -804,6 +805,7 @@ export function DiffEditor({
   const [navHint, setNavHint] = useState<string | null>(null);
   const pendingFile = useRef<0 | 1 | -1>(0);
   const navigation = useRef<object | null>(null);
+  const combinedRequest = useRef<object | null>(null);
   useEffect(
     () => () => {
       navigation.current = null;
@@ -1199,7 +1201,7 @@ export function DiffEditor({
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
       // A tab of one file of a change: show every file of it in one scrollable tab instead.
-      ...(input_.chain && input_.chain.length > 1 && !input_.embedded && onClose
+      ...(((input_.chain?.length ?? 0) > 1 || (input_.jjChange?.files.length ?? 0) > 1) && !input_.embedded && onClose
         ? [
             { kind: "separator" } as const,
             {
@@ -1207,6 +1209,30 @@ export function DiffEditor({
               label: "Show All Files in One Diff View",
               checked: false,
               run: () => {
+                if (input_.jjChange) {
+                  const node = rootRef.current;
+                  const request = {};
+                  combinedRequest.current = request;
+                  const current = () =>
+                    combinedRequest.current === request &&
+                    !!node?.isConnected &&
+                    node === rootRef.current &&
+                    dataRef.current.jjChange === input_.jjChange;
+                  void openJjChangeDiff(input_, { fromViewer: true, current })
+                    .then((opened) => {
+                      if (opened) onClose();
+                    })
+                    .catch((error: unknown) => {
+                      if (current())
+                        notifications().notify({
+                          group: "vcs",
+                          level: "error",
+                          title: "Cannot show diff in an editor tab",
+                          body: errorMessage(error),
+                        });
+                    });
+                  return;
+                }
                 setAllInOneDiff(true);
                 void openDiff(input_).then(() => onClose());
               },

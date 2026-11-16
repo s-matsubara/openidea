@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { VcsRoot } from "@/bindings";
+import type { FileStatus, VcsRoot } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
@@ -9,6 +9,7 @@ import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { useProject } from "@/platform/project";
 import { ContextMenuHost } from "@/ui";
+import { setAllInOneDiff } from "../allInOneDiff";
 
 const restore = vi.fn();
 const describe = vi.fn();
@@ -20,8 +21,10 @@ vi.mock("../DiffEditor", async (original) => ({
   DiffEditor: ({ input }: { input: { path: string } }) => <div data-testid="embedded-diff">{input.path}</div>,
 }));
 const readDiff = vi.fn();
+const readHistoryDiff = vi.fn();
 const openInput = vi.fn();
 const openFile = vi.fn();
+const notify = vi.fn();
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -31,12 +34,14 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsJjDescribe: (...args: unknown[]) => describe(...args),
       vcsJjRestoreFiles: (...args: unknown[]) => restore(...args),
       vcsJjFileDiff: (...args: unknown[]) => readDiff(...args),
+      vcsJjHistoryFileDiff: (...args: unknown[]) => readHistoryDiff(...args),
     },
   };
 });
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openInput, openFile }),
+  notifications: () => ({ notify }),
 }));
 
 const root = (patch: Partial<VcsRoot> = {}): VcsRoot => ({
@@ -56,8 +61,11 @@ beforeEach(() => {
   confirm.mockReset().mockResolvedValue(true);
   useCommit.setState({ groupByDir: true, commitDiffPreview: false });
   readDiff.mockReset();
+  readHistoryDiff.mockReset();
   openInput.mockReset();
   openFile.mockReset();
+  notify.mockReset();
+  setAllInOneDiff(false);
   useVcs.setState({ available: false, root: "/jj", roots: [], jjRoots: [root()], error: null, status: [] });
 });
 
@@ -215,6 +223,55 @@ it("opens existing jj files against the live working document", async () => {
   fireEvent.doubleClick(screen.getByText("a"));
   await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
   expect(openInput.mock.calls[0]![0].data.right).toEqual({ type: "worktree", label: "Working copy @", jjBlame: null });
+});
+
+it("opens all readable files in the working snapshot and reports unsupported siblings", async () => {
+  const files: FileStatus[] = [
+    { path: "/jj/deleted", relPath: "deleted", unstaged: "deleted", staged: null, renamedFrom: null },
+    { path: "/jj/renamed", relPath: "renamed", unstaged: "renamed", staged: null, renamedFrom: "old" },
+    { path: "/jj/binary", relPath: "binary", unstaged: "modified", staged: null, renamedFrom: null },
+    { path: "/jj/conflicted", relPath: "conflicted", unstaged: "conflicted", staged: null, renamedFrom: null },
+  ];
+  useVcs.setState({ jjRoots: [root({ workingCopy: { ...root().workingCopy!, files } })] });
+  setAllInOneDiff(true);
+  const old = { root: "/jj", commit: "parent", path: "/jj/old" };
+  readDiff.mockResolvedValue({
+    status: "ok",
+    data: { before: "old", after: "new", beforeLabel: "Parent (old)", afterLabel: "@", beforeBlame: old },
+  });
+  readHistoryDiff.mockImplementation((_root: string, path: string) =>
+    Promise.resolve(
+      path === "/jj/binary"
+        ? { status: "error", error: { message: "Binary files are not supported" } }
+        : path === "/jj/conflicted"
+          ? { status: "ok", data: { before: "base", after: "markers", beforeLabel: "Base", afterLabel: "Conflict" } }
+          : {
+              status: "ok",
+              data: { before: "deleted", after: "", beforeLabel: "Parent", afterLabel: "Deleted", afterAbsent: true },
+            },
+    ),
+  );
+  render(<CommitToolWindow />);
+  fireEvent.doubleClick(screen.getByText("renamed"));
+  await waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+  expect(readDiff).toHaveBeenCalledExactlyOnceWith("/jj/renamed", "commit-id");
+  expect(readHistoryDiff.mock.calls).toEqual(
+    ["/jj/deleted", "/jj/binary", "/jj/conflicted"].map((path) => ["/jj", path, "commit-id"]),
+  );
+  expect(notify).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "warning", body: expect.stringContaining("binary") }),
+  );
+  expect(openInput.mock.calls[0]![0]).toMatchObject({
+    kind: "combined-diff",
+    data: {
+      reveal: "/jj/renamed",
+      items: [
+        { path: "/jj/deleted", right: { type: "text", absent: true } },
+        { path: "/jj/renamed", left: { type: "text", jjBlame: old }, right: { type: "worktree" } },
+        { path: "/jj/conflicted", left: { type: "text", text: "base" }, right: { type: "worktree" } },
+      ],
+    },
+  });
 });
 it("does not open an in-flight diff after its working-copy root changes", async () => {
   const file = { path: "/jj/a", relPath: "a", unstaged: "modified" as const, staged: null, renamedFrom: null };

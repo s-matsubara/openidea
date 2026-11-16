@@ -9,6 +9,7 @@ import { readWorkingText } from "./ops";
 import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
+import type { JjDiffChange } from "./jjDiffInput";
 
 export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
@@ -54,6 +55,8 @@ export interface DiffData {
    * past the last / first difference move to the next / previous one. Entries carry no chain.
    */
   chain?: DiffData[];
+  /** Pinned Jujutsu change whose other files can be opened in the combined view. */
+  jjChange?: JjDiffChange;
   /** Select the first or last difference once shown (moving along the chain). */
   reveal?: "first" | "last";
   /**
@@ -148,8 +151,8 @@ export function diffTitle(data: DiffData): string {
   return `${baseName(data.path)} (${sideLabel(data.left)} ↔ ${sideLabel(data.right)})`;
 }
 
-export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  const combined = combinedOf(data);
+export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean; allInOne?: boolean } = {}) {
+  const combined = combinedOf(data, opts.allInOne);
   const input = combined ? combinedDiffInput(combined) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }

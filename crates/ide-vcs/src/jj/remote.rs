@@ -150,10 +150,10 @@ fn rebase_options_with(repo: &Repo, exe: &Path) -> IdeResult<JjRebaseOptions> {
         };
         unique_bookmark(true).or_else(|| unique_bookmark(false)).unwrap_or_else(|| trunk.label.clone())
     });
-    if let Some(trunk) = trunk {
-        if !destinations.iter().any(|row| row.commit_id == trunk.commit_id) {
-            destinations.push(trunk);
-        }
+    if let Some(trunk) = trunk
+        && !destinations.iter().any(|row| row.commit_id == trunk.commit_id)
+    {
+        destinations.push(trunk);
     }
     Ok(JjRebaseOptions { source, destinations, preferred, trunk_label })
 }
@@ -481,7 +481,7 @@ mod tests {
         assert!(options.destinations.iter().all(|row| row.remote.as_deref() != Some("git")));
         let local_parent = commits(&repo, &exe, "@-").unwrap().remove(0);
         rebase_with(&repo, &exe, Some(&local_parent), &target.commit, false, false).unwrap();
-        assert_eq!(commits(&repo, &exe, "@--").unwrap(), [target.commit.clone()]);
+        assert_eq!(commits(&repo, &exe, "@--").unwrap(), std::slice::from_ref(&target.commit));
 
         // An unavailable remote reports a fetch failure and leaves the current series intact.
         let source = commits(&repo, &exe, "@").unwrap();

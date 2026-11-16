@@ -469,7 +469,7 @@ fn history_line_stats_with(repo: &crate::Repo, commit: &str, exe: &Path) -> IdeR
 pub(crate) fn history_file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
     let exe = executable(None)?;
     let copy = snapshot_at(repo, &exe, Some(commit))?;
-    file_diff_snapshot(repo, path, Some(commit), &exe, copy, true)
+    file_diff_snapshot(repo, path, &exe, copy, true)
 }
 
 pub(crate) fn file_diff(repo: &crate::Repo, path: &Path, commit: &str) -> IdeResult<JjFileDiff> {
@@ -506,13 +506,12 @@ fn file_diff_read(repo: &crate::Repo, path: &Path, expected: Option<&str>, exe: 
             "Working copy changed; refresh the Jujutsu changes list and reopen the diff",
         ));
     }
-    file_diff_snapshot(repo, path, expected, exe, copy, false)
+    file_diff_snapshot(repo, path, exe, copy, false)
 }
 
 fn file_diff_snapshot(
     repo: &crate::Repo,
     path: &Path,
-    expected: Option<&str>,
     exe: &Path,
     copy: JjWorkingCopy,
     historical: bool,
@@ -534,7 +533,7 @@ fn file_diff_snapshot(
         .files
         .iter()
         .find(|f| Path::new(&f.rel_path) == rel)
-        .or_else(|| expected.is_none().then_some(&unchanged))
+        .or_else(|| (!historical).then_some(&unchanged))
         .ok_or_else(|| IdeError::invalid("file is no longer in the Jujutsu changes list; refresh it"))?;
     if file.unstaged == Some(crate::ChangeKind::Conflicted) {
         let versions = conflict_versions_at(repo, path, commit, exe)?;
@@ -803,7 +802,7 @@ mod snapshot_tests {
         }
         let get = |name: &str| {
             let copy = snapshot_at(&repo, &exe, Some(&accepted.commit_id))?;
-            file_diff_snapshot(&repo, &root.join(name), Some(&accepted.commit_id), &exe, copy, true)
+            file_diff_snapshot(&repo, &root.join(name), &exe, copy, true)
         };
         let modified = get("modified").unwrap();
         assert_eq!((modified.before.as_str(), modified.after.as_str()), ("before", "historical"));
@@ -850,7 +849,7 @@ mod snapshot_tests {
             assert_eq!((stats[0].added, stats[0].removed), (1, 0));
         }
         assert!(
-            file_diff_snapshot(&repo, &root.join("merge-only"), Some(&merge.commit_id), &exe, list, true)
+            file_diff_snapshot(&repo, &root.join("merge-only"), &exe, list, true)
                 .unwrap_err()
                 .to_string()
                 .contains("auto-merged")
@@ -869,9 +868,12 @@ mod snapshot_tests {
             std::fs::write(root.join(name), text).unwrap();
         }
         jj(&exe, root, &["new"]);
-        let unchanged = file_diff_read(&repo, &root.join("modified"), None, &exe).unwrap();
+        let initial = snapshot(&repo, &exe).unwrap();
+        let unchanged = file_diff_with(&repo, &root.join("modified"), &initial.commit_id, &exe).unwrap();
         assert_eq!(unchanged.before, "before\n");
+        assert_eq!(unchanged.after, "before\n");
         assert_eq!(crate::diff_hunks(&unchanged.before, "unsaved\n")[0].old_text, "before\n");
+        assert!(file_diff_with(&repo, &root.join("missing"), &initial.commit_id, &exe).is_err());
         std::fs::write(root.join("modified"), "after\n").unwrap();
         std::fs::remove_file(root.join("deleted")).unwrap();
         std::fs::rename(root.join("old name"), root.join("new name")).unwrap();
