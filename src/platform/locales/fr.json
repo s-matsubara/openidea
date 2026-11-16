@@ -79,7 +79,7 @@
   "app.window.pickFileTitle": "Ouvrir un fichier",
   "app.window.pickTitle": "Ouvrir dans une nouvelle fenêtre",
   "app.window.askTitle": "Ouvrir un projet",
-  "app.window.askBody": "Les projets peuvent s'ouvrir dans une nouvelle fenêtre, remplacer le projet actuel ou être rattachés aux projets déjà ouverts.\nComment souhaitez-vous ouvrir « {name} » ?",
+  "app.window.askBody": "Comment souhaitez-vous ouvrir « {name} » ?",
   "app.window.askThis": "Cette fenêtre",
   "app.window.askAttach": "Rattacher",
   "app.window.askNew": "Nouvelle fenêtre",

@@ -2,7 +2,7 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
-use crate::windows::{self, Launch, OpenOutcome, WindowsState};
+use crate::windows::{self, Launch, OpenOutcome, ProjectOpenMode, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -11,18 +11,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State, WebviewWindow, Window};
 
-/// Opens `path` in a new window (`new_window`) or tells the caller to open it
-/// itself (`current`). A project already open in some window is focused instead.
+/// Opens `path` in a new window or tab, or tells the caller to open it itself.
+/// A project already open in some window is focused instead.
 /// `files` then open in that project's editor.
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_project(
     app: AppHandle,
+    window: WebviewWindow,
     path: PathBuf,
-    new_window: bool,
+    mode: ProjectOpenMode,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_project_window(&app, &path, new_window, files)
+    windows::open_project_window(&app, window.label(), &path, mode, files)
 }
 
 /// Loose `files` opened from a window without a local project: a file inside a local project
@@ -58,11 +59,12 @@ pub async fn window_open_file_in_new_window(
 #[specta::specta]
 pub async fn window_open_remote(
     app: AppHandle,
+    window: WebviewWindow,
     target: crate::remote_dev::RemoteTarget,
     path: String,
-    new_window: bool,
+    mode: ProjectOpenMode,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_remote_window(&app, &target, &path, new_window)
+    windows::open_remote_window(&app, window.label(), &target, &path, mode)
 }
 
 /// Opens an empty (welcome) window; returns its label.

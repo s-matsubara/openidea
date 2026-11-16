@@ -934,11 +934,11 @@ export const commands = {
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**
-	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
-	 *  itself (`current`). A project already open in some window is focused instead.
+	 *  Opens `path` in a new window or tab, or tells the caller to open it itself.
+	 *  A project already open in some window is focused instead.
 	 *  `files` then open in that project's editor.
 	 */
-	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
+	windowOpenProject: (path: string, mode: ProjectOpenMode, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, mode, files })),
 	/**
 	 *  Loose `files` opened from a window without a local project: a file inside a local project
 	 *  open in some window goes to that window, the others to the LightEdit window (this one,
@@ -956,7 +956,7 @@ export const commands = {
 	 *  [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
 	 *  Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (target: RemoteTarget, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, newWindow })),
+	windowOpenRemote: (target: RemoteTarget, path: string, mode: ProjectOpenMode) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, mode })),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
@@ -7765,6 +7765,8 @@ export type ProjectLibrary = {
 	javadocs?: string[],
 	scope?: DependencyScope,
 };
+
+export type ProjectOpenMode = "same" | "new" | "tab";
 
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */

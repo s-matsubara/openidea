@@ -73,7 +73,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
-    else if (e.open) void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    else if (e.open) void call(commands.windowOpenProject(e.m.project.path, "same", [])).catch(() => undefined);
     else void openRecent(e.m.project);
   };
 

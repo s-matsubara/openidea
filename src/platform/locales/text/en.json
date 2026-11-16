@@ -1365,6 +1365,7 @@
   "{program} is not installed.": "{program} is not installed.",
   "Create a project, open a folder from disk or clone a repository from version control.": "Create a project, open a folder from disk or clone a repository from version control.",
   "New Project": "New Project",
+  "New Tab": "New Tab",
   "{path} already exists and is not empty": "{path} already exists and is not empty",
   "Example": "Example",
   "Shows how to use the plugin API; not maintained as a product.": "Shows how to use the plugin API; not maintained as a product.",

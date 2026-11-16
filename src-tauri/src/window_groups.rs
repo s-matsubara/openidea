@@ -102,14 +102,22 @@ fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResul
     let members = group.members.iter().filter_map(|m| app.get_webview_window(m)).collect();
     let anchor = app.get_webview_window(&group.selected).unwrap_or_else(|| to.clone());
     to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-    crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
+    crate::macos::sync_tab_group(members, &anchor, to)
 }
 
 #[cfg(target_os = "macos")]
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
+    if app.get_webview_window(anchor).is_none() {
+        return Err(IdeError::not_found("Window closed"));
+    }
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;
-    select(app, anchor, new_window)
+    let result = select(app, anchor, new_window);
+    if result.is_err() {
+        state.groups.lock().detach(new_window);
+        changed(app);
+    }
+    result
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
