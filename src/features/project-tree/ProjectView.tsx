@@ -524,6 +524,9 @@ export function ProjectView() {
     const key = exact ?? nodeKeyFor(model, path);
     clearRevealRequest(seq);
     if (!key || !info.visible.has(key)) return;
+    const node = model.byKey.get(key);
+    if (revealRequest.expand && exact && node?.dir && !useProjectTree.getState().expanded.has(key))
+      toggleExpanded(node);
     revealing.current = true;
     handle.current?.reveal(key);
     revealing.current = false;

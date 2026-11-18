@@ -102,12 +102,12 @@ function showProjectView(focus: boolean) {
 }
 
 /** Selects `path` (default: the active editor's file) in the project view. */
-export function selectInProjectView(path?: string | null, focus = true) {
+export function selectInProjectView(path?: string | null, focus = true, expand = false) {
   const target = path ?? maybeEditorService()?.activePath() ?? null;
   if (!target) return false;
   if (!modeShows(target)) setViewMode("project");
   showProjectView(focus);
-  return revealPath(target, focus);
+  return revealPath(target, focus, expand);
 }
 
 /**
@@ -208,8 +208,9 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["locate", "reveal", "show in"],
       run: ({ arg }) => {
-        const path = typeof arg === "string" ? arg : (arg as { path?: string } | undefined)?.path;
-        if (path) return void selectInProjectView(path);
+        const targetPath =
+          typeof arg === "string" ? { path: arg } : (arg as { path?: string; expand?: boolean } | undefined);
+        if (targetPath?.path) return void selectInProjectView(targetPath.path, true, targetPath.expand);
         const target = maybeEditorService()?.activePath() ?? leadNode()?.path;
         if (target) showSelectIn(target);
       },
