@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { badFileName, containsCrlf, runCommitChecks } from "../commitChecks";
+import { badFileName, containsCrlf, installCommitChecks, runCommitChecks, runJjCommitChecks } from "../commitChecks";
 import { getCommitChecks, registerCommitCheck, type CommitCheck } from "../commitCheckRegistry";
 
 const disposers: Array<() => void> = [];
@@ -84,6 +84,35 @@ describe("the commit check registry", () => {
     expect(run.blocked).toBe(true);
     expect(run.problems).toMatchObject([{ title: "vcs.broken", text: "The check could not run: boom" }]);
   });
+});
+
+it("checks TODOs against the reviewed jj snapshot instead of Git HEAD", async () => {
+  const ipc = await import("@/platform/ipc");
+  disposers.push(installCommitChecks());
+  const desktop = vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+  const jjDiff = vi.spyOn(ipc.commands, "vcsJjFileDiff").mockResolvedValue({
+    status: "ok",
+    data: { before: "// TODO old\n", after: "// TODO old\n// TODO new\n", beforeLabel: "Parent", afterLabel: "@" },
+  });
+  const hunks = vi
+    .spyOn(ipc.commands, "vcsDiffHunks")
+    .mockResolvedValue([{ kind: "added", start: 1, lines: 1, oldStart: 1, oldLines: 0, oldText: "" }]);
+  const git = vi.spyOn(ipc.commands, "vcsFileAt");
+  // The diagnostic check has its own coverage and can wait for the language server.
+  disposers.push(registerCommitCheck({ id: "vcs.analysis", title: "Code analysis", run: () => null }));
+  try {
+    const result = await runJjCommitChecks(new Map([["/p/a.ts", "snapshot"]]), "/p");
+    expect(jjDiff).toHaveBeenCalledExactlyOnceWith("/p/a.ts", "snapshot");
+    expect(git).not.toHaveBeenCalled();
+    expect(hunks).toHaveBeenCalledExactlyOnceWith("// TODO old\n", "// TODO old\n// TODO new\n");
+    expect(result.blocked).toBe(true);
+    expect(result.problems.map((problem) => problem.title)).toEqual(["TODO"]);
+  } finally {
+    desktop.mockRestore();
+    jjDiff.mockRestore();
+    hunks.mockRestore();
+    git.mockRestore();
+  }
 });
 
 describe("containsCrlf", () => {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption, AgentEntry, AgentProvider, AgentTask } from "@/bindings";
+import { provideJjCommitMessageTarget } from "@/workbench/contributions";
 import {
   askingChoices,
   commitMessageOf,
@@ -340,6 +341,27 @@ describe("generateCommitMessage", () => {
     await generateCommitMessage();
     expect(backend.create).not.toHaveBeenCalled();
     expect(notified()).toEqual([expect.objectContaining({ level: "info", title: "No changes to describe" })]);
+  });
+
+  it("fills the Jujutsu description from its selected patch in a mixed project", async () => {
+    createdTask("ready");
+    const patch = PATCH.replaceAll("a.ts", "jj.ts");
+    const setMessage = vi.fn().mockReturnValue(true);
+    const dispose = provideJjCommitMessageTarget({
+      changes: async () => ({ revision: 7, roots: ["/jj"], patch }),
+      revision: () => 7,
+      setMessage,
+    });
+    try {
+      await generateCommitMessage("jj");
+      expect(backend.create.mock.lastCall?.[0].prompt.text).toContain(patch.trimEnd());
+      expect(setMessage).toHaveBeenCalledWith(7, "Fix the thing\n\nBecause.");
+      expect(backend.changes).not.toHaveBeenCalled();
+      expect(backend.setMessage).not.toHaveBeenCalled();
+      expect(backend.log).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
 
   it("points to the settings when no agent is installed", async () => {

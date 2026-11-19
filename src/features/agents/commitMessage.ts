@@ -8,7 +8,12 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { maybeCommitService, notifications, type NotificationService } from "@/workbench/contributions";
+import {
+  maybeCommitService,
+  maybeJjCommitMessageTarget,
+  notifications,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { REGISTRY_PAGE, isBusy } from "./model";
 import { modeIcon, modeOption } from "./composerModel";
 import { cancelTask, deleteTask, draftConfig, runQuietly, useAgents, type Draft } from "./store";
@@ -218,18 +223,18 @@ function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "key" | "g
 let running = false;
 
 /** Asks the agent for the message of the commit being prepared and puts it in the commit field. */
-export async function generateCommitMessage(): Promise<void> {
+export async function generateCommitMessage(vcs: "git" | "jj" = "git"): Promise<void> {
   if (running) return;
   running = true;
   try {
-    await generate();
+    await generate(vcs);
   } finally {
     running = false;
   }
 }
 
-async function generate(): Promise<void> {
-  const service = maybeCommitService();
+async function generate(vcs: "git" | "jj"): Promise<void> {
+  const service = vcs === "jj" ? maybeJjCommitMessageTarget() : maybeCommitService();
   if (!service) return;
   let changes;
   try {
@@ -256,7 +261,7 @@ async function generate(): Promise<void> {
   }
 
   const { commit } = workflowSettings().vcs;
-  const subjects = await recentSubjects(changes.roots[0]);
+  const subjects = vcs === "git" ? await recentSubjects(changes.roots[0]) : [];
   const prompt = commitMessagePrompt(
     changes.patch,
     commit.limitSubject ? commit.subjectLimit : 72,

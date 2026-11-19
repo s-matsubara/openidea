@@ -2,7 +2,6 @@
  * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
-import { writeClipboardText } from "@/platform/clipboard";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { formatBinding, isMacHost, macStroke, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import {
@@ -26,7 +25,6 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  Menu,
   Select,
   SplitGroup,
   SplitHandle,
@@ -65,7 +63,9 @@ import {
   type ChangeNode,
 } from "./changes";
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
-import { CommitOptionsPopup } from "./CommitOptions";
+import { CommitOptionsButton } from "./CommitOptions";
+import { CommitMessageHistory } from "./CommitMessageHistory";
+import { CommitCheckProblems } from "./commitChecks";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { inclusionChecks, isCommitAll, useStagingArea } from "./staging";
 import { addToChangelist, commitFiles } from "./changelistsUi";
@@ -99,8 +99,8 @@ import {
   vcsDiffInFront,
   workingDiffData,
 } from "./diffInput";
-import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { DiffEditor } from "./DiffEditor";
 import { call, commands } from "@/platform/ipc";
 import type { Commit, FileStatus, Stash } from "@/bindings";
 import { showChangesDiff, toLogChanges, type LogChange } from "./logChanges";
@@ -110,6 +110,9 @@ import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
+import { copyChangedFiles } from "./changeCopy";
+import { CheckMark } from "./ChangeTreeCheck";
+import { JjWorkingCopyView } from "./JjWorkingCopyView";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -174,19 +177,40 @@ export function CommitTabs() {
 }
 
 export function CommitToolWindow() {
+  const jj = useVcs((s) => s.jjRoots.length > 0);
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = stashTabOf(
     useCommit((s) => s.tab),
     combine,
   );
-  if (!available)
+  if (!available && !jj)
     return (
       <EmptyState icon="commit" title="Version control is not configured">
         <T>Open a Git repository to commit changes.</T>
       </EmptyState>
     );
-  return <div className={styles.root}>{tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}</div>;
+  return (
+    <div className={styles.root}>
+      {jj && available ? (
+        <SplitGroup orientation="vertical" className={styles.split}>
+          <SplitPanel defaultSize="40%" minSize="80px">
+            <JjWorkingCopyView />
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel defaultSize="60%" minSize="120px">
+            {tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}
+          </SplitPanel>
+        </SplitGroup>
+      ) : jj ? (
+        <JjWorkingCopyView />
+      ) : tab === "changes" ? (
+        <ChangesPanel />
+      ) : (
+        <StashContent tab={tab} />
+      )}
+    </div>
+  );
 }
 
 /** The Shelf, Stash or combined "Stashes and Shelves" tab. */
@@ -313,10 +337,7 @@ export function deletableFiles(nodes: ChangeNode[]): string[] {
  * tree and the context menu's Copy items (#1877).
  */
 export function copyChangePaths(nodes: ChangeNode[], kind: "absolute" | "name") {
-  const text = filesOf(nodes)
-    .map((f) => (kind === "name" ? basename(f.path) : f.path))
-    .join("\n");
-  if (text) void writeClipboardText(text);
+  copyChangedFiles(filesOf(nodes), kind);
 }
 
 export function nodeMenu(
@@ -478,36 +499,6 @@ function StageButton({ node }: { node: ChangeNode }) {
         ).then(() => refreshNow());
       }}
     />
-  );
-}
-
-function CheckMark({
-  checked,
-  indeterminate,
-  label,
-  onToggle,
-}: {
-  checked: boolean;
-  indeterminate: boolean;
-  label: string;
-  onToggle: () => void;
-}) {
-  return (
-    <span
-      role="checkbox"
-      aria-checked={indeterminate ? "mixed" : checked}
-      aria-label={label}
-      className={clsx(styles.check, (checked || indeterminate) && styles.checkOn)}
-      onMouseDown={(e) => {
-        if (e.button !== 0) return;
-        e.stopPropagation();
-        e.preventDefault();
-        onToggle();
-      }}
-      onDoubleClick={(e) => e.stopPropagation()}
-    >
-      {indeterminate ? <Icon name="minus" size={10} /> : checked ? <Icon name="check" size={10} /> : null}
-    </span>
   );
 }
 
@@ -1100,7 +1091,6 @@ export function CommitMessageField({
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
   const { emptyError } = runner;
@@ -1113,13 +1103,6 @@ export function CommitMessageField({
   useEffect(() => {
     if (focusTick) ref.current?.focus();
   }, [focusTick]);
-  // Show Commit Message History (⌃M) asks through the store.
-  const [seenHistoryTick, setSeenHistoryTick] = useState(historyTick);
-  if (historyTick !== seenHistoryTick) {
-    setSeenHistoryTick(historyTick);
-    if (messageHistory().length) setHistoryOpen(true);
-  }
-
   const cfg = useWorkflowSettings((s) => s.vcs.commit);
   const first = message.split("\n")[0] ?? "";
   const tooLong = cfg.limitSubject && first.length > cfg.subjectLimit;
@@ -1132,30 +1115,14 @@ export function CommitMessageField({
     <>
       <div ref={barRef} className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
-        <IconButton
-          icon="history"
-          title="Commit Message History"
-          size="small"
-          disabled={!history.length}
-          aria-haspopup="menu"
-          aria-expanded={historyOpen}
-          onClick={() => setHistoryOpen((o) => !o)}
-        />
-        <Menu
-          open={historyOpen}
-          onClose={() => setHistoryOpen(false)}
+        <CommitMessageHistory
           anchor={barRef}
-          placement="top-start"
-          iconColumn={false}
-          aria-label="Recent commit messages"
-          items={history.map((m, i) => ({
-            id: `h${i}`,
-            label: m.split("\n")[0]!.slice(0, 80),
-            run: () => {
-              useCommit.setState({ message: m });
-              ref.current?.focus();
-            },
-          }))}
+          messages={history}
+          openTick={historyTick}
+          onSelect={(message) => {
+            useCommit.setState({ message });
+            ref.current?.focus();
+          }}
         />
         <CommitMessageActions />
         <span className={styles.grow} />
@@ -1224,27 +1191,7 @@ export function CommitMessageField({
           ))}
         </div>
       )}
-      {checkProblems.length > 0 && (
-        <div className={styles.checkProblems} role="alert">
-          <Icon name="warning" size={14} className={styles.checkProblemsIcon} />
-          <div className={styles.checkProblemsList}>
-            {checkProblems.map((p, i) => (
-              <div key={i}>
-                <span className={styles.checkProblemTitle}>{tx(p.title)}</span>
-                {typeof p.text === "string" ? `: ${tx(p.text)}` : p.text}
-                {p.details && (
-                  <>
-                    {" "}
-                    <button type="button" className={styles.checkProblemLink} onClick={p.details.run}>
-                      {tx(p.details.label)}
-                    </button>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <CommitCheckProblems problems={checkProblems} />
     </>
   );
 }
@@ -1277,8 +1224,6 @@ function CommitPanel({ included }: { included: number }) {
   const amend = useCommit((s) => s.amend);
   const remoteBusy = useVcs((s) => s.remoteBusy);
   const checkProblems = useCommit((s) => s.checkProblems);
-  const optionsRef = useRef<HTMLButtonElement>(null);
-  const [optionsOpen, setOptionsOpen] = useState(false);
   const runner = useCommitRunner(included);
   const { canCommit } = runner;
   // After Fixup… / Squash Into…, the second button commits and autosquashes the target.
@@ -1317,16 +1262,7 @@ function CommitPanel({ included }: { included: number }) {
           </Button>
         )}
         <span className={styles.grow} />
-        <IconButton
-          ref={optionsRef}
-          icon="settings"
-          title="Commit Options"
-          size="small"
-          aria-haspopup="dialog"
-          aria-expanded={optionsOpen}
-          onClick={() => setOptionsOpen((o) => !o)}
-        />
-        {optionsOpen && <CommitOptionsPopup anchor={optionsRef} onClose={() => setOptionsOpen(false)} />}
+        <CommitOptionsButton />
       </div>
     </div>
   );

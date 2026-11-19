@@ -325,12 +325,12 @@ export function activate(): () => void {
           "Has the coding agent you work with review the changes about to be committed and write the commit message.",
         category: "Agents",
         icon: "toolwindow-agents",
-        when: "projectOpen && vcsAvailable",
+        when: "projectOpen && (vcsAvailable || vcsJjCommit)",
         keywords: ["agent", "commit", "message", "ai", "copilot", "generate"],
         indicatesRunning: true,
-        run: async () => {
+        run: async ({ arg, ctx }) => {
           const { generateCommitMessage } = await import("./commitMessage");
-          await generateCommitMessage();
+          await generateCommitMessage(arg === "jj" || !ctx.vcsAvailable ? "jj" : "git");
         },
       },
       {

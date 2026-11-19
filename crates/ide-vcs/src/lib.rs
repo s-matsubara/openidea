@@ -909,6 +909,26 @@ impl Repo {
         jj::working_copy(self)
     }
 
+    pub fn jj_describe(&self, edit: &jj::JjDescriptionEdit) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::describe(self, edit)
+    }
+
+    pub fn jj_restore_files(&self, commit: &str, paths: &[PathBuf]) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::restore_files(self, commit, paths)
+    }
+
+    pub fn jj_commit_files(&self, commit: &str, paths: &[PathBuf], description: &str) -> IdeResult<()> {
+        self.require_execution_allowed()?;
+        jj::commit_files(self, commit, paths, description)
+    }
+
+    pub fn jj_pending_patch(&self, commit: &str, paths: &[PathBuf]) -> IdeResult<String> {
+        jj::pending_patch(self, commit, paths)
+    }
+
+    /// Read-only editor changes against the single parent of @, including unsaved text.
     pub fn jj_line_hunks(&self, path: &Path, text: &str) -> IdeResult<Vec<LineHunk>> {
         self.require_execution_allowed()?;
         let _scope = crate::ExecutionScope::enter(true);

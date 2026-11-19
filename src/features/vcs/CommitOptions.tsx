@@ -3,13 +3,13 @@
  * sign-off, before-commit modifications, Git hooks and the commit checks. The
  * checks are the Settings › Version Control › Commit values, edited in place.
  */
-import type { ReactNode, RefObject } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { loadSettings } from "@/platform/project";
 import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { useCommitCheckProviders } from "@/workbench/contributions";
-import { Checkbox, Input, Popup, T } from "@/ui";
+import { Checkbox, IconButton, Input, Popup, T } from "@/ui";
 import { useCommit } from "./commitStore";
 import styles from "./CommitView.module.css";
 
@@ -109,26 +109,56 @@ export function CommitOptionsBody() {
   );
 }
 
-export function CommitOptionsPopup({
-  anchor,
-  onClose,
-}: {
-  anchor: RefObject<HTMLElement | null>;
-  onClose: () => void;
-}) {
+function JjCommitOptionsBody() {
+  const { analyzeCode, checkTodo } = useWorkflowSettings((s) => s.vcs.commit);
   return (
-    <Popup
-      open
-      anchor={anchor}
-      placement="top-start"
-      onClose={onClose}
-      role="dialog"
-      aria-label="Commit Options"
-      className={styles.options}
-    >
-      {/* IDEA opens the options without focusing the Author field. */}
-      <div tabIndex={-1} data-autofocus className={styles.optFocus} />
-      <CommitOptionsBody />
-    </Popup>
+    <>
+      <Section title="Advanced Commit Checks">
+        <Checkbox
+          checked={analyzeCode}
+          onChange={(value) => void setCheck("analyzeCode", value)}
+          label="Analyze code"
+        />
+        <Checkbox checked={checkTodo} onChange={(value) => void setCheck("checkTodo", value)} label="Check TODO" />
+      </Section>
+      <Section title="Commit Message Generation">
+        <div className={styles.optRow}>
+          <T>Instructions for Generate Commit Message with Agent</T>
+          <Configure />
+        </div>
+      </Section>
+    </>
+  );
+}
+
+export function CommitOptionsButton({ vcs = "git" }: { vcs?: "git" | "jj" }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <IconButton
+        ref={anchor}
+        icon="settings"
+        title="Commit Options"
+        size="small"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      />
+      {open && (
+        <Popup
+          open
+          anchor={anchor}
+          placement="top-start"
+          onClose={() => setOpen(false)}
+          role="dialog"
+          aria-label="Commit Options"
+          className={styles.options}
+        >
+          <div tabIndex={-1} data-autofocus className={styles.optFocus} />
+          {vcs === "jj" ? <JjCommitOptionsBody /> : <CommitOptionsBody />}
+        </Popup>
+      )}
+    </>
   );
 }

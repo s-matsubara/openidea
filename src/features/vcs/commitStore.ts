@@ -146,12 +146,16 @@ export function setCommitDiffPreview(v: boolean) {
   }
 }
 
-const historyKey = () => `openidea.vcs.commitMessages:${useVcs.getState().root ?? ""}`;
+type HistoryScope = { vcs: "jj"; project: string | null };
+const historyKey = (scope?: HistoryScope) =>
+  scope
+    ? `openidea.vcs.jjCommitMessages:${scope.project ?? ""}`
+    : `openidea.vcs.commitMessages:${useVcs.getState().root ?? ""}`;
 const MAX_HISTORY = 20;
 
-export function messageHistory(): string[] {
+export function messageHistory(scope?: HistoryScope): string[] {
   try {
-    const raw = localStorage.getItem(historyKey());
+    const raw = localStorage.getItem(historyKey(scope));
     const v: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
@@ -159,12 +163,12 @@ export function messageHistory(): string[] {
   }
 }
 
-export function rememberMessage(message: string) {
+export function rememberMessage(message: string, scope?: HistoryScope) {
   const m = message.trim();
   if (!m) return;
   try {
-    const list = [m, ...messageHistory().filter((x) => x !== m)].slice(0, MAX_HISTORY);
-    localStorage.setItem(historyKey(), JSON.stringify(list));
+    const list = [m, ...messageHistory(scope).filter((x) => x !== m)].slice(0, MAX_HISTORY);
+    localStorage.setItem(historyKey(scope), JSON.stringify(list));
   } catch {
     // ignore
   }

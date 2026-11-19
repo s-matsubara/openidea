@@ -1473,7 +1473,9 @@ export const commands = {
 	vcsJjAddWorkspace: (root: string, name: string, path: string, revision: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_add_workspace", { root, name, path, revision })),
 	vcsJjAnnotate: (root: string, path: string, commit: string, text: string) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_jj_annotate", { root, path, commit, text })),
 	/**  Commit checked files in a single discovered Jujutsu repository. */
+	vcsJjCommitFiles: (root: string, commit: string, paths: string[], description: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_commit_files", { root, commit, paths, description })),
 	/**  Description edits are scoped to an exact discovered root, independently of Git. */
+	vcsJjDescribe: (root: string, edit: JjDescriptionEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_describe", { root, edit })),
 	vcsJjFetch: (root: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch", { root })),
 	vcsJjFetchOptions: (root: string) => typedError<JjFetchOptions, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_options", { root })),
 	vcsJjFetchSelected: (root: string, remote: string, tag: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_selected", { root, remote, tag })),
@@ -1487,6 +1489,7 @@ export const commands = {
 	/**  Log mutations require the exact discovered Jujutsu root and current row identity. */
 	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
 	/**  Read the patch for only the checked files in the reviewed Jujutsu working copy. */
+	vcsJjPendingPatch: (root: string, commit: string, paths: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_pending_patch", { root, commit, paths })),
 	vcsJjPull: (root: string, remote: string, bookmark: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_pull", { root, remote, bookmark })),
 	vcsJjPullOptions: (root: string) => typedError<JjPullOptions, IdeError>(__TAURI_INVOKE("vcs_jj_pull_options", { root })),
 	vcsJjPush: (root: string, request: JjPushRequest) => typedError<JjPushPreview, IdeError>(__TAURI_INVOKE("vcs_jj_push", { root, request })),
@@ -1495,6 +1498,7 @@ export const commands = {
 	vcsJjRebaseOptions: (root: string) => typedError<JjRebaseOptions, IdeError>(__TAURI_INVOKE("vcs_jj_rebase_options", { root })),
 	vcsJjRemoveWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_remove_workspace", { root, expected })),
 	/**  Checked-file rollback requires an exact discovered root and clean documents. */
+	vcsJjRestoreFiles: (root: string, commit: string, paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_restore_files", { root, commit, paths })),
 	/**  Explicit stale recovery may update files in a secondary workspace outside project roots. */
 	vcsJjUpdateWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_update_workspace", { root, expected })),
 	vcsJjVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_jj_version", { path })),

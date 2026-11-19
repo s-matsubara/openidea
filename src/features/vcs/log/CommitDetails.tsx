@@ -1,3 +1,4 @@
+import { LineStats } from "../LogLineStats";
 import type { ChangedFile, Commit, LinkTarget } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
@@ -533,22 +534,6 @@ function nodeLineCount(node: FileTreeNode<ChangedFile | LogChange>): { added: nu
     removed += count.removed;
   }
   return node.children.length ? { added, removed } : null;
-}
-
-function LineStats({ added, removed }: { added: number; removed: number }) {
-  return (
-    <span className={styles.lineStats}>
-      <span className={styles.lineAdded} aria-label={added === 1 ? tx`${added} line added` : tx`${added} lines added`}>
-        +{added}
-      </span>
-      <span
-        className={styles.lineRemoved}
-        aria-label={removed === 1 ? tx`${removed} line deleted` : tx`${removed} lines deleted`}
-      >
-        −{removed}
-      </span>
-    </span>
-  );
 }
 
 function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile | LogChange>; flat?: boolean }) {

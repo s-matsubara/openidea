@@ -18,7 +18,9 @@ import { useVcs } from "./store";
 import type { CommitCheck, CommitCheckContext } from "./commitCheckRegistry";
 import { getCommitChecks, registerCommitCheck } from "./commitCheckRegistry";
 import styles from "./common.module.css";
+import commitStyles from "./CommitView.module.css";
 import { tx } from "@/platform/i18n";
+import { Icon } from "@/ui";
 
 // ---------------------------------------------------------------------------
 // Diagnostics seen per file (Analyze code)
@@ -210,6 +212,31 @@ export interface CommitProblem {
   details?: { label: string; run: () => void };
 }
 
+export function CommitCheckProblems({ problems }: { problems: readonly CommitProblem[] }) {
+  if (!problems.length) return null;
+  return (
+    <div className={commitStyles.checkProblems} role="alert">
+      <Icon name="warning" size={14} className={commitStyles.checkProblemsIcon} />
+      <div className={commitStyles.checkProblemsList}>
+        {problems.map((problem, i) => (
+          <div key={i}>
+            <span className={commitStyles.checkProblemTitle}>{tx(problem.title)}</span>
+            {typeof problem.text === "string" ? `: ${tx(problem.text)}` : problem.text}
+            {problem.details && (
+              <>
+                {" "}
+                <button type="button" className={commitStyles.checkProblemLink} onClick={problem.details.run}>
+                  {tx(problem.details.label)}
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Git: names invalid on Windows, large files
 
@@ -371,11 +398,16 @@ const builtinChecks: readonly CommitCheck[] = [
       const hits: TodoHit[] = [];
       for (const p of ctx.existing) {
         try {
-          const [oldText, newText] = await Promise.all([
-            call(commands.vcsFileAt(p, ctx.amend ? "HEAD~1" : "HEAD")).catch(() => null),
-            call(commands.fsReadText(p)),
-          ]);
-          hits.push(...(await todosInChanges(p, oldText ?? "", newText)));
+          if (ctx.todoDiff) {
+            const { before, after } = await ctx.todoDiff(p);
+            hits.push(...(await todosInChanges(p, before, after)));
+          } else {
+            const [oldText, newText] = await Promise.all([
+              call(commands.vcsFileAt(p, ctx.amend ? "HEAD~1" : "HEAD")).catch(() => null),
+              call(commands.fsReadText(p)),
+            ]);
+            hits.push(...(await todosInChanges(p, oldText ?? "", newText)));
+          }
         } catch {
           // unreadable / binary
         }
@@ -503,10 +535,31 @@ export async function runCommitChecks(
     diagnostics: problemCounts,
   };
   await modifyFiles(ctx);
+  return runChecks(ctx, getCommitChecks());
+}
 
+/** Read-only built-in checks whose inputs come from the reviewed jj working-copy changes. */
+export function runJjCommitChecks(files: ReadonlyMap<string, string>, root: string): Promise<CommitCheckRun> {
+  return runChecks(
+    {
+      existing: [...files.keys()],
+      amend: false,
+      root,
+      repo: null,
+      status: [],
+      branch: null,
+      settings: workflowSettings().vcs,
+      diagnostics: problemCounts,
+      todoDiff: (path) => call(commands.vcsJjFileDiff(path, files.get(path)!)),
+    },
+    getCommitChecks().filter((check) => check.id === "vcs.analysis" || check.id === "vcs.todo"),
+  );
+}
+
+async function runChecks(ctx: CommitCheckContext, checks: readonly CommitCheck[]): Promise<CommitCheckRun> {
   const problems: CommitProblem[] = [];
   let blocked = false;
-  for (const check of getCommitChecks()) {
+  for (const check of checks) {
     try {
       const result = await check.run(ctx);
       if (!result) continue;

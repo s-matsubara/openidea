@@ -1,0 +1,68 @@
+.jjCopies,
+.jjList,
+.jjDescription {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.jjCopies,
+.jjList,
+.jjDescription {
+  height: 100%;
+  overflow: hidden;
+}
+
+.jjCopies,
+.jjFiles {
+  flex: 1;
+}
+
+.jjFiles {
+  min-height: 0;
+}
+
+.jjDescription > [role="alert"] {
+  flex-shrink: 1;
+}
+
+.jjDescriptionBar {
+  padding-inline: var(--space-2);
+  background: var(--bg-elev);
+}
+
+.jjSummary {
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jjChangeCounts {
+  margin-inline-start: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.jjChangeCounts > span + span {
+  margin-inline-start: var(--space-2);
+}
+
+.jjOutcomes {
+  flex: none;
+  max-height: 25%;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.jjPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

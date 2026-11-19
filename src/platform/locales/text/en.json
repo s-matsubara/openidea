@@ -2189,6 +2189,8 @@
   "Some Jujutsu diffs could not be opened": "Some Jujutsu diffs could not be opened",
   "Line statistics unavailable": "Line statistics unavailable",
   "Merge of {join}": "Merge of {join}",
+  "Edit Description…": "Edit Description…",
+  "Edit Description": "Edit Description",
   "Cannot paste this path safely: its name contains control characters.": "Cannot paste this path safely: its name contains control characters.",
   "Cannot paste the dropped files": "Cannot paste the dropped files",
   "Lost the connection to {host}": "Lost the connection to {host}",

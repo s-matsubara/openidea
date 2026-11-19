@@ -408,6 +408,138 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     .await
 }
 
+/// Description edits are scoped to an exact discovered root, independently of Git.
+#[command(trust = trusted)]
+pub async fn vcs_jj_describe(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    edit: ide_vcs::JjDescriptionEdit,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Description root is not a project Jujutsu repository"))?;
+        repo.jj_describe(&edit)
+    })
+    .await
+}
+
+fn jj_checked_repo<'a>(repos: &'a ide_vcs::Repos, root: &Path, paths: &[PathBuf]) -> IdeResult<&'a ide_vcs::Repo> {
+    let repo = repos
+        .all()
+        .iter()
+        .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+        .ok_or_else(|| ide_core::IdeError::invalid("Commit root is not a project Jujutsu repository"))?;
+    if paths.iter().any(|path| repos.for_path(path).is_none_or(|owner| owner.root() != root)) {
+        return Err(ide_core::IdeError::invalid("Commit target belongs to another repository"));
+    }
+    Ok(repo)
+}
+
+/// Read the patch for only the checked files in the reviewed Jujutsu working copy.
+#[command(trust = trusted)]
+pub async fn vcs_jj_pending_patch(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    paths: Vec<PathBuf>,
+) -> IdeResult<String> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        jj_checked_repo(&repos, &root, &paths)?.jj_pending_patch(&commit, &paths)
+    })
+    .await
+}
+
+/// Commit checked files in a single discovered Jujutsu repository.
+#[command(trust = trusted)]
+pub async fn vcs_jj_commit_files(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    paths: Vec<PathBuf>,
+    description: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = jj_checked_repo(&repos, &root, &paths)?;
+        for doc in project.documents.open_documents() {
+            let info = project.documents.snapshot(doc)?;
+            if paths.iter().any(|path| path.as_path() == info.path.as_ref()) && project.documents.is_dirty(doc)? {
+                return Err(ide_core::IdeError::invalid("Save checked files before committing"));
+            }
+        }
+        repo.jj_commit_files(&commit, &paths, &description)
+    })
+    .await
+}
+
+/// Checked-file rollback requires an exact discovered root and clean documents.
+#[command(trust = trusted)]
+pub async fn vcs_jj_restore_files(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    paths: Vec<PathBuf>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Rollback root is not a project Jujutsu repository"))?;
+        for path in &paths {
+            if repos.for_path(path).is_none_or(|owner| owner.root() != root) {
+                return Err(ide_core::IdeError::invalid("Rollback target belongs to another repository"));
+            }
+        }
+        let copy = repo.jj_working_copy()?;
+        for file in &copy.files {
+            if paths.iter().any(|p| p == file.path.as_ref()) {
+                if let Some(source) = &file.renamed_from {
+                    if repos.for_path(&root.join(source)).is_none_or(|owner| owner.root() != root) {
+                        return Err(ide_core::IdeError::invalid("Rename source belongs to another repository"));
+                    }
+                }
+            }
+        }
+        // Rename sources may also be affected; refuse all dirty documents in this
+        // repository rather than silently overwriting a buffer not shown in the list.
+        for doc in project.documents.open_documents() {
+            let info = project.documents.snapshot(doc)?;
+            if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                return Err(ide_core::IdeError::invalid(
+                    "Save unsaved documents before Jujutsu rollback, then refresh",
+                ));
+            }
+        }
+        let result = repo.jj_restore_files(&commit, &paths);
+        project.documents.sync_from_disk();
+        result
+    })
+    .await
+}
+
 /// Log mutations require the exact discovered Jujutsu root and current row identity.
 #[command(trust = trusted)]
 pub async fn vcs_jj_log_action(
@@ -2069,6 +2201,10 @@ pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: St
 
 ide_command::domain!(
     vcs_commands:
+    vcs_jj_commit_files,
+    vcs_jj_pending_patch,
+    vcs_jj_describe,
+    vcs_jj_restore_files,
     vcs_jj_log_action,
     vcs_jj_pull_options,
     vcs_jj_fetch,

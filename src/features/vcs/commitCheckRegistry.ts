@@ -43,6 +43,8 @@ export interface CommitCheckContext {
   settings: { commit: CommitSettingsValid; git: GitSettingsValid };
   /** Errors and warnings seen per file (Analyze code). */
   diagnostics(paths: readonly string[]): { errors: number; warnings: number; files: number };
+  /** Bases other than Git HEAD can supply both sides of the changed file. */
+  todoDiff?(path: string): Promise<{ before: string; after: string }>;
 }
 
 export interface CommitCheck {

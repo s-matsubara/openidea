@@ -869,15 +869,18 @@ export const runOutput = (): RunOutputService | undefined => services.runOutput;
  * The commit being prepared (the Commit tool window or dialog), for plugins:
  * provided by the vcs feature.
  */
-export interface CommitService {
+export interface CommitService extends CommitMessageTarget {
   /**
    * What Commit would commit now, per repository (unsaved editors saved first, as
    * Commit does); `null` without a repository.
    */
   selection(): Promise<CommitSelection | null>;
+}
+
+export interface CommitMessageTarget {
   /**
-   * The included changes as a unified diff against HEAD (unsaved editors saved first);
-   * `null` without a repository.
+   * The included changes as a unified diff against the commit's base;
+   * `null` if the target is unavailable.
    */
   changes(): Promise<CommitChanges | null>;
   /** The draft's current revision: bumped whenever the message, Amend or the inclusion changes. */
@@ -898,6 +901,15 @@ export interface CommitChanges {
 let commitServiceImpl: CommitService | undefined;
 export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
 export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+let jjCommitMessageTarget: CommitMessageTarget | undefined;
+export function provideJjCommitMessageTarget(target: CommitMessageTarget): () => void {
+  jjCommitMessageTarget = target;
+  return () => {
+    if (jjCommitMessageTarget === target) jjCommitMessageTarget = undefined;
+  };
+}
+export const maybeJjCommitMessageTarget = (): CommitMessageTarget | undefined => jjCommitMessageTarget;
 
 /**
  * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
