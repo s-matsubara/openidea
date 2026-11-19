@@ -143,6 +143,8 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
+  navigationInput?(input: EditorInput): EditorInput;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -699,8 +701,6 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
-  paneOf?(key: string): string | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -776,7 +776,7 @@ export interface NotificationService {
     verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
-     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
+     * `vcs`, `run`, `tools`, `plugins`, `search`, `terminal`, `updates`.
      */
     group?: string;
     /**
@@ -875,8 +875,24 @@ export interface CommitService {
    * Commit does); `null` without a repository.
    */
   selection(): Promise<CommitSelection | null>;
+  /**
+   * The included changes as a unified diff against HEAD (unsaved editors saved first);
+   * `null` without a repository.
+   */
+  changes(): Promise<CommitChanges | null>;
+  /** The draft's current revision: bumped whenever the message, Amend or the inclusion changes. */
+  revision(): number;
   /** Replaces the message if the draft is still at `revision`; false when it changed. */
   setMessage(revision: number, message: string): boolean;
+}
+
+export interface CommitChanges {
+  /** The draft's revision the diff was read at, for `CommitService.setMessage`. */
+  revision: number;
+  /** Repositories the commit goes to. */
+  roots: string[];
+  /** Untracked files included; empty when nothing is included. */
+  patch: string;
 }
 
 let commitServiceImpl: CommitService | undefined;
@@ -1119,6 +1135,8 @@ export interface SettingsPageContribution {
   component?: ComponentType;
   /** The page edits settings that a project can override (Global / This project switch). */
   projectScope?: boolean;
+  /** The page fills the area under the header edge to edge, without the usual padding. */
+  bleed?: boolean;
   /** The scope the switch starts on (default: global). */
   defaultScope?: "global" | "project";
 }
@@ -1164,6 +1182,14 @@ export function useSettingsPageFocus(): SettingsPageFocus {
   return useContext(SettingsPageFocusContext);
 }
 
+/** Where a settings page may portal controls into the page header, beside its title. */
+export const SettingsHeaderSlotContext = createContext<HTMLElement | null>(null);
+
+/** The header slot of the settings page being shown; null outside the Settings dialog. */
+export function useSettingsHeaderSlot(): HTMLElement | null {
+  return useContext(SettingsHeaderSlotContext);
+}
+
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
 
 /** The form of the settings page being shown (provided by the Settings dialog). */
@@ -1183,6 +1209,28 @@ export function registerSettingsPage(page: SettingsPageContribution): () => void
       const pages = new Map(s.pages);
       pages.delete(page.id);
       return { pages };
+    });
+}
+
+/** Registers a batch of settings pages in one store update; returns a batched disposer. */
+export function registerSettingsPages(list: SettingsPageContribution[]): () => void {
+  if (!list.length) return () => {};
+  const owned = new Map<string, SettingsPageContribution>();
+  for (const page of list) owned.set(page.id, page);
+  useSettingsPages.setState((s) => {
+    const pages = new Map(s.pages);
+    for (const [id, page] of owned) pages.set(id, page);
+    return { pages };
+  });
+  return () =>
+    useSettingsPages.setState((s) => {
+      let next: Map<string, SettingsPageContribution> | null = null;
+      for (const [id, page] of owned) {
+        if (s.pages.get(id) !== page) continue;
+        next ??= new Map(s.pages);
+        next.delete(id);
+      }
+      return next ? { pages: next } : s;
     });
 }
 
@@ -1275,6 +1323,7 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "changes"
   | "problems"
   | "searchResults"
   | "editorGutter"

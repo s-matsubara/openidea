@@ -14,6 +14,7 @@ import { canDrop, canModifyTable, canRename, reference, scriptSql, type ScriptKi
 import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
+  connect,
   RESULTS_VIEW,
   detailsKey,
   disconnect,
@@ -44,6 +45,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { databaseRequest } from "./requests";
@@ -98,6 +100,19 @@ async function tablesIn(id: string, schema: string): Promise<DbTableInfo[]> {
   if (useDatabase.getState().tables[tablesKey(id, schema)]?.status !== "ok") await loadTables(id, schema);
   const l = useDatabase.getState().tables[tablesKey(id, schema)];
   return l?.status === "ok" ? l.value : [];
+}
+
+/**
+ * Connects to `target` before a dump / restore dialog opens (a password prompt would replace
+ * the dialog) and reads the server's version; `undefined` when the user cancelled.
+ */
+async function serverVersionOf(target: string): Promise<number | null | undefined> {
+  if (!(await connect(target))) return undefined;
+  try {
+    return await withConnection(target, () => call(commands.dbServerVersion(target)));
+  } catch {
+    return null;
+  }
 }
 
 /** DDL of a table / view, or of every table and view of a schema or data source. */
@@ -426,6 +441,54 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "clickhouse")
           openDialog({ kind: "import", id: n.id, schema: n.schema, table: n.table.name });
+      },
+    }),
+    tree({
+      id: "db.dumpWithPgDump",
+      title: "Export with 'pg_dump'…",
+      icon: "export",
+      keywords: ["backup", "dump", "postgresql"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && dumpScope(n, sourceOf(n));
+        const serverVersion = scope && (await serverVersionOf(scope.target));
+        if (scope && serverVersion !== undefined) openDialog({ kind: "dump", ...scope, serverVersion });
+      },
+    }),
+    tree({
+      id: "db.restoreWithPgRestore",
+      title: "Restore with 'pg_restore'/'psql'…",
+      icon: "download",
+      keywords: ["backup", "restore", "load dump", "postgresql"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && dumpScope(n, sourceOf(n));
+        const serverVersion = scope && (await serverVersionOf(scope.target));
+        if (scope && serverVersion !== undefined)
+          openDialog({ kind: "restore", target: scope.target, database: scope.database, serverVersion });
+      },
+    }),
+    tree({
+      id: "db.dumpWithMysqldump",
+      title: "Export with 'mysqldump'…",
+      icon: "export",
+      keywords: ["backup", "dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target))) openDialog({ kind: "mysqlDump", ...scope });
+      },
+    }),
+    tree({
+      id: "db.restoreWithMysql",
+      title: "Restore with 'mysql'…",
+      icon: "download",
+      keywords: ["backup", "restore", "load dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target)))
+          openDialog({ kind: "mysqlRestore", target: scope.target, database: scope.database });
       },
     }),
     tree({

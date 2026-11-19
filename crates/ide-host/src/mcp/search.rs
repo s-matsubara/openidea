@@ -6,6 +6,7 @@
 //! the editor (one per character except emoji and other astral characters).
 
 use crate::mcp::page::{OFFSET, Page};
+use crate::mcp::scope::{self, Scope};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use crate::mcp::util::{INDEXING_PARTIAL_RESULT_REASON, MEDIUM_TIMEOUT};
 use crate::ops::search::SearchEvent;
@@ -67,6 +68,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
         |call| async move { text_search(call, false).await },
     )
     .param(Param::required("q", ParamType::String, "Text to search for"))
+    .param(scope::param())
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
@@ -89,6 +91,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
         |call| async move { text_search(call, true).await },
     )
     .param(Param::required("q", ParamType::String, "Regex pattern to search for"))
+    .param(scope::param())
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
@@ -110,6 +113,7 @@ If you don't find a suitable result, try again with include_external=true to sea
         |call| async move { symbol_search(call).await },
     )
     .param(Param::required("q", ParamType::String, "Symbol query text"))
+    .param(scope::param())
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional(
         "include_external",
@@ -136,6 +140,7 @@ Paths are optional additional glob filters relative to the project root.",
         |call| async move { file_search(call).await },
     )
     .param(Param::required("q", ParamType::String, "Glob pattern to search for"))
+    .param(scope::param())
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional(
         "includeExcluded",
@@ -275,7 +280,7 @@ fn context(call: &Call) -> IdeResult<(u32, u32)> {
 
 /// `line`, or when longer than [`MAX_LINE_TEXT`] UTF-16 units, the part from [`SNIPPET_AROUND`]
 /// units before 0-based UTF-16 column `start` to as many after `end`, with `…` where it was cut.
-fn snippet(line: &str, start: usize, end: usize) -> String {
+pub(super) fn snippet(line: &str, start: usize, end: usize) -> String {
     let units: usize = line.chars().map(char::len_utf16).sum();
     if units <= MAX_LINE_TEXT {
         return line.to_owned();
@@ -312,7 +317,7 @@ async fn fill_lines(
     for item in items {
         let (Some(path), Some(line)) = (absolute(item), item.start_line) else { continue };
         if current.as_ref().is_none_or(|(p, _)| p != &path) {
-            let text = crate::ops::fs::read_text(&host, call.window(), path.clone()).await.ok();
+            let text = crate::ops::fs::fs_read_text(&host, call.window(), path.clone()).await.ok();
             let lines = text.map(|t| t.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned()).collect());
             current = Some((path, lines));
         }
@@ -539,6 +544,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let pattern = query(&call, if is_regex { "Regex pattern is empty" } else { "Search text is empty" })?;
     let (page, limit) = page(&call, DEFAULT_LIMIT)?;
     let around = context(&call)?;
+    let dir = Scope::of(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     // Globs Find in Files cannot take are applied afterwards, so the engine must not
     // stop at `limit` matches the filter may drop.
@@ -559,7 +565,8 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         whole_word: false,
         include,
         exclude,
-        scope: SearchScope::Project,
+        // Only `scope` is walked.
+        scope: dir.dir().map_or(SearchScope::Project, |d| SearchScope::Directory { path: d.to_path_buf().into() }),
         max_matches,
         context: Default::default(),
     };
@@ -568,8 +575,12 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     }
     let (files, summary, timed_out) = run_search(&call, query.clone()).await?;
     // Content roots outside the project are reported by absolute path.
-    let mut files: Vec<(String, FileMatches)> =
-        files.into_iter().map(|f| (call.display(&f.path.0), f)).filter(|(path, _)| scope.matches(path)).collect();
+    let mut files: Vec<(String, FileMatches)> = files
+        .into_iter()
+        .filter(|f| dir.contains(&f.path.0))
+        .map(|f| (call.display(&f.path.0), f))
+        .filter(|(path, _)| scope.matches(path))
+        .collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
     // Only these can match a line break.
     let may_span = is_regex || pattern.contains('\n');
@@ -584,7 +595,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         // such lines are matched again in the file's whole text.
         let long = |m: &ide_search::LineMatch| m.text_offset > 0 || m.text.encode_utf16().count() + 1 >= LINE_WINDOW;
         let whole = if file.matches.iter().any(long) {
-            crate::ops::fs::read_text(&host, call.window(), file.path.0.clone())
+            crate::ops::fs::fs_read_text(&host, call.window(), file.path.0.clone())
                 .await
                 .ok()
                 .and_then(|text| Some((ide_search::match_ranges(&text, &query).ok()?, text)))
@@ -667,7 +678,7 @@ async fn extend_spanning(call: &Call, query: &SearchQuery, hits: &mut [TextHit],
     let mut current: Option<FileText> = None;
     for (i, path) in spanning {
         if current.as_ref().is_none_or(|(p, ..)| p != &path) {
-            let Ok(text) = crate::ops::fs::read_text(&host, call.window(), path.clone()).await else { continue };
+            let Ok(text) = crate::ops::fs::fs_read_text(&host, call.window(), path.clone()).await else { continue };
             let Ok(ranges) = ide_search::match_ranges(&text, query) else { continue };
             let starts = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
             current = Some((path, text, starts, ranges));
@@ -703,14 +714,14 @@ async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatch
     let request = crate::mcp::tool::request_id();
     let files = Arc::new(Mutex::new(Vec::new()));
     let done = Arc::new(Mutex::new(None));
-    let emit: crate::ops::Emit<SearchEvent> = {
+    let emit = {
         let (files, done) = (files.clone(), done.clone());
-        Arc::new(move |event| match event {
+        crate::ops::Channel::new(move |event: SearchEvent| match event {
             SearchEvent::File { file } => files.lock().push(file),
             SearchEvent::Done { summary } => *done.lock() = Some(summary),
         })
     };
-    let search = crate::ops::search::start(&host, call.window(), request, query, emit);
+    let search = crate::ops::search::search_start(&host, call.window(), request, query, emit);
     tokio::pin!(search);
     let mut timed_out = false;
     tokio::select! {
@@ -739,6 +750,7 @@ async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatch
 async fn file_search(call: Call) -> IdeResult<Output> {
     let q = query(&call, "Glob pattern is empty")?;
     let (page, limit) = page(&call, DEFAULT_LIMIT)?;
+    let dir = Scope::of(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     let include_excluded = call.flag("includeExcluded", false)?;
     let glob = GlobSetBuilder::new()
@@ -748,16 +760,19 @@ async fn file_search(call: Call) -> IdeResult<Output> {
     // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
     let excludes = if include_excluded { None } else { Some(FileMask::new(&[], &call.project().search_excludes())?) };
     let root = call.root().to_path_buf();
-    // The project folder and the content roots its walk does not cover: those outside it and
-    // those inside it that it skips as ignored.
-    let roots: Vec<PathBuf> = std::iter::once(root.clone())
-        .chain(
-            call.project()
-                .content_roots()
-                .into_iter()
-                .filter(|r| relative_to_root(&root, r).is_none() || ide_index::walk_skips(&root, r)),
-        )
-        .collect();
+    // `scope`, or the project folder and the content roots its walk does not cover: those
+    // outside it and those inside it that it skips as ignored.
+    let roots: Vec<PathBuf> = match dir.dir() {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => std::iter::once(root.clone())
+            .chain(
+                call.project()
+                    .content_roots()
+                    .into_iter()
+                    .filter(|r| relative_to_root(&root, r).is_none() || ide_index::walk_skips(&root, r)),
+            )
+            .collect(),
+    };
     let host = call.host();
     let walk = Walk {
         host: host.clone(),
@@ -807,7 +822,7 @@ impl Walk {
     /// Collects matching files under `dir` (inside the walked root `base`) depth first in
     /// name order; true when it stopped early: more than `limit` match or the time ran out.
     fn dir(&self, dir: &Path, base: &Path, found: &mut Vec<String>) -> bool {
-        let Ok(mut entries) = tokio::runtime::Handle::current().block_on(crate::ops::fs::read_dir(
+        let Ok(mut entries) = tokio::runtime::Handle::current().block_on(crate::ops::fs::fs_read_dir(
             &self.host,
             &self.window,
             dir.to_path_buf(),
@@ -838,9 +853,9 @@ impl Walk {
                     }
                 }
                 EntryKind::File => {
-                    // Files of content roots outside the project go by absolute path.
+                    // Files of content roots outside the project go by absolute path, with `/` as elsewhere.
                     let path = relative_to_root(&self.root, &entry.path)
-                        .unwrap_or_else(|| entry.path.to_string_lossy().into_owned());
+                        .unwrap_or_else(|| entry.path.to_string_lossy().replace('\\', "/"));
                     if self.glob.is_match(&path) && self.scope.matches(&path) {
                         if found.len() == self.limit {
                             return true;
@@ -862,6 +877,7 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     let q = query(&call, "Search query is empty")?;
     let (page, limit) = page(&call, SYMBOL_SEARCH_DEFAULT_LIMIT)?;
     let around = context(&call)?;
+    let dir = Scope::of(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     let external = call.flag("include_external", false)?;
     let host = call.host();
@@ -869,16 +885,30 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     let indexing_before = project.index.status().indexing;
     let pool = if scope.is_all() { limit + 1 } else { ((limit + 1) * SYMBOL_POOL_FACTOR).min(MAX_SYMBOL_POOL) };
     let found = {
-        let (project, q) = (project.clone(), q.clone());
-        host.blocking(move || Ok(project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool))).await?
+        let (project, q, dir) = (project.clone(), q.clone(), dir.dir().map(Path::to_path_buf));
+        host.blocking(move || {
+            Ok(match dir {
+                // Filtered in the index: a pool cut before the filter could miss every match.
+                Some(dir) => project
+                    .index
+                    .find_symbols_until(&q, ide_index::SymbolFilter::All, pool, &|p| p.starts_with(&dir), &|| false)
+                    .unwrap_or_default(),
+                None => project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool),
+            })
+        })
+        .await?
     };
     let mut items: Vec<SearchItem> = found
         .into_iter()
-        .filter(|s| scope.matches(&s.rel_path))
-        .map(|s| SearchItem {
+        // By the path the other tools give: the index shows a root outside the project by its
+        // folder name, which is no path to read.
+        .filter(|s| dir.contains(&s.path.0))
+        .map(|s| (call.display(&s.path.0), s))
+        .filter(|(path, _)| scope.matches(path))
+        .map(|(path, s)| SearchItem {
             name: Some(s.name),
             container: s.container.filter(|c| !c.is_empty()),
-            ..SearchItem::at(s.rel_path, s.range)
+            ..SearchItem::at(path, s.range)
         })
         .collect();
     let mut timed_out = false;
@@ -886,11 +916,15 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
         let budget = MEDIUM_TIMEOUT.saturating_sub(started.elapsed());
         let (symbols, out_of_time) = workspace_symbols(&call, &q, budget).await;
         timed_out = out_of_time;
+        let mut roots = project.content_roots();
+        roots.extend(crate::mcp::tool::attached_projects(call.root()));
         for (name, container, location) in symbols {
             let path = location.uri.clone().unwrap_or_else(|| call.display(&location.path));
-            // Project files obey `paths`; library symbols are what was asked for.
-            let inside = location.uri.is_none() && !Path::new(&path).is_absolute();
-            if inside && !scope.matches(&path) {
+            // Project files (attached projects' too) obey `scope` and `paths`; library symbols
+            // are what was asked for.
+            let inside = location.uri.is_none()
+                && (!Path::new(&path).is_absolute() || roots.iter().any(|r| location.path.starts_with(r)));
+            if inside && !(dir.contains_shown(call.root(), &path) && scope.matches(&path)) {
                 continue;
             }
             let item = SearchItem {

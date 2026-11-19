@@ -17,6 +17,7 @@
 
 mod api;
 mod auth;
+mod build_graph;
 pub mod commands;
 pub mod commit;
 mod database;
@@ -37,6 +38,7 @@ mod inlay_hints;
 mod install;
 pub mod intellij;
 mod ipc;
+mod java_agents;
 pub mod language_features;
 mod market;
 mod mcp;
@@ -58,6 +60,7 @@ pub mod web;
 mod websocket;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use build_graph::{BuildGraph, GradleModule};
 pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
@@ -378,6 +381,8 @@ pub struct PluginHost {
     ui: Arc<UiStore>,
     languages: Arc<PluginLanguages>,
     run_detectors: Arc<run_detectors::RunDetectors>,
+    /// `[[contributes.javaAgents]]` of enabled plugins.
+    java_agents: Arc<java_agents::JavaAgents>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
@@ -457,7 +462,9 @@ impl PluginHost {
         let languages = PluginLanguages::new();
         let run_detectors: Arc<run_detectors::RunDetectors> = Arc::default();
         let providers: Arc<providers::Providers> = Arc::default();
-        register_builtin_points(&registry, &ui, &languages, &run_detectors, &providers).map_err(IdeError::internal)?;
+        let java_agents: Arc<java_agents::JavaAgents> = Arc::default();
+        register_builtin_points(&registry, &ui, &languages, &run_detectors, &java_agents, &providers)
+            .map_err(IdeError::internal)?;
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
         let policy_pins = pins.clone();
         languages.set_process_policy(Arc::new(move |plugin, cap| {
@@ -491,6 +498,7 @@ impl PluginHost {
             ui,
             languages,
             run_detectors,
+            java_agents,
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
@@ -991,8 +999,8 @@ impl PluginHost {
         };
         // Consent covers what the install page showed.
         let request = request_for(&subject, &pkg.manifest, &hash, &set.capabilities);
-        self.record_consent(&request, consent);
         let dir = install::active_dir(&root).ok_or_else(|| IdeError::internal("the installed version is missing"))?;
+        self.record_consent(&request, consent, agent_jar_grant(&pkg.manifest, &dir));
         self.load_dir(&dir, PluginSource::Installed, None);
         if let Some(previous) = previous {
             let failed = self
@@ -1110,7 +1118,7 @@ impl PluginHost {
         let hash = self.package_hash_of(&plugin);
         let extra = plugin.meta.lock().declared_extra.clone();
         let request = request_for(&plugin.subject(), plugin.manifest(), &hash, &extra);
-        self.record_consent(&request, consent);
+        self.record_consent(&request, consent, agent_jar_grant(plugin.manifest(), plugin.dir()));
         self.stop(&plugin);
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
@@ -1160,6 +1168,12 @@ impl PluginHost {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
             ledger.set(&subject, &cap, granted);
+            if granted
+                && cap == Capability::JavaAgent
+                && let Some(jar) = agent_jar_grant(plugin.manifest(), plugin.dir())
+            {
+                ledger.set_binary(&subject, &cap, jar);
+            }
             if granted
                 && let Capability::Process(program) = &cap
                 && let Some(bin) = ledger
@@ -1696,6 +1710,11 @@ impl PluginHost {
         })
     }
 
+    /// Plugins' `javaAgents`, for [`ide_run::java_agent::set_java_agent_source`].
+    pub fn java_agents(&self) -> Arc<dyn ide_run::java_agent::JavaAgentSource> {
+        Arc::new(java_agents::PluginJavaAgents { store: self.java_agents.clone(), pins: self.pins.clone() })
+    }
+
     /// The syntax of plugin languages, for [`ide_language::set_external_syntax`].
     pub fn syntax_provider(self: &Arc<Self>) -> Arc<dyn ide_language::ExternalSyntax> {
         Arc::new(PluginSyntax(Arc::downgrade(self)))
@@ -1785,6 +1804,12 @@ impl PluginHost {
     /// longer waits.
     pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
     }
 
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
@@ -2195,6 +2220,7 @@ impl PluginHost {
                 if events.is_empty() {
                     return Ok(());
                 }
+                let events = Self::relativize_documents(&shared, invocation.client.as_deref(), events);
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -2933,7 +2959,7 @@ impl PluginHost {
             }
             let declared =
                 plugin.manifest().capabilities.all().cloned().chain(plugin.meta.lock().declared_extra.clone());
-            for cap in declared.filter(|c| matches!(c, Capability::Process(_))) {
+            for cap in declared.filter(|c| matches!(c, Capability::Process(_) | Capability::JavaAgent)) {
                 if let Some(bin) = ledger.pinned_binary(&subject, &cap) {
                     pins.insert(
                         (plugin.id().to_owned(), cap.to_string()),
@@ -2994,7 +3020,9 @@ impl PluginHost {
         self.save_ledger(&ledger);
     }
 
-    fn record_consent(&self, request: &Request<'_>, consent: &Consent) {
+    /// `agent_jar`: the jar of the plugin's `javaAgents` declaration, recorded when
+    /// `java.agent` is accepted.
+    fn record_consent(&self, request: &Request<'_>, consent: &Consent, agent_jar: Option<BinaryGrant>) {
         let accepted: Vec<Capability> = request.optional.iter().filter(|c| consent.accepts(c)).cloned().collect();
         let choices: BTreeMap<_, _> = {
             let ledger = self.ledger.lock();
@@ -3016,6 +3044,7 @@ impl PluginHost {
                     .get(&c.to_string())
                     .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
                     .map(|b| (c.to_string(), b)),
+                Capability::JavaAgent => agent_jar.clone().map(|jar| (c.to_string(), jar)),
                 _ => None,
             })
             .collect();
@@ -3065,6 +3094,26 @@ impl PluginHost {
             homepage: m.homepage.clone(),
             change_notes: m.change_notes.clone(),
             icon: p.icon.clone(),
+            java_agent: self.java_agents.for_plugin(&m.id).map(|agent| {
+                let pin = self
+                    .ledger
+                    .lock()
+                    .get(&p.subject())
+                    .filter(|grant| grant.has(&Capability::JavaAgent))
+                    .and_then(|grant| grant.binaries.get(&Capability::JavaAgent.to_string()).cloned());
+                let approved = pin.as_ref().is_some_and(|pin| {
+                    pin.path == agent.jar && ledger::file_hash(&pin.path).is_ok_and(|hash| hash == pin.hash)
+                });
+                PluginJavaAgent {
+                    file_name: agent
+                        .jar
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| agent.jar.display().to_string()),
+                    args: agent.args,
+                    approved,
+                }
+            }),
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),
@@ -3092,6 +3141,13 @@ impl Drop for PluginHost {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// The jar of a package's `javaAgents` declaration with its hash now, for a `java.agent` grant.
+fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
+    let path = java_agents::declared_jar(manifest, dir)?;
+    let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
+    Some(BinaryGrant { path, hash })
 }
 
 fn request_for<'a>(subject: &Subject, m: &'a Manifest, hash: &'a str, declared: &[Capability]) -> Request<'a> {

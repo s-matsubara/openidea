@@ -307,6 +307,20 @@ pub struct ChangedFile {
     pub path: String,
     pub kind: ChangeKind,
     pub old_path: Option<String>,
+    /// Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it.
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
+}
+
+/// What a symbolic link in a revision points to, resolved inside that revision's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkTarget {
+    Dir,
+    File,
+    /// Dangling, outside the repository (absolute or above its root), or a link loop.
+    Unresolved,
 }
 
 /// Added and deleted lines of one file between two revisions (`git diff --numstat`).
@@ -334,6 +348,10 @@ pub struct RevisionChange {
     pub before: Option<String>,
     /// Commit holding the new content; `None` when the file was deleted.
     pub after: Option<String>,
+    /// Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion).
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -342,6 +360,10 @@ pub struct Stash {
     pub index: u32,
     pub message: String,
     pub time_ms: f64,
+    /// The stash commit; its changes are those against `base`.
+    pub id: String,
+    /// The commit the stash was made on (the stash commit's first parent).
+    pub base: Option<String>,
 }
 
 /// Push dialog › Push tags: every tag, or only annotated tags on the pushed commits.
@@ -511,9 +533,12 @@ pub enum CheckoutOutcome {
     LocalChanges {
         files: Vec<String>,
     },
-    /// These untracked files (repository-relative paths) would be overwritten.
+    /// These untracked files (repository-relative paths) would be overwritten by the
+    /// checkout; with `removed`, they would be removed by it (tracked here, absent
+    /// from the target).
     UntrackedFiles {
         files: Vec<String>,
+        removed: bool,
     },
     /// Local branch `local` has commits that remote branch `remote` does not.
     LocalBranchAhead {

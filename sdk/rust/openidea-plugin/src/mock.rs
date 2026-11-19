@@ -138,6 +138,8 @@ struct State {
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
+    clipboard_image: Option<Vec<u8>>,
+    unattended: bool,
     opened_urls: Vec<String>,
     opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
@@ -151,6 +153,7 @@ struct State {
     owned_commands: BTreeSet<String>,
     search: Option<SearchHandler>,
     commits: Vec<CommitInfo>,
+    build_graph: Vec<DependencyNode>,
     blame: BTreeMap<String, Vec<BlameLine>>,
     patch: Option<String>,
     restricted: bool,
@@ -176,7 +179,7 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
-    diffs: Vec<(crate::ContentDiff, Option<String>)>,
+    diffs: Vec<(crate::FileDiff, Option<String>)>,
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
@@ -240,10 +243,12 @@ const ALL: &[&str] = &[
     "editor.write",
     "vcs.read",
     "vcs.write",
+    "build.read",
     "storage",
     "events",
     "events.input",
     "clipboard",
+    "clipboard.read",
 ];
 
 impl MockHost {
@@ -301,6 +306,11 @@ impl MockHost {
         s.commits = commits;
         s.blame.insert(path.into(), blame);
         s.patch = patch;
+    }
+    /// The project's dependency graph as the IDE would answer `build_dependencies(None)`:
+    /// modules are the roots, every parent comes before its children.
+    pub fn set_build_dependencies(&self, nodes: Vec<DependencyNode>) {
+        self.state.borrow_mut().build_graph = nodes;
     }
     /// Simulates Restricted Mode for new VCS read APIs.
     pub fn set_restricted(&self, restricted: bool) {
@@ -488,6 +498,19 @@ impl MockHost {
         self.state.borrow().clipboard.clone()
     }
 
+    /// What [`crate::host::read_clipboard`] finds: text and an image's PNG bytes.
+    pub fn set_clipboard(&self, text: Option<&str>, image: Option<&[u8]>) {
+        let mut state = self.state.borrow_mut();
+        state.clipboard = text.map(str::to_owned);
+        state.clipboard_image = image.map(<[u8]>::to_vec);
+    }
+
+    /// Calls run as an event handler or background work does (`true`), where reading the
+    /// clipboard is denied, or as a command the user ran (`false`, the default).
+    pub fn set_unattended(&self, unattended: bool) {
+        self.state.borrow_mut().unattended = unattended;
+    }
+
     /// URLs opened with [`crate::host::open_url`], in order.
     pub fn opened_urls(&self) -> Vec<String> {
         self.state.borrow().opened_urls.clone()
@@ -672,6 +695,11 @@ impl MockHost {
                 .unwrap(),
         })
     }
+    /// Diffs the plugin opened (`open_diff` sides are always `Some`), with their file names.
+    pub fn opened_diffs(&self) -> Vec<(crate::FileDiff, Option<String>)> {
+        self.state.borrow().diffs.clone()
+    }
+
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
@@ -1067,7 +1095,20 @@ pub mod current {
         with(|s| {
             require(s, "clipboard")?;
             s.clipboard = Some(text.to_owned());
+            s.clipboard_image = None;
             Ok(())
+        })
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        with(|s| {
+            require(s, "clipboard.read")?;
+            // A command run through `execute_command` is not one the user ran.
+            if s.unattended || s.command_depth > 0 {
+                return Err(Error::Denied("clipboard.read (only in a command or view action the user ran)".into()));
+            }
+            let text = s.clipboard.clone().filter(|t| !t.is_empty());
+            Ok(ClipboardContent { text, image: s.clipboard_image.clone() })
         })
     }
 
@@ -2339,6 +2380,46 @@ pub mod current {
             answer.ok_or_else(|| Error::Failed(format!("{server}: method not found: {method}")))
         })
     }
+    /// The module roots matching `module` (`group:artifact`, or a Gradle path) and what is
+    /// under them, with `parent` renumbered.
+    pub fn build_dependencies(_project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        with(|s| {
+            require(s, "build.read")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let mut index = vec![None; s.build_graph.len()];
+            let mut out: Vec<DependencyNode> = Vec::new();
+            for (i, node) in s.build_graph.iter().enumerate() {
+                let parent = match node.parent {
+                    // A Maven module is named `group:artifact`, a Gradle project by its path.
+                    None if module.is_none_or(|m| {
+                        if node.group.is_empty() {
+                            m == node.artifact
+                        } else {
+                            m == format!("{}:{}", node.group, node.artifact)
+                        }
+                    }) =>
+                    {
+                        None
+                    }
+                    None => continue,
+                    Some(p) => match index.get(p as usize).copied().flatten() {
+                        Some(p) => Some(p),
+                        None => continue,
+                    },
+                };
+                index[i] = Some(out.len() as u32);
+                out.push(DependencyNode { parent, ..node.clone() });
+            }
+            match module {
+                Some(m) if out.is_empty() => {
+                    Err(Error::NotFound(format!("no Maven or Gradle module `{m}` in this project")))
+                }
+                _ => Ok(out),
+            }
+        })
+    }
     pub fn lsp_notify(_project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
         with(|s| {
             let message = lsp_message(s, server, method, params)?;
@@ -2441,7 +2522,11 @@ pub mod current {
         Ok(())
     }
     pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
-        if diff.left.contains('\0') || diff.right.contains('\0') {
+        open_file_diff(&diff.clone().into(), file_name)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        let sides = [&diff.left, &diff.right];
+        if sides.iter().all(|s| s.is_none()) || sides.into_iter().flatten().any(|s| s.contains('\0')) {
             return Err(Error::Invalid("invalid diff".into()));
         }
         with(|s| s.diffs.push((diff.clone(), file_name.map(Into::into))));
@@ -3107,6 +3192,20 @@ mod tests {
         assert_eq!(mock.log_tabs().len(), 1);
         assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
         assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn a_file_diff_may_miss_one_side() {
+        let mock = MockHost::install();
+        let added = crate::FileDiff { right: Some("new\n".into()), ..Default::default() };
+        host::open_file_diff(&added, Some("src/new.rs")).unwrap();
+        host::open_diff(&crate::ContentDiff { left: "a".into(), right: "b".into(), ..Default::default() }, None)
+            .unwrap();
+        assert!(matches!(host::open_file_diff(&crate::FileDiff::default(), None), Err(Error::Invalid(_))));
+        let diffs = mock.opened_diffs();
+        assert_eq!(diffs[0], (added, Some("src/new.rs".into())));
+        assert_eq!((diffs[1].0.left.as_deref(), diffs[1].0.right.as_deref()), (Some("a"), Some("b")));
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]

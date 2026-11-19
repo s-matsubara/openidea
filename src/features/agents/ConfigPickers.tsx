@@ -27,7 +27,15 @@ export function configPickerOptions(
     const slash = v.value.indexOf("/");
     const provider = slash >= 0 ? v.value.slice(0, slash) : "";
     const path = slash >= 0 ? v.value.slice(slash + 1) : "";
-    const label = path ? path.slice(path.lastIndexOf("/") + 1) : v.name || v.value;
+    // Prefer the agent-reported display name (e.g. "opencode/Beam Free" → "Beam Free"); agents
+    // that just echo the id keep the compact id tail. The raw id stays in the detail line.
+    const prefix = provider ? `${provider}/` : "";
+    const reported = v.name.startsWith(prefix) ? v.name.slice(prefix.length).trim() : v.name;
+    const label = path
+      ? reported && reported !== path
+        ? reported
+        : path.slice(path.lastIndexOf("/") + 1)
+      : v.name || v.value;
     const mult = v.usageMultiplier && !v.description?.startsWith(v.usageMultiplier) ? v.usageMultiplier : undefined;
     const parts = [path || undefined, mult, (descriptions && v.description) || undefined].filter(
       (p): p is string => !!p,
@@ -72,6 +80,7 @@ const selected = (option: AgentConfigOption, value: string | null) =>
 
 interface ModelRefresh {
   refreshing: boolean;
+  loadingSettings?: boolean;
   retryAtMs: number | null;
   error: string | null;
   onRefresh: () => void;
@@ -150,6 +159,11 @@ export function ConfigPickers({
             />
           ) : (
             <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
+          )}
+          {o === model && modelRefresh?.loadingSettings && (
+            <span className={styles.pickerValue} role="status">
+              <T>Loading model settings…</T>
+            </span>
           )}
         </span>
       ))}

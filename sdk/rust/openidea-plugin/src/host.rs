@@ -167,6 +167,11 @@ mod imp {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
 
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        let content = wit::ui::read_clipboard().map_err(error)?;
+        Ok(ClipboardContent { text: content.text, image: content.image })
+    }
+
     pub fn open_url(url: &str) -> Result<(), Error> {
         wit::ui::open_url(url).map_err(error)
     }
@@ -767,6 +772,16 @@ mod imp {
         }
     }
 
+    fn file_diff_to(v: &crate::FileDiff) -> wit::views::FileDiff {
+        wit::views::FileDiff {
+            left: v.left.clone(),
+            right: v.right.clone(),
+            left_label: v.left_label.clone(),
+            right_label: v.right_label.clone(),
+            title: v.title.clone(),
+        }
+    }
+
     fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
         wit::views::ContentTabReply {
             content: v.content.clone(),
@@ -817,6 +832,30 @@ mod imp {
     }
     pub fn lsp_notify(project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
         wit::language_servers::notify(project, server, method, params).map_err(error)
+    }
+    pub fn build_dependencies(project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        use wit::build::DependencyStatus as S;
+        wit::build::dependencies(project, module)
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            S::Resolved => DependencyStatus::Resolved,
+                            S::OmittedForConflict => DependencyStatus::OmittedForConflict,
+                            S::OmittedForDuplicate => DependencyStatus::OmittedForDuplicate,
+                            S::VersionManaged => DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(error)
     }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         wit::mcp::stdio_command()
@@ -888,6 +927,9 @@ mod imp {
     }
     pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
         wit::views::open_diff(&content_diff_to(diff), file_name).map_err(error)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_file_diff(&file_diff_to(diff), file_name).map_err(error)
     }
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
@@ -1067,6 +1109,16 @@ impl Project {
     /// The same for a notification: no answer is awaited.
     pub fn language_server_notify(&self, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
         imp::lsp_notify(&self.inner, server, method, params)
+    }
+
+    /// The Maven / Gradle dependency graph of `module` (a Maven `groupId:artifactId` or a
+    /// Gradle project path such as `:app`), or of every module with `None` (API 1.10), as
+    /// the IDE last resolved it: no build tool runs. A flat list, each module a root; see
+    /// [`DependencyNode`]. Gradle configurations appear once the Dependency Analyzer has
+    /// read them. An unknown module is [`Error::NotFound`]. Requires `build.read` and a
+    /// trusted project.
+    pub fn build_dependencies(&self, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        imp::build_dependencies(&self.inner, module)
     }
 
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.
@@ -1570,6 +1622,15 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
 }
 
+/// API 1.11: the clipboard's text and image (PNG bytes) on the user's machine; both `None`
+/// when it holds neither. Needs `clipboard.read`, and works only in a command the user ran
+/// or a view action from a window: event handlers, background work, web view messages
+/// and commands run through [`execute_command`] get `Error::Denied`. Text or an image over
+/// 16 MiB is `Error::Failed`. In a remote project the user confirms first (refused: `Denied`).
+pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+    imp::read_clipboard()
+}
+
 /// Opens an `http://` or `https://` URL in the user's default browser.
 pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
@@ -1917,6 +1978,11 @@ pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Resul
 /// syntax highlighting.
 pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
     imp::open_diff(diff, file_name)
+}
+/// API 1.10: like [`open_diff`] for a file missing on one side (`None`: added or deleted); the
+/// diff viewer shows the other side alone. Both sides `None` is `Error::Invalid`.
+pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_file_diff(diff, file_name)
 }
 
 /// Registers/replaces a read-only project target. Requires the program's process grant.

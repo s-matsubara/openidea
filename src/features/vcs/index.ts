@@ -30,12 +30,13 @@ import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidge
 import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
-import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { DIFF_KIND, diffInputAtCaret, diffTitle, type DiffData } from "./diffInput";
 import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { DIRECTORY_COMPARE_KIND, directoryCompareTitle, type DirectoryCompareData } from "./directoryCompareKind";
 import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
@@ -201,6 +202,7 @@ export function activateDiffViewer(): () => void {
     component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
     title: (input) => diffTitle(input.data as DiffData),
     icon: () => "diff",
+    navigationInput: diffInputAtCaret,
   });
   const combined = registerEditorKind({
     kind: COMBINED_DIFF_KIND,
@@ -346,6 +348,13 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
       title: (input) => `Merge: ${baseName((input.data as MergeData).path)}`,
       icon: () => "branch",
+    }),
+    registerEditorKind({
+      kind: DIRECTORY_COMPARE_KIND,
+      component: lazyComponent(() => import("./DirectoryCompare").then((m) => m.DirectoryCompareEditor)),
+      title: (input) => directoryCompareTitle(input.data as DirectoryCompareData),
+      icon: () => "diff",
+      restorable: true,
     }),
     registerEditorKind({
       kind: LOCAL_HISTORY_KIND,

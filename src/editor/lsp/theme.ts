@@ -17,6 +17,8 @@ const tooltipSurface = {
  * the hover and signature tooltips.
  */
 const completionRowMetrics = {
+  // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
+  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
   "--cm-completion-edge": "4px",
   "--cm-completion-inset": "6px",
   "--cm-completion-icon": "16px",
@@ -100,7 +102,7 @@ export const lspTheme = EditorView.theme({
     ...completionRowMetrics,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
     // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
     // clamp measures the border box (margins excluded), so this offset sits outside its math:
@@ -117,15 +119,15 @@ export const lspTheme = EditorView.theme({
     fontWeight: "var(--fw-code, 400)",
     minWidth: "420px",
     maxWidth: "min(720px, 80vw)",
-    maxHeight: "calc(var(--h-list-row) * 11 + 8px)",
+    maxHeight: "calc(var(--cm-completion-row) * 11 + 8px)",
     padding: "4px 0",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
     display: "flex",
     alignItems: "center",
     gap: "var(--cm-completion-gap)",
-    height: "var(--h-list-row)",
-    lineHeight: "var(--h-list-row)",
+    height: "var(--cm-completion-row)",
+    lineHeight: "var(--cm-completion-row)",
     margin: "0 var(--cm-completion-edge)",
     padding: "0 8px 0 var(--cm-completion-inset)",
     borderRadius: "var(--radius-small)",
@@ -223,10 +225,11 @@ export const lspTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface, display: "flex", flexDirection: "column" },
   ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-lsp-hover": { maxWidth: "580px", maxHeight: "380px", overflow: "auto", padding: "10px 14px" },
-  ".cm-lsp-hover-diagnostics + .cm-lsp-markdown": {
-    borderTop: "1px solid var(--border-popup)",
-    margin: "10px -14px 0",
-    padding: "10px 14px 0",
+  // With documentation the doc view pads its own body and keeps its toolbar at the bottom.
+  ".cm-lsp-hover.cm-lsp-hover-doc": { padding: "0" },
+  ".cm-lsp-hover-doc > .cm-lsp-hover-diagnostics": {
+    padding: "10px 14px",
+    borderBottom: "1px solid var(--border-popup)",
   },
   ".cm-lsp-diag": {
     display: "flex",
@@ -265,11 +268,11 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-signature": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     padding: "6px 10px",
     maxWidth: "640px",
   },
-  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "20px" },
+  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "max(20px, 1.5em)" },
   ".cm-lsp-signature-active": {
     color: "var(--fg-strong)",
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
@@ -328,7 +331,26 @@ export const lspTheme = EditorView.theme({
     backgroundImage:
       "linear-gradient(to right, transparent var(--lsp-occurrence-from), var(--lsp-occurrence-bg) var(--lsp-occurrence-from))",
   },
-  ".cm-lsp-nav-info": { padding: "4px 8px" },
+  // IDEA's ⌘-hover hint: a rounded popup pointing at the word. Styled here in full, as diff
+  // viewers lack the editor theme and would show CodeMirror's default tooltip. A few lines at
+  // most, so no scrolling, which would clip the arrow.
+  ".cm-tooltip.cm-lsp-nav-info": {
+    ...tooltipSurface,
+    borderRadius: "var(--radius-popup-large)",
+    width: "max-content",
+    maxWidth: "100%",
+    maxHeight: "none",
+    overflow: "visible",
+  },
+  ".cm-lsp-nav-info .cm-lsp-code": { overflowWrap: "anywhere" },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:before": {
+    borderTopColor: "var(--border-popup)",
+    borderBottomColor: "var(--border-popup)",
+  },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:after": {
+    borderTopColor: "var(--bg-popup)",
+    borderBottomColor: "var(--bg-popup)",
+  },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
   ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
 

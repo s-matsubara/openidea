@@ -7,7 +7,12 @@
 import type { CommitOptions, CommitSelection, PartialCommitFile } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { maybeEditorService, provideCommitService, useCommitCheckProviders } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  provideCommitService,
+  useCommitCheckProviders,
+  type CommitChanges,
+} from "@/workbench/contributions";
 import { commitRepos, planCommit, type CommitPlan } from "./changes";
 import type { CommitProblem } from "./commitChecks";
 import { useChangelists } from "./changelists";
@@ -119,9 +124,29 @@ async function pendingSelection(): Promise<CommitSelection | null> {
   return { ...selection, revision: rev };
 }
 
+/** What Commit would commit now, one patch per repository: the staged or chosen blocks only. */
+async function pendingChanges(): Promise<CommitChanges | null> {
+  if (!useVcs.getState().root) return null;
+  await saveAll();
+  await refreshNow();
+  if (!useVcs.getState().root) return null;
+  const rev = revision;
+  const plan = currentPlan();
+  if (!plan.included.length) return { revision: rev, roots: [], patch: "" };
+  const selection = await selectionOf(plan);
+  const patches: string[] = [];
+  for (const { root, options } of selection.repositories) {
+    const patch = await call(commands.vcsPendingPatch(root, options));
+    if (patch.trim()) patches.push(patch);
+  }
+  return { revision: rev, roots: selection.repositories.map((r) => r.root), patch: patches.join("\n") };
+}
+
 export function provideCommit(): () => void {
   provideCommitService({
     selection: pendingSelection,
+    changes: pendingChanges,
+    revision: draftRevision,
     setMessage: (rev, message) => {
       if (rev !== revision || !useVcs.getState().root) return false;
       useCommit.setState({ message });

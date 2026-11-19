@@ -597,6 +597,73 @@ fn commit_files_kinds() {
     assert!(repo.commit_files("HEAD").unwrap().len() == 4);
 }
 
+/// Stages a symbolic link (mode 120000) to `target` without touching the working tree, so
+/// the test needs no symlink support from the file system.
+fn stage_link(fx: &Fixture, path: &str, target: &str) {
+    let blob = fx._tmp.path().join("link-target");
+    std::fs::write(&blob, target).unwrap();
+    let id = fx.git(&["hash-object", "-w", blob.to_str().unwrap()]);
+    fx.git(&["update-index", "--add", "--cacheinfo", &format!("120000,{id},{path}")]);
+}
+
+/// Git records only a link's target path; the changed-file lists resolve it in the commit's tree (#3777).
+#[test]
+fn changed_files_classify_symbolic_links_in_the_revision_tree() {
+    let fx = Fixture::new();
+    for dir in ["dir1", "dir2", "nested/deep"] {
+        fx.write(&format!("{dir}/example.txt"), "example\n");
+    }
+    fx.write("plain.txt", "p\n");
+    let root = fx.commit_all("directories");
+    let cases = [
+        ("link1", "dir1", Some(LinkTarget::Dir)),
+        ("link2", "dir2/", Some(LinkTarget::Dir)),
+        ("link3", "dir3", Some(LinkTarget::Unresolved)),
+        ("file_link", "plain.txt", Some(LinkTarget::File)),
+        ("nested/up", "../dir1/example.txt", Some(LinkTarget::File)),
+        ("nested/here", ".", Some(LinkTarget::Dir)),
+        ("via_link", "link1/example.txt", Some(LinkTarget::File)),
+        ("chain", "link1", Some(LinkTarget::Dir)),
+        ("absolute", "/etc", Some(LinkTarget::Unresolved)),
+        ("escape", "../outside", Some(LinkTarget::Unresolved)),
+        ("loop_a", "loop_b", Some(LinkTarget::Unresolved)),
+        ("loop_b", "loop_a", Some(LinkTarget::Unresolved)),
+        ("through_file", "plain.txt/x", Some(LinkTarget::Unresolved)),
+    ];
+    for (path, target, _) in &cases {
+        stage_link(&fx, path, target);
+    }
+    fx.write("dir1/more.txt", "more\n");
+    fx.git(&["add", "dir1/more.txt"]);
+    fx.git(&["commit", "-q", "-m", "links"]);
+    let links = fx.git(&["rev-parse", "HEAD"]);
+    let repo = fx.repo();
+
+    let check = |files: &[(String, Option<LinkTarget>)], label: &str| {
+        for (path, _, expected) in &cases {
+            let found = files.iter().find(|(p, _)| p == path).unwrap_or_else(|| panic!("{label} {path}: {files:?}"));
+            assert_eq!(found.1, *expected, "{label} {path}");
+        }
+        let plain = files.iter().find(|(p, _)| p == "dir1/more.txt").unwrap();
+        assert_eq!(plain.1, None, "{label}: a regular file is no link");
+    };
+    let pairs = |files: Vec<ChangedFile>| files.into_iter().map(|f| (f.path, f.link)).collect::<Vec<_>>();
+    check(&pairs(repo.commit_files(&links).unwrap()), "commit_files");
+    check(&pairs(repo.diff_revisions(&root, &links).unwrap()), "diff_revisions");
+    let combined = repo.commits_changes(std::slice::from_ref(&links)).unwrap();
+    check(&combined.into_iter().map(|f| (f.path, f.link)).collect::<Vec<_>>(), "commits_changes");
+
+    // A deleted link is described as it was before the deletion; the working tree plays no part.
+    fx.git(&["rm", "-q", "--cached", "link1", "file_link"]);
+    fx.git(&["commit", "-q", "-m", "drop links"]);
+    let dropped = fx.git(&["rev-parse", "HEAD"]);
+    for files in [repo.commit_files(&dropped).unwrap(), repo.diff_revisions(&links, &dropped).unwrap()] {
+        let files = pairs(files);
+        assert!(files.contains(&("link1".into(), Some(LinkTarget::Dir))), "{files:?}");
+        assert!(files.contains(&("file_link".into(), Some(LinkTarget::File))), "{files:?}");
+    }
+}
+
 /// Line counts follow the same first-parent diff as the commit's file list, including renames.
 #[test]
 fn diff_numstat_counts_added_deleted_and_renames() {
@@ -782,6 +849,11 @@ fn stash_push_list_apply_pop() {
     assert!(stashes[0].message.contains("WIP on main"), "{stashes:?}");
     assert!(stashes[1].message.contains("first stash"), "{stashes:?}");
     assert!(stashes[0].time_ms > 0.0);
+    // Each stash lists the files it changed against the commit it was made on.
+    let head = repo.head().unwrap().1.unwrap();
+    assert!(stashes.iter().all(|s| s.base.as_deref() == Some(head.as_str())), "{stashes:?}");
+    let files = repo.commit_files(&stashes[1].id).unwrap();
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["s.txt"]);
 
     repo.stash_apply(1, false, false).unwrap();
     assert_eq!(fx.read("s.txt"), "change 1\n");
@@ -2007,9 +2079,34 @@ fn checkout_reports_untracked_files_it_would_overwrite() {
     for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
         let opts = CheckoutOptions { mode, ..Default::default() };
         let outcome = repo.checkout_with("other", false, &opts).unwrap();
-        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()] });
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()], removed: false });
         assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
         assert_eq!(fx.read("dir/new.txt"), "mine\n");
+    }
+}
+
+/// Untracked on disk but tracked on the current branch and gone from the target
+/// (as after `git rm --cached`): git refuses to *remove* the file, and the outcome
+/// says so (#3980).
+#[test]
+fn checkout_reports_untracked_files_it_would_remove() {
+    let fx = Fixture::new();
+    fx.write("TEST.md", "hi\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "feature/x"]);
+    fx.git(&["rm", "-q", "TEST.md"]);
+    fx.commit_all("remove TEST.md on feature/x");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.git(&["rm", "--cached", "TEST.md"]);
+    fx.write("TEST.md", "local dirty version\n");
+    let repo = fx.repo();
+    for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
+        // The refusal leaves the repository untouched, so both modes see the same state.
+        let opts = CheckoutOptions { mode, ..Default::default() };
+        let outcome = repo.checkout_with("feature/x", false, &opts).unwrap();
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["TEST.md".into()], removed: true });
+        assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+        assert_eq!(fx.read("TEST.md"), "local dirty version\n");
     }
 }
 

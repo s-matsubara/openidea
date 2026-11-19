@@ -35,6 +35,27 @@ export interface BackgroundImageValid {
   fill: BackgroundImageFill;
   anchor: BackgroundImageAnchor;
 }
+export type PresentationAssistantSize = "small" | "medium" | "large";
+export const PRESENTATION_ASSISTANT_POSITIONS = [
+  "top-left",
+  "top",
+  "top-right",
+  "bottom-left",
+  "bottom",
+  "bottom-right",
+] as const;
+export type PresentationAssistantPosition = (typeof PRESENTATION_ASSISTANT_POSITIONS)[number];
+export const PRESENTATION_ASSISTANT_DURATION = { min: 1, max: 60 } as const;
+
+/** Appearance › Presentation Assistant: the name and shortcut of each action the user runs. */
+export interface PresentationAssistantValid {
+  enabled: boolean;
+  size: PresentationAssistantSize;
+  durationSeconds: number;
+  position: PresentationAssistantPosition;
+  /** Also show the other platform's shortcut (macOS ⇄ Windows/Linux). */
+  alternateKeymap: boolean;
+}
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
 
@@ -62,6 +83,8 @@ export interface AppearanceExtras {
   mainMenuStyle: "hamburger" | "merged" | "toolbar";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
+  /** Settings open in a native window of their own; off opens the in-page dialog (#3797). */
+  settingsInSeparateWindow: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -75,6 +98,7 @@ export interface AppearanceExtras {
    * the editor, in the status bar, or not at all. */
   navigationBar: NavigationBarPosition;
   backgroundImage: BackgroundImageValid;
+  presentationAssistant: PresentationAssistantValid;
 }
 
 export interface DateFormatValid {
@@ -105,11 +129,18 @@ export interface NotificationGroupValid {
   log: boolean;
 }
 
+/** When a finished terminal command notifies (#3712, Settings › Notifications › Terminal). */
+export type TerminalCompletionMode = "off" | "longRunning" | "all";
+
 export interface NotificationsValid {
   balloons: boolean;
   sound: boolean;
   /** Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
   systemNotifications: boolean;
+  /** Terminal command completions: off, long-running ones only (default), or every one. */
+  terminalCompletion: TerminalCompletionMode;
+  /** Mode `longRunning`: the run time a command must reach, in seconds. */
+  terminalThresholdSeconds: number;
   groups: Record<string, NotificationGroupValid>;
 }
 
@@ -136,6 +167,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   menuIcons: true,
   mainMenuStyle: "hamburger",
   mainMenuAlt: true,
+  settingsInSeparateWindow: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -146,6 +178,13 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showStatusBar: true,
   navigationBar: "statusBar",
   backgroundImage: { path: "", opacity: 15, fill: "scale", anchor: "center" },
+  presentationAssistant: {
+    enabled: false,
+    size: "medium",
+    durationSeconds: 4,
+    position: "bottom",
+    alternateKeymap: false,
+  },
 };
 
 const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
@@ -166,6 +205,8 @@ export const DEFAULT_NOTIFICATIONS: NotificationsValid = {
   balloons: true,
   sound: false,
   systemNotifications: true,
+  terminalCompletion: "longRunning",
+  terminalThresholdSeconds: 10,
   groups: {},
 };
 
@@ -180,6 +221,7 @@ const int = (v: unknown, d: number, { min, max }: { min: number; max: number }) 
 const AA: readonly Antialiasing[] = ["subpixel", "greyscale", "none"];
 const concrete = (v: unknown, d: ConcreteTheme): ConcreteTheme => (isThemeChoiceId(v) ? v : d);
 const DISPLAYS: readonly NotificationDisplay[] = ["balloon", "sticky", "none"];
+const TERMINAL_COMPLETIONS: readonly TerminalCompletionMode[] = ["off", "longRunning", "all"];
 
 export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
   const a = obj(raw);
@@ -208,6 +250,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged", "toolbar"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
+    settingsInSeparateWindow: b("settingsInSeparateWindow"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
@@ -224,6 +267,19 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
     backgroundImage: validateBackgroundImage(a.backgroundImage),
+    presentationAssistant: validatePresentationAssistant(a.presentationAssistant),
+  };
+}
+
+function validatePresentationAssistant(raw: unknown): PresentationAssistantValid {
+  const p = obj(raw);
+  const d = DEFAULT_APPEARANCE_EXTRAS.presentationAssistant;
+  return {
+    enabled: bool(p.enabled, d.enabled),
+    size: oneOf(p.size, ["small", "medium", "large"], d.size),
+    durationSeconds: int(p.durationSeconds, d.durationSeconds, PRESENTATION_ASSISTANT_DURATION),
+    position: oneOf(p.position, PRESENTATION_ASSISTANT_POSITIONS, d.position),
+    alternateKeymap: bool(p.alternateKeymap, d.alternateKeymap),
   };
 }
 
@@ -271,6 +327,11 @@ export function validateNotifications(raw: unknown): NotificationsValid {
     balloons: bool(n.balloons, DEFAULT_NOTIFICATIONS.balloons),
     sound: bool(n.sound, DEFAULT_NOTIFICATIONS.sound),
     systemNotifications: bool(n.systemNotifications, DEFAULT_NOTIFICATIONS.systemNotifications),
+    terminalCompletion: oneOf(n.terminalCompletion, TERMINAL_COMPLETIONS, DEFAULT_NOTIFICATIONS.terminalCompletion),
+    terminalThresholdSeconds: int(n.terminalThresholdSeconds, DEFAULT_NOTIFICATIONS.terminalThresholdSeconds, {
+      min: 1,
+      max: 86_400,
+    }),
     groups,
   };
 }

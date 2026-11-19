@@ -396,6 +396,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("editor.toggleZen", "Enter Distraction Free Mode"),
                     act("window.toggleFullScreen", "Toggle Full Screen"),
                     toggle("view.toggleCompactMode", "Compact Mode"),
+                    toggle("view.togglePresentationAssistant", "Presentation Assistant"),
                     SEP,
                     act("view.zoomIn", "Zoom In IDE"),
                     act("view.zoomOut", "Zoom Out IDE"),
@@ -2071,6 +2072,7 @@ mod tests {
             name: "openidea".into(),
             opened_at_ms: 0.0,
             branch: None,
+            missing: false,
         }];
         let items = recent_items(&recent, Some(Path::new("/home/me")));
         assert_eq!(items[0].label, "openidea  —  ~/code/openidea");

@@ -81,8 +81,35 @@ describe("terminal links", () => {
     expect(l?.kind === "file" && [l.path, l.line, l.col]).toEqual(["/Users/me/p/App.tsx", 14, 3]);
   });
 
+  it("keeps the directories and drive of Windows paths", () => {
+    const loc = (text: string) =>
+      findTerminalLinks(text).map((l) => (l.kind === "file" ? [l.text, l.path, l.line, l.col] : l.text));
+    expect(loc("  --> src\\bin\\main.rs:10:5")).toEqual([["src\\bin\\main.rs:10:5", "src\\bin\\main.rs", 10, 5]]);
+    expect(loc("    at run (C:\\p\\web\\index.js:3:7)")).toEqual([
+      ["C:\\p\\web\\index.js:3:7", "C:\\p\\web\\index.js", 3, 7],
+    ]);
+    expect(loc("C:\\p\\Program.cs(10,5): error CS1002")).toEqual([
+      ["C:\\p\\Program.cs(10,5)", "C:\\p\\Program.cs", 10, 5],
+    ]);
+    expect(loc(".\\main.go:5:2: undefined: x")).toEqual([[".\\main.go:5:2", ".\\main.go", 5, 2]]);
+    expect(loc("D:/p/a/b.ts:4")).toEqual([["D:/p/a/b.ts:4", "D:/p/a/b.ts", 4, undefined]]);
+  });
+
   it("ignores plain numbers and URL ports", () => {
     expect(findTerminalLinks("12:30 http://localhost:3000").map((l) => l.kind)).toEqual(["url"]);
+  });
+
+  it("opens file:// URLs as file locations", () => {
+    const line = "[ERROR] file:///develop/mc/src/main/kotlin/top/A%20B.kt:15:56 Unresolved reference 'x'.";
+    expect(findTerminalLinks(line)).toEqual([
+      expect.objectContaining({ kind: "file", path: "/develop/mc/src/main/kotlin/top/A B.kt", line: 15, col: 56 }),
+    ]);
+    expect(findTerminalLinks("see file:///C:/work/a.kt:3")).toEqual([
+      expect.objectContaining({ kind: "file", path: "C:/work/a.kt", line: 3, col: undefined }),
+    ]);
+    expect(findTerminalLinks("file://host/srv/x.txt")).toEqual([
+      expect.objectContaining({ kind: "file", path: "/srv/x.txt", line: undefined }),
+    ]);
   });
 
   it("trims trailing punctuation from URLs", () => {
@@ -422,7 +449,17 @@ describe("terminalFont", () => {
 describe("terminal tab titles", () => {
   const tab: TerminalTab = { id: "t1", name: "Local", customName: null, shell: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
+    s1: {
+      status: "running",
+      exitCode: null,
+      title: "zsh",
+      appTitle,
+      commandRunning,
+      progress: null,
+      working: commandRunning,
+      cwd: "/p",
+      unseenDone: false,
+    },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {

@@ -165,3 +165,25 @@ it("cancels Git fetch without triggering Jujutsu fetch", async () => {
   expect(mocks.cancel).toHaveBeenCalledOnce();
   expect(mocks.fetch).not.toHaveBeenCalled();
 });
+
+it("filters remote bookmarks in Pull and submits the selected bookmark", async () => {
+  mocks.options.mockResolvedValue(
+    ok({
+      remotes: ["origin"],
+      bookmarks: [
+        { name: "main", remote: "origin" },
+        { name: "feature", remote: "origin" },
+      ],
+      preferred: { name: "main", remote: "origin" },
+    }),
+  );
+  showJjRemoteDialog("pull", mocks.dialog);
+  render(mocks.dialog.mock.calls[0]![0](vi.fn()));
+  await screen.findByText("main@origin");
+  fireEvent.click(screen.getByLabelText("Rebase destination"));
+  fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "feature" } });
+  expect(screen.queryByRole("option", { name: "main@origin" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "feature@origin" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pull" }));
+  await waitFor(() => expect(mocks.pull).toHaveBeenCalledWith("/project/jj", "origin", "feature"));
+});

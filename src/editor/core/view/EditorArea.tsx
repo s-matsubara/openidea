@@ -13,6 +13,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { basename, dirname } from "@/platform/project";
+import { gitRevisionOf } from "@/platform/virtualDocs";
 import {
   EDITOR_TAB_MIME,
   acceptsEditorDrop,
@@ -179,6 +180,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
   const fileColors = useFileColors("editorTabs");
 
   const hints = useTitleHints();
@@ -204,7 +206,7 @@ function PaneView({ paneId }: { paneId: string }) {
         : t.input.kind === "file" && t.input.path
           ? (hints.get(t.input.path) ?? null)
           : names.filter((n) => n === name).length > 1 && t.input.path
-            ? basename(dirname(t.input.path))
+            ? (gitRevisionOf(t.input.path)?.revision.slice(0, 8) ?? basename(dirname(t.input.path)))
             : null;
       const kindMark = tabTrailing(t.input, kinds);
       const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
@@ -223,6 +225,7 @@ function PaneView({ paneId }: { paneId: string }) {
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
+        error: t.input.kind === "file" && errors[i],
         modified: dirty[i],
         // IDEA: hiding the close button is visual only. Keep close gestures
         // (middle click, Shift+click, Delete) alive when its position is None.
@@ -248,6 +251,7 @@ function PaneView({ paneId }: { paneId: string }) {
     titleRevision,
     dirty,
     colors,
+    errors,
     tints,
     fileColors,
     hints,

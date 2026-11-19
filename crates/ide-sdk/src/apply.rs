@@ -871,6 +871,66 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// The settings section a Python type checker reads its analysis settings from:
+/// basedpyright uses its own section, Pyright the `python` one. `None` for servers
+/// that have no `analysis.extraPaths` (ty, pyrefly, Ruff, pylsp, …).
+fn python_analysis_section(name: &str) -> Option<&'static str> {
+    match name {
+        "basedpyright" => Some("basedpyright"),
+        "pyright" => Some("python"),
+        _ => None,
+    }
+}
+
+/// Adds attached dependency roots to basedpyright/Pyright's `analysis.extraPaths`, so
+/// imports into projects configured in Project Structure › Dependencies resolve in the
+/// editor too — not just in the IDE's own index/navigation.
+///
+/// Existing paths (from the user's `pyrightconfig.json` / `[tool.basedpyright]`, or a
+/// container run target) are kept first and de-duplicated: `merge` replaces arrays
+/// wholesale, so it cannot be used here. Paths are IPC-style (`/`-separated) to match
+/// the container snapshot's `extraPaths`.
+pub fn configure_python_extra_paths(cfg: &mut LanguageServerConfig, roots: &[PathBuf]) {
+    let Some(section) = python_analysis_section(&cfg.name) else { return };
+    if roots.is_empty() {
+        return;
+    }
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let mut node = &mut current;
+    for key in ["settings", section, "analysis"] {
+        node = object_entry(node, key);
+    }
+    let analysis = node.as_object_mut().expect("made an object above").entry("extraPaths").or_insert_with(|| json!([]));
+    let mut paths: Vec<String> = analysis
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    for root in roots {
+        let path = ide_core::ipc_path::to_ipc(root);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    *analysis = json!(paths);
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot add extraPaths to initialization options: {e}", cfg.name),
+    }
+}
+
+/// `value[key]`, made an empty object when it is missing or not an object; `value` too.
+fn object_entry<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let entry = value.as_object_mut().expect("made an object above").entry(key).or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    entry
+}
+
 /// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,
 /// as in IntelliJ IDEA). ECJ reports it, so it is a compiler option rather than a filter.
 pub const SERIAL_VERSION_INSPECTION: &str = "java:missing-serial-version";
@@ -1275,6 +1335,40 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
     }
+}
+
+/// Registers the companion module-resolution plugin for the Vue hybrid mode's tsserver.
+/// The Vue plugin only resolves imports that name the
+/// `.vue` file: a directory `index.js` re-exporting a sibling `.vue`
+/// (`import ChildButton from './ChildButton'`) leaves the component `any`, and with it every
+/// `@event="method"` handler type in the project's templates (#3728; VS Code patches tsserver
+/// itself for this). The companion plugin retries only what tsserver and the Vue plugin left
+/// unresolved, so it is registered after theirs. No-op without it (no Vue language server).
+pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir: &Path) -> bool {
+    let Some(vue_at) = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).and_then(|v| {
+        v.pointer("/vtsls/tsserver/globalPlugins")
+            .and_then(Value::as_array)
+            .and_then(|plugins| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::PLUGIN)))
+    }) else {
+        return false;
+    };
+    let Some(plugin) = vue::module_resolution_plugin(data_dir) else {
+        return false;
+    };
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let Some(plugins) = current.pointer_mut("/vtsls/tsserver/globalPlugins").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    match plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::MODULE_RESOLUTION_PLUGIN)) {
+        Some(at) => plugins[at] = plugin,
+        None => plugins.insert(vue_at + 1, plugin),
+    }
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+    true
 }
 
 /// The servers `language` uses after Settings › Language Servers: the

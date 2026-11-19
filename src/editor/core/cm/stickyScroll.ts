@@ -3,6 +3,7 @@
  * line stay pinned at the top (IDEA 2023+ / VS Code). Scopes come from the
  * backend folding ranges, or from the syntax tree when there are none.
  * Clicking a sticky line scrolls to it, the caret where it was clicked.
+ * With rainbow brackets on, its brackets keep their colours from the editor.
  */
 import { EditorSelection, Facet, RangeSet, RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
@@ -12,6 +13,7 @@ import { stickyHighlights } from "@/editor/api";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
+import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -50,9 +52,23 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
     .slice(-state.facet(stickyMaxLines));
 }
 
-function renderLineContent(state: EditorState, lineNo: number, target: HTMLElement) {
+/** Characters of a sticky line rendered at most. */
+const MAX_TEXT = 400;
+
+/**
+ * Renders line `lineNo` highlighted into `target`; `brackets` (ascending, as from the
+ * rainbow bracket scanner) are wrapped in their rainbow class, outside the token's span
+ * as in the editor.
+ */
+export function renderLineContent(
+  state: EditorState,
+  lineNo: number,
+  target: HTMLElement,
+  brackets: readonly BracketMark[] = [],
+  colors = DEFAULT_BRACKET_COLORS,
+) {
   const line = state.doc.line(lineNo);
-  const end = Math.min(line.to, line.from + 400);
+  const end = Math.min(line.to, line.from + MAX_TEXT);
   const tree = syntaxTree(state);
   const syntax = new RangeSetBuilder<Decoration>();
   // Lezer's editor decorations cover the viewport. Highlight the pinned line directly.
@@ -65,7 +81,11 @@ function renderLineContent(state: EditorState, lineNo: number, target: HTMLEleme
       end,
     );
   }
-  RangeSet.spans([...state.facet(stickyHighlights), syntax.finish()], line.from, end, {
+  const rainbow = Decoration.set(
+    brackets.map((b) => Decoration.mark({ class: bracketClass(b.depth, colors) }).range(b.from, b.from + 1)),
+    true,
+  );
+  RangeSet.spans([...state.facet(stickyHighlights), syntax.finish(), rainbow], line.from, end, {
     span(from, to, marks) {
       let parent = target;
       // Match CodeMirror's nesting so higher-precedence marks set the final style.
@@ -138,6 +158,8 @@ class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
   private renderedFrom: {
+    doc: unknown;
+    scanner: unknown;
     texts: string[];
     tree: ReturnType<typeof syntaxTree>;
     highlights: readonly DecorationSet[];
@@ -167,6 +189,7 @@ class StickyScroll {
       u.focusChanged ||
       u.viewportChanged ||
       u.geometryChanged ||
+      u.transactions.some((tr) => tr.reconfigured) ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
       u.startState.facet(stickyHighlights) !== u.state.facet(stickyHighlights) ||
       u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
@@ -217,6 +240,7 @@ class StickyScroll {
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
         const tree = syntaxTree(state);
         const highlights = state.facet(stickyHighlights);
+        const scanner = bracketScanner(this.view);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
@@ -224,6 +248,8 @@ class StickyScroll {
           !!prev &&
           prev.tree === tree &&
           prev.highlights === highlights &&
+          prev.doc === (scanner ? state.doc : null) &&
+          prev.scanner === scanner &&
           texts.every((t, i) => t === prev.texts[i]);
         if (!lines.length) {
           this.dom.style.display = "none";
@@ -235,7 +261,7 @@ class StickyScroll {
         const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, tree, highlights };
+          this.renderedFrom = { texts, tree, highlights, doc: scanner ? state.doc : null, scanner };
           this.gutterWidth = gutterWidth;
           this.numberLeft = numberLeft;
           const frag = document.createDocumentFragment();
@@ -255,7 +281,14 @@ class StickyScroll {
             inner.className = "cm-openidea-stickyInner";
             inner.style.display = "inline-block";
             inner.style.paddingLeft = `${LINE_INSET}px`;
-            renderLineContent(state, n, inner);
+            const line = state.doc.line(n);
+            renderLineContent(
+              state,
+              n,
+              inner,
+              scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.colors,
+            );
             text.appendChild(inner);
             row.append(num, text);
             frag.appendChild(row);

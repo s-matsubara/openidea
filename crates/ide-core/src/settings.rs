@@ -653,6 +653,10 @@ pub struct NotificationSettings {
     /// Mirror balloon notifications to the OS when no OpenIDEA window is focused.
     #[serde(default = "default_true")]
     pub system_notifications: bool,
+    /// Terminal command completions (#3712): `off` | `longRunning` | `all`.
+    pub terminal_completion: String,
+    /// `longRunning`: the run time a finished command must reach, in seconds.
+    pub terminal_threshold_seconds: u32,
     /// Group id → display; groups not listed use their default.
     pub groups: BTreeMap<String, NotificationGroupSettings>,
 }
@@ -661,9 +665,24 @@ fn default_true() -> bool {
     true
 }
 
+fn default_terminal_completion() -> String {
+    "longRunning".to_owned()
+}
+
+fn default_terminal_threshold_seconds() -> u32 {
+    10
+}
+
 impl Default for NotificationSettings {
     fn default() -> Self {
-        Self { balloons: true, sound: false, system_notifications: true, groups: BTreeMap::new() }
+        Self {
+            balloons: true,
+            sound: false,
+            system_notifications: true,
+            terminal_completion: default_terminal_completion(),
+            terminal_threshold_seconds: default_terminal_threshold_seconds(),
+            groups: BTreeMap::new(),
+        }
     }
 }
 
@@ -741,6 +760,9 @@ pub struct AppearanceSettings {
     pub main_menu_style: String,
     /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
     pub main_menu_alt: bool,
+    /// Settings open in a native window of their own (IDEA parity); off opens them
+    /// as a dialog inside the project window, which needs no new webview.
+    pub settings_in_separate_window: bool,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -761,6 +783,35 @@ pub struct AppearanceSettings {
     pub main_toolbar: Option<MainToolbarSettings>,
     /// Appearance › Background Image: an image shown through the IDE window.
     pub background_image: BackgroundImageSettings,
+    /// Appearance › Presentation Assistant: the name and shortcut of each action run.
+    pub presentation_assistant: PresentationAssistantSettings,
+}
+
+/// Appearance › Presentation Assistant: shows the name and shortcut of each action the user runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PresentationAssistantSettings {
+    pub enabled: bool,
+    /// `small` | `medium` | `large`.
+    pub size: String,
+    /// How long each popup stays, in seconds.
+    pub duration_seconds: u32,
+    /// `top-left`, `top`, `top-right`, `bottom-left`, `bottom` or `bottom-right` of the window.
+    pub position: String,
+    /// Also show the shortcut of the other platform's keymap (macOS ⇄ Windows/Linux).
+    pub alternate_keymap: bool,
+}
+
+impl Default for PresentationAssistantSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: "medium".into(),
+            duration_seconds: 4,
+            position: "bottom".into(),
+            alternate_keymap: false,
+        }
+    }
 }
 
 /// Appearance › Background Image. An empty `path` shows no image.
@@ -840,6 +891,7 @@ impl Default for AppearanceSettings {
             menu_icons: true,
             main_menu_style: "hamburger".into(),
             main_menu_alt: true,
+            settings_in_separate_window: true,
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
@@ -852,6 +904,7 @@ impl Default for AppearanceSettings {
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
             background_image: BackgroundImageSettings::default(),
+            presentation_assistant: PresentationAssistantSettings::default(),
         }
     }
 }
@@ -892,7 +945,13 @@ pub struct EditorSettings {
     pub docstring_format: String,
     /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
     pub rainbow_brackets: bool,
+    /// The bracket kinds rainbow brackets colour.
+    pub rainbow_bracket_kinds: RainbowBracketKinds,
+    /// Colours the rainbow bracket depth cycles through (2–5).
+    pub rainbow_bracket_colors: u32,
     pub ligatures: bool,
+    /// Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts.
+    pub only_monospaced_fonts: bool,
     /// Fallback font for glyphs the main font lacks; empty = none.
     pub fallback_font: String,
     /// Typography Settings › Main font weight (CSS 100–900), as IDEA.
@@ -936,7 +995,10 @@ impl Default for EditorSettings {
             semantic_highlighting: false,
             docstring_format: "rest".into(),
             rainbow_brackets: false,
+            rainbow_bracket_kinds: RainbowBracketKinds::default(),
+            rainbow_bracket_colors: 3,
             ligatures: false,
+            only_monospaced_fonts: true,
             fallback_font: String::new(),
             font_weight: 400,
             bold_font_weight: 700,
@@ -956,6 +1018,23 @@ impl Default for EditorSettings {
             code_style: CodeStyleSettings::default(),
             encodings: EncodingSettings::default(),
         }
+    }
+}
+
+/// Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RainbowBracketKinds {
+    pub round: bool,
+    pub square: bool,
+    pub curly: bool,
+    /// Type argument / parameter delimiters and markup tags, where the syntax tree marks them.
+    pub angle: bool,
+}
+
+impl Default for RainbowBracketKinds {
+    fn default() -> Self {
+        Self { round: true, square: true, curly: true, angle: false }
     }
 }
 
@@ -1752,6 +1831,41 @@ mod tests {
     }
 
     #[test]
+    fn rainbow_bracket_options_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"rainbowBrackets":true}}"#).unwrap();
+        assert!(old.editor.rainbow_brackets);
+        assert_eq!(old.editor.rainbow_bracket_kinds, RainbowBracketKinds::default());
+        assert_eq!(old.editor.rainbow_bracket_colors, 3);
+        let defaults = Settings::default().editor;
+        assert!(!defaults.rainbow_brackets);
+        let kinds = defaults.rainbow_bracket_kinds;
+        assert!(kinds.round && kinds.square && kinds.curly && !kinds.angle);
+
+        let mut settings = Settings::default();
+        settings.editor.rainbow_bracket_kinds =
+            RainbowBracketKinds { round: false, square: true, curly: true, angle: true };
+        settings.editor.rainbow_bracket_colors = 5;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["editor"]["rainbowBracketKinds"]["angle"], true);
+        assert_eq!(json["editor"]["rainbowBracketColors"], 5);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.editor.rainbow_bracket_kinds, settings.editor.rainbow_bracket_kinds);
+        assert_eq!(restored.editor.rainbow_bracket_colors, 5);
+    }
+
+    #[test]
+    fn only_monospaced_fonts_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"ligatures":true}}"#).unwrap();
+        assert!(old.editor.only_monospaced_fonts);
+        let mut settings = Settings::default();
+        settings.editor.only_monospaced_fonts = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["editor"]["onlyMonospacedFonts"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert!(!restored.editor.only_monospaced_fonts);
+    }
+
+    #[test]
     fn docstring_format_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"editor":{"semanticHighlighting":true}}"#).unwrap();
         assert_eq!(old.editor.docstring_format, "rest");
@@ -1847,6 +1961,15 @@ mod tests {
         let off: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuAlt":false}}"#).unwrap();
         assert!(!off.appearance.main_menu_alt);
         assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["mainMenuAlt"], false);
+    }
+
+    #[test]
+    fn settings_open_in_a_separate_window_unless_turned_off() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
+        assert!(old.appearance.settings_in_separate_window);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"settingsInSeparateWindow":false}}"#).unwrap();
+        assert!(!off.appearance.settings_in_separate_window);
+        assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["settingsInSeparateWindow"], false);
     }
 
     #[test]

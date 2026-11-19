@@ -48,6 +48,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -87,6 +88,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -126,6 +128,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -150,8 +153,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
-    storage, tasks, types as wit, ui, vcs, views, workspace,
+    build, commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets,
+    settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -350,7 +353,7 @@ impl StoreData {
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.user_invoked.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -539,6 +542,37 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn read_clipboard(&mut self) -> Fallible<ui::ClipboardContent> {
+        if let Err(e) = self.require(Capability::ClipboardRead) {
+            return Ok(Err(e));
+        }
+        // Never unattended: not from an event handler, a web view message or a command
+        // another plugin ran through `command-runner` (its chain is not empty).
+        let client = match &self.invocation.client {
+            Some(client) if self.user_invoked && self.invocation.command_chain.is_empty() => client.clone(),
+            _ => {
+                let why = "clipboard.read (only in a command or view action the user ran)";
+                return Ok(Err(wit::Error::Denied(why.into())));
+            }
+        };
+        let started = Instant::now();
+        let content = self.host.read_clipboard(&client, &self.cancel.token());
+        // The window may ask the user first: the wait doesn't count against the call's budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        let max = crate::runtime::MAX_CLIPBOARD_BYTES;
+        if content.text.as_ref().is_some_and(|t| t.len() > max) || content.image.as_ref().is_some_and(|i| i.len() > max)
+        {
+            return Ok(Err(wit::Error::Failed(format!("the clipboard holds more than {} MiB", max >> 20))));
+        }
+        Ok(Ok(ui::ClipboardContent { text: content.text, image: content.image }))
     }
 
     fn open_url(&mut self, url: String) -> Fallible<()> {
@@ -1192,6 +1226,44 @@ impl vcs::Host for StoreData {
     }
 }
 
+impl build::Host for StoreData {
+    fn dependencies(
+        &mut self,
+        project: Resource<ProjectRes>,
+        module: Option<String>,
+    ) -> Fallible<Vec<build::DependencyNode>> {
+        if let Err(e) = self.require(Capability::BuildRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .build_dependencies(&root, module.as_deref())
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| build::DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            crate::DependencyStatus::Resolved => build::DependencyStatus::Resolved,
+                            crate::DependencyStatus::OmittedForConflict => build::DependencyStatus::OmittedForConflict,
+                            crate::DependencyStatus::OmittedForDuplicate => {
+                                build::DependencyStatus::OmittedForDuplicate
+                            }
+                            crate::DependencyStatus::VersionManaged => build::DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+}
+
 impl commit::Host for StoreData {
     fn pending_commit(&mut self) -> Fallible<Option<commit::CommitDraft>> {
         if let Err(e) = self.require(Capability::VcsRead) {
@@ -1785,6 +1857,13 @@ impl views::Host for StoreData {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
+        let diff = crate::FileDiff::from(crate::ContentDiff::from(diff));
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff, file_name).map_err(to_wit))
+    }
+    fn open_file_diff(&mut self, diff: views::FileDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
         Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff.into(), file_name).map_err(to_wit))
     }
     fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
@@ -2142,6 +2221,12 @@ impl From<bindings::openidea::plugin::views::ContentTab> for crate::ContentTab {
 
 impl From<bindings::openidea::plugin::views::ContentDiff> for crate::ContentDiff {
     fn from(v: bindings::openidea::plugin::views::ContentDiff) -> Self {
+        Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::FileDiff> for crate::FileDiff {
+    fn from(v: bindings::openidea::plugin::views::FileDiff) -> Self {
         Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
     }
 }

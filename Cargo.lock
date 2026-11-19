@@ -4209,6 +4209,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-command"
+version = "0.0.0"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "ide-core"
 version = "0.0.0"
 dependencies = [
@@ -4397,6 +4408,7 @@ dependencies = [
  "ide-agent",
  "ide-analysis",
  "ide-build",
+ "ide-command",
  "ide-core",
  "ide-coverage",
  "ide-dap",
@@ -4408,6 +4420,7 @@ dependencies = [
  "ide-index",
  "ide-jsonrpc",
  "ide-jvm-attach",
+ "ide-jvm-inspect",
  "ide-language",
  "ide-lsp",
  "ide-mcp",
@@ -4420,6 +4433,7 @@ dependencies = [
  "ide-search",
  "ide-spell",
  "ide-ssh",
+ "ide-streams",
  "ide-syntax",
  "ide-terminal",
  "ide-text",
@@ -4548,6 +4562,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "criterion 0.8.2",
+ "dunce",
  "ide-core",
  "ide-extension",
  "ide-text",
@@ -4848,6 +4863,19 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "ide-streams"
+version = "0.0.0"
+dependencies = [
+ "ide-core",
+ "ide-language",
+ "ide-syntax",
+ "serde",
+ "serde_json",
+ "specta",
+ "tree-sitter",
 ]
 
 [[package]]
@@ -6610,6 +6638,7 @@ dependencies = [
  "ide-build",
  "ide-cli",
  "ide-clipboard",
+ "ide-command",
  "ide-core",
  "ide-coverage",
  "ide-dap",
@@ -6669,6 +6698,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "webview2-com",
  "windows",
  "windows-sys 0.61.2",
 ]

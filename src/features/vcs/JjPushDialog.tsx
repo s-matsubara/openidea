@@ -195,6 +195,7 @@ function PushForm({
           {repositorySelector}
           <Select
             aria-label={tx("Bookmark to push")}
+            searchable
             value={bookmark}
             disabled={busy}
             options={[
@@ -236,6 +237,7 @@ function PushForm({
           />
           <Select
             aria-label={tx("Tags to push")}
+            searchable
             value={tag}
             disabled={busy || !pushTags}
             options={[

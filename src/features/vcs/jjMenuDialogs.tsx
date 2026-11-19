@@ -126,6 +126,7 @@ function JjPullDialog({
           )}
           <Select
             aria-label="Rebase destination"
+            searchable
             className={styles.grow}
             value={target}
             placeholder="Rebase destination"

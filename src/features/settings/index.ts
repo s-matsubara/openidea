@@ -5,7 +5,8 @@
  * runtime application of keymap / UI font size / high-contrast settings.
  *
  * On the desktop Settings open in a native child window (`activateSettingsWindow`
- * runs there); in the browser build they open as an in-page dialog.
+ * runs there) unless Appearance › "Open Settings in a separate window" is off;
+ * then, and in the browser build, they open as an in-page dialog.
  *
  * `executeAction("file.settings", "keymap")` opens a specific page;
  * `file.newProjectsSettings` (IDEA's Settings for New Projects) edits the
@@ -37,7 +38,13 @@ import {
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { appearanceToggleActions, navigationBarActions, zoomActions } from "./appearanceRuntime";
+import {
+  appearanceToggleActions,
+  navigationBarActions,
+  presentationAssistantAction,
+  zoomActions,
+} from "./appearanceRuntime";
+import { PresentationAssistant } from "./presentation/PresentationAssistant";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
@@ -97,9 +104,11 @@ function settingsActions(open: (page?: string, newProjects?: boolean) => void): 
   ];
 }
 
-/** Native Settings window when the backend can make one, else the dialog. */
+const separateWindow = () => useProject.getState().settings?.appearance?.settingsInSeparateWindow !== false;
+
+/** The native Settings window when it is enabled and the backend can make one, else the dialog. */
 async function showSettings(page?: string, newProjects = false) {
-  if (isTauri()) {
+  if (isTauri() && separateWindow()) {
     try {
       await call(commands.windowOpenSettings(page ?? null, newProjects, windowBackgroundHex()));
       return;
@@ -108,7 +117,9 @@ async function showSettings(page?: string, newProjects = false) {
     }
   }
   await loadBuiltinPages();
-  openSettings(page, { newProjects });
+  // Like a launch into the open window: go to the page, keep the edits not applied yet.
+  if (useSettingsDialog.getState().open) relaunch({ page, newProjects });
+  else openSettings(page, { newProjects });
 }
 
 const useAssignShortcutOpen = () => useAssignShortcut((s) => s.actionId !== null);
@@ -122,20 +133,7 @@ export function activate(): () => void {
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
-    registerActions(zoomActions()),
-    registerActions(appearanceToggleActions()),
-    registerActions(navigationBarActions()),
-    registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
-    registerActions([
-      {
-        id: "file.projectStructure",
-        title: "Project Structure…",
-        category: "File",
-        icon: "folder",
-        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
-        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
-      },
-    ]),
+    registerOverlay({ id: "settings.presentationAssistant", component: PresentationAssistant }),
     activateFileTypes(),
     registerOverlay({
       id: "settings.assignShortcut",
@@ -144,6 +142,19 @@ export function activate(): () => void {
       ),
     }),
     registerActions([
+      ...zoomActions(),
+      ...appearanceToggleActions(),
+      presentationAssistantAction(),
+      ...navigationBarActions(),
+      ...settingsActions((page, newProjects) => void showSettings(page, newProjects)),
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).
         id: "settings.assignShortcut",

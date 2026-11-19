@@ -102,6 +102,70 @@ const css = (reply: ReturnType<Page["locator"]>, selector: string, property: str
     .evaluate((el, name) => getComputedStyle(el).getPropertyValue(name), property);
 const px = (value: string) => Number.parseFloat(value);
 
+test("opens Windows file links in the editor at their line and column", async ({ page }) => {
+  const path = "E:/work/笔记 list.txt";
+  const reply = await openReply(
+    page,
+    "[Windows file](E:/work/笔记%20list.txt:3:5)\n\n[Backslash path](E:%5Cwork%5C笔记%20list.txt#L7)",
+  );
+  await page.evaluate(async (path) => {
+    const backendPath = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(backendPath);
+    docBackend().files.set(path, Array.from({ length: 12 }, (_, i) => `Line ${i + 1}: Windows file link`).join("\n"));
+  }, path);
+
+  await reply.getByRole("link", { name: "Windows file", exact: true }).click();
+  const cursor = () =>
+    page.evaluate(async () => {
+      const servicePath = "/src/workbench/contributions.ts";
+      const { editorService } = await import(servicePath);
+      return { path: editorService().activePath(), cursor: editorService().activeCursor() };
+    });
+  await expect.poll(cursor).toMatchObject({ path, cursor: { line: 2, col: 4 } });
+  await expect(page.locator(".cm-content").first()).toContainText("Line 3: Windows file link");
+
+  await reply.getByRole("link", { name: "Backslash path", exact: true }).click();
+  await expect.poll(cursor).toMatchObject({ path, cursor: { line: 6, col: 0 } });
+});
+
+test("opens slash-prefixed Windows Markdown links with preview content and hover targets", async ({ page }) => {
+  const spec = "E:/work/feature/spec.md";
+  const skill = "E:/work/.agents/skills/work-spec/SKILL.md";
+  const reply = await openReply(page, `[Specification](/${spec})\n\n[Work skill](/${skill})`);
+  await page.evaluate(
+    async ({ spec, skill }) => {
+      const backendPath = "/src/editor/core/backend.ts";
+      const modePath = "/src/features/viewers/markdown/modes.ts";
+      const { docBackend } = await import(backendPath);
+      const { setMarkdownMode } = await import(modePath);
+      docBackend().files.set(spec, "# Windows specification\n\nThe specification is not empty.");
+      docBackend().files.set(skill, "# Work specification skill\n\nThe skill is not empty.");
+      setMarkdownMode(spec, "preview");
+      setMarkdownMode(skill, "preview");
+    },
+    { spec, skill },
+  );
+
+  for (const [label, path, heading] of [
+    ["Specification", spec, "Windows specification"],
+    ["Work skill", skill, "Work specification skill"],
+  ]) {
+    const link = reply.getByRole("link", { name: label, exact: true });
+    await link.hover();
+    await expect(link).toHaveAttribute("title", path);
+    await link.click();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          const servicePath = "/src/workbench/contributions.ts";
+          return (await import(servicePath)).editorService().activePath();
+        }),
+      )
+      .toBe(path);
+  }
+});
+
 test("styles tables so a reply reads as a table", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   expect(await css(reply, "td", "border-top-width")).toBe("1px");
@@ -901,4 +965,62 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
   expect(layout.thoughtToToolIndent).toBeGreaterThanOrEqual(14);
   // Output-less running tool rows align their kind icon with expandable tool rows.
   expect(layout.iconLeftDiff).toBeLessThanOrEqual(1);
+});
+
+test("aligns Mermaid diagrams in replies to their container align attribute", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await openReply(
+    page,
+    [
+      "Summary across the full width of the reply column so diagrams sit inside a wider message body.",
+      "",
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.openTaskInEditorLocation(id);
+  }, TASK.id);
+
+  const reply = page.locator("[class*='_stream_']:visible [class*='_markdown_']").first();
+  const outputs = reply.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
 });

@@ -273,6 +273,60 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await page.keyboard.insertText(
+    [
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const outputs = preview.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});
+
 test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
@@ -381,4 +435,106 @@ test("dragging the vertical tab column's edge resizes it and the width is kept",
   await openFromTree(page, "settings.gradle.kts");
   await placeLeft();
   await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
+});
+
+test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
+  workbench: page,
+}) => {
+  const applyDefaultSettings = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      useProject.setState({ settings: useProject.getState().settings ?? DEFAULT_SETTINGS });
+    });
+  await applyDefaultSettings();
+
+  const editor = await openFromTree(page, "README.md");
+  await page.evaluate(async () => {
+    const controllerModule = "/src/editor/core/controller.ts";
+    const { editorController } = await import(/* @vite-ignore */ controllerModule);
+    const view = editorController().activeSlot!.view!;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: [
+          "# Order Service",
+          "",
+          "Event-driven order processing API with idempotent checkout, inventory reservation, webhook delivery, and automatic retry policies.",
+          "",
+          "| Method | Path | Description |",
+          "| :--- | :--- | :--- |",
+          "| `POST` | `/v1/orders/{id}/cancel` | Release reserved stock and emit cancellation event |",
+        ].join("\n"),
+      },
+      selection: { anchor: 0 },
+    });
+  });
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const handle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  const cmContent = editor.locator(".cm-content");
+  await expect(preview).toContainText("Event-driven order processing API");
+  await expect(handle).toBeVisible();
+  await expect(cmContent).toHaveClass(/cm-lineWrapping/);
+
+  const initialEditor = (await editor.boundingBox())!.width;
+  const initialPreview = (await preview.boundingBox())!.width;
+  const initialContent = (await cmContent.boundingBox())!.width;
+  expect(Math.abs(initialEditor - initialPreview)).toBeLessThanOrEqual(2);
+  expect(initialContent).toBeLessThanOrEqual(initialEditor);
+
+  const box = (await handle.boundingBox())!;
+  const startX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, midY);
+  await page.mouse.down();
+  await page.mouse.move(startX - 180, midY, { steps: 6 });
+  await expect(handle).toHaveAttribute("data-separator", "active");
+  await page.mouse.up();
+
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
+  const narrowedEditor = (await editor.boundingBox())!.width;
+  // Soft-wrapped editor content shrinks with the narrowed editor pane rather than overflowing.
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(narrowedEditor);
+
+  // Dragging right narrows the preview: table and prose stay within the preview content width.
+  const narrowedHandleBox = (await handle.boundingBox())!;
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2, midY);
+  await page.mouse.down();
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2 + 380, midY, { steps: 8 });
+  await page.mouse.up();
+  const widenedEditor = (await editor.boundingBox())!.width;
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(initialContent + 140);
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(widenedEditor);
+  expect(await preview.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+  // Editor Only and Preview Only both expand content to full pane width.
+  await page.getByRole("button", { name: "Editor Only" }).click();
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(widenedEditor);
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview * 1.8);
+  await page.getByRole("button", { name: "Editor and Preview" }).click();
+  await expect.poll(async () => Math.round((await editor.boundingBox())!.width)).toBe(Math.round(widenedEditor));
+
+  // Persists across reload.
+  await page.reload();
+  await applyDefaultSettings();
+  const reopenedEditor = await openFromTree(page, "README.md");
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(widenedEditor));
+
+  // Double-clicking the divider resets the split back to 50/50.
+  const reopenedHandle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  await reopenedHandle.dblclick();
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(initialEditor));
 });

@@ -114,6 +114,10 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
+    /// The last trace that finished, until the stop its records were read in ends.
+    pub(crate) stream_trace_done: parking_lot::Mutex<Option<crate::stream_trace::DoneTrace>>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
     pub(crate) unity_startup_activity: Mutex<Instant>,
@@ -195,6 +199,13 @@ impl Suspension {
         self.0.lock().ticket
     }
 
+    /// The ticket of a stop of `thread` (its own or every thread's) taken after ticket `after`.
+    pub fn stopped_since(&self, thread: i64, after: u64) -> Option<u64> {
+        let stops = self.0.lock();
+        let own = stops.threads.iter().find(|&&(id, _)| id == thread).map(|&(_, ticket)| ticket);
+        own.max(stops.all).filter(|&ticket| ticket > after)
+    }
+
     /// After a successful resume-like request for `thread`; `all`: every thread ran.
     pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
         self.0.lock().release(Some(thread), all, ticket);
@@ -270,6 +281,9 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            stream_tracer: parking_lot::Mutex::new(None),
+            stream_trace: parking_lot::Mutex::new(None),
+            stream_trace_done: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
             unity_startup_activity: Mutex::new(Instant::now()),
         }
@@ -741,6 +755,9 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
+            if crate::stream_trace::resume_traced_stop(s, int("threadId"), all) {
+                return;
+            }
             s.suspended.stopped(int("threadId"), all);
             let mut reason = str_("reason").unwrap_or_else(|| "pause".into());
             if let Some(quirks) = s.kotlin_lsp_quirks() {
@@ -760,6 +777,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             // DAP: an event without the flag continues its thread alone. The UI keeps treating
             // it as all threads; the suspension, which holds only threads that stopped, need not.
             s.suspended.continued(int("threadId"), all.unwrap_or(false));
+            crate::stream_trace::release_done(s);
             s.emit(DebugEvent::Continued {
                 thread_id: int("threadId").unwrap_or(0),
                 all_threads_continued: all.unwrap_or(true),
@@ -961,20 +979,18 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
-    for (k, v) in ide_core::process::host_env_fixes() {
+    let cwd = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map_or(s.spec.cwd.as_path(), Path::new);
+    for (k, v) in ide_core::process::host_env_fixes_in(cwd) {
         match v {
             Some(v) => cmd.env(k, v),
             None => cmd.env_remove(k),
         }
     }
-    for (k, v) in ide_core::process::shell_env() {
+    for (k, v) in ide_core::process::shell_env_in(cwd) {
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
-    match args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
-        Some(cwd) => cmd.cwd(cwd),
-        None => cmd.cwd(&s.spec.cwd),
-    }
+    cmd.cwd(cwd);
     if let Some(env) = args.get("env").and_then(Value::as_object) {
         for (k, v) in env {
             match v.as_str() {
@@ -1145,6 +1161,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let classpath =
         std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let mut cmd = tokio::process::Command::new(java);
+    cmd.current_dir(&s.spec.cwd);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(kotlin_jvm_args(strings("vmArguments"), cfg!(windows)))
         // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
@@ -1163,8 +1180,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
             .ok_or_else(|| ide_core::IdeError::invalid("Missing Kotlin main class"))?,
     )
     .args(strings("programArgs"))
-    .current_dir(&s.spec.cwd)
-    .envs(ide_core::process::shell_env())
+    .envs(ide_core::process::shell_env_in(&s.spec.cwd))
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())

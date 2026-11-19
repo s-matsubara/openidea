@@ -14,37 +14,6 @@
   font-size: var(--fs-ui);
 }
 
-/* Temporary side conversation: an accent bar divides it from what it forked from. */
-.sideBanner {
-  grid-column: 1 / -1;
-  /* The grid stretches auto rows; keep the bar at its content height. */
-  align-self: start;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  background: var(--accent-soft);
-  color: var(--fg);
-}
-.sideBanner :global(svg) {
-  color: var(--accent);
-  flex: none;
-}
-.sideName {
-  font-weight: 600;
-  white-space: nowrap;
-}
-.sideHint {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-}
-
 .conversation {
   container-type: inline-size;
   display: flex;
@@ -249,6 +218,11 @@
   max-width: 100%;
   margin-inline: auto;
   box-sizing: border-box;
+  /* Each row paints into its own layer, leaving the stream's scrolled contents empty. WebKit
+     never frees that layer's surfaces when its height keeps crossing 2048px (turns fold and
+     unfold below the limit while a reply streams), and the app process grows by ~1 GB per
+     40 crossings. */
+  will-change: transform;
 }
 .conversationRow {
   min-width: 0;
@@ -492,13 +466,6 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* Quoted context a reply carried with it: dimmer, with a marker line. */
-.quote {
-  margin: 0;
-  padding-left: var(--space-2);
-  border-left: 2px solid var(--border);
-  color: var(--fg-muted);
-}
 
 .editMessage {
   width: 100%;
@@ -612,17 +579,33 @@
 .markdown :global([data-mermaid-state="ok"] > pre) {
   display: none;
 }
+.markdown :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.markdown :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.markdown :global([align="center" i]),
+.markdown :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
 .markdown :global(.mermaid-output) {
   overflow-x: auto;
   overflow-y: hidden;
-  text-align: center;
+  text-align: var(--mermaid-align, center);
   /* Node labels are drawing, not text: selecting across a reply skips them. */
   -webkit-user-select: none;
   user-select: none;
 }
 .markdown :global(.mermaid-output svg[data-natural-width]) {
   display: block;
-  margin: 0 auto;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
   width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
   height: auto;
 }

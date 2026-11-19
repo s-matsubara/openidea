@@ -19,6 +19,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
@@ -26,6 +27,8 @@ export interface GitSettingsValid {
   warnCrlf: boolean;
   warnDetachedHead: boolean;
   incomingCheck: IncomingCheck;
+  /** Minutes between background checks for incoming commits. */
+  incomingCheckInterval: number;
   protectedBranches: string;
   signOff: boolean;
   warnLargeFiles: boolean;
@@ -56,6 +59,8 @@ export interface CommitSettingsValid {
   disabledPluginChecks: string[];
   /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
   doubleClickOpensDiff: boolean | null;
+  /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
+  agentInstructions: string;
 }
 
 export interface VcsSettingsValid {
@@ -204,6 +209,7 @@ export const WORKFLOW_LIMITS = {
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
+  incomingCheckInterval: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
@@ -236,6 +242,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     jj: { executable: "" },
     git: {
       inlineBlame: false,
+      inlineBlameClickable: true,
       showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
@@ -243,6 +250,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       warnCrlf: true,
       warnDetachedHead: true,
       incomingCheck: "auto",
+      incomingCheckInterval: 15,
       protectedBranches: "master; main",
       signOff: false,
       warnLargeFiles: true,
@@ -270,6 +278,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       wrapAtMargin: false,
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
+      agentInstructions: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -394,6 +403,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     jj: { executable: text(obj(v.jj).executable, d.jj.executable).trim() },
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
@@ -401,6 +411,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       warnCrlf: bool(g.warnCrlf, d.git.warnCrlf),
       warnDetachedHead: bool(g.warnDetachedHead, d.git.warnDetachedHead),
       incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "never"] as const, d.git.incomingCheck),
+      incomingCheckInterval: num(g.incomingCheckInterval, d.git.incomingCheckInterval, L.incomingCheckInterval, true),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
       warnLargeFiles: bool(g.warnLargeFiles, d.git.warnLargeFiles),
@@ -428,6 +439,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
+      agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

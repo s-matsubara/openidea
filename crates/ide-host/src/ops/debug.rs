@@ -4,12 +4,13 @@ mod kotlin_tests;
 mod output;
 
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{DebugSessionId, IdeResult};
 use ide_dap::*;
 use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
+#[command(trust = trusted)]
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
     let unity_pid = if config.adapter == "unity" {
@@ -31,6 +32,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
+    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -119,6 +122,15 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let server_port = debug_server_port(&config);
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
+    if let Ok(id) = &result {
+        let sink = host.window_sink(label);
+        for note in &agents.notes {
+            sink.emit(ide_core::IdeEvent::Debug {
+                session: *id,
+                event: ide_core::event::DebugEvent::Output { category: "console".into(), output: format!("{note}\n") },
+            });
+        }
+    }
     if result.is_err()
         && let Some(pid) = unity_pid
     {
@@ -154,10 +166,54 @@ fn debug_server_port(config: &LaunchConfig) -> Option<u16> {
 fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port: u16) {
     let Ok(project) = host.project(window) else { return };
     let Some(module) = project.lsp.java_debug_server_module(port) else { return };
-    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module));
+    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module.clone()));
     if let Err(e) = host.debugger.set_jvm_inspector(session, inspector) {
         tracing::debug!("jvm inspector for session {session:?}: {e}");
+        return;
     }
+    let tracer = std::sync::Arc::new(ide_lsp::JdtStreamTracer::new(project.lsp.clone(), module));
+    if let Err(e) = host.debugger.set_stream_tracer(session, tracer) {
+        tracing::debug!("stream tracer for session {session:?}: {e}");
+    }
+}
+
+/// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
+/// java-debug or the Kotlin debugger (JAR Application debugs through a run with a JDWP agent).
+fn is_jvm_launch(config: &LaunchConfig) -> bool {
+    config.request == "launch" && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER)
+}
+
+/// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
+/// java-debug's `vmArgs` (one line, or a list) or the Kotlin debugger's `vmArguments` (a list).
+fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig {
+    if options.is_empty() || !is_jvm_launch(&config) {
+        return config;
+    }
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return config;
+    };
+    let key = if config.adapter == "java-debug" { "vmArgs" } else { "vmArguments" };
+    let value = match extra.get(key) {
+        None | Some(serde_json::Value::Null) if key == "vmArgs" => {
+            ide_run::java_agent::add_to_vm_args_text("", options).into()
+        }
+        Some(serde_json::Value::String(text)) => ide_run::java_agent::add_to_vm_args_text(text, options).into(),
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => {
+            let mut list: Vec<String> = extra
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            ide_run::java_agent::add_to_vm_args(&mut list, options);
+            list.into()
+        }
+        Some(_) => return config,
+    };
+    extra.insert(key.into(), value);
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
 }
 
 /// The JVM memory tab reads the class table over the attach socket, which only exists once the
@@ -217,44 +273,38 @@ fn match_java_debug_encoding(mut config: LaunchConfig, windows: bool) -> LaunchC
     config
 }
 
+#[command(trust = trusted)]
 pub async fn debug_set_breakpoints(
     host: &Host,
-    _window: &str,
     path: PathBuf,
     breakpoints: Vec<Breakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
     host.debugger.set_breakpoints(path, breakpoints).await
 }
 
-pub async fn debug_threads(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
+#[command(trust = trusted)]
+pub async fn debug_threads(host: &Host, session: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
     host.debugger.threads(session).await
 }
 
-pub async fn debug_stack_trace(
-    host: &Host,
-    _window: &str,
-    session: DebugSessionId,
-    thread_id: i64,
-) -> IdeResult<Vec<StackFrame>> {
+#[command(trust = trusted)]
+pub async fn debug_stack_trace(host: &Host, session: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
     host.debugger.stack_trace(session, thread_id).await
 }
 
-pub async fn debug_scopes(host: &Host, _window: &str, session: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {
+#[command(trust = trusted)]
+pub async fn debug_scopes(host: &Host, session: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {
     host.debugger.scopes(session, frame_id).await
 }
 
-pub async fn debug_variables(
-    host: &Host,
-    _window: &str,
-    session: DebugSessionId,
-    reference: i64,
-) -> IdeResult<Vec<Variable>> {
+#[command(trust = trusted)]
+pub async fn debug_variables(host: &Host, session: DebugSessionId, reference: i64) -> IdeResult<Vec<Variable>> {
     host.debugger.variables(session, reference).await
 }
 
+#[command(trust = trusted)]
 pub async fn debug_evaluate(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     frame_id: Option<i64>,
     expression: String,
@@ -262,40 +312,38 @@ pub async fn debug_evaluate(
     host.debugger.evaluate(session, frame_id, expression).await
 }
 
-pub async fn debug_resume(host: &Host, _window: &str, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_resume(host: &Host, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
     host.debugger.resume(session, thread_id).await
 }
 
-pub async fn debug_pause(host: &Host, _window: &str, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_pause(host: &Host, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
     host.debugger.pause(session, thread_id).await
 }
 
 /// Types `text` into the session's program (a `runInTerminal` program).
-pub async fn debug_send_input(host: &Host, _window: &str, session: DebugSessionId, text: String) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_send_input(host: &Host, session: DebugSessionId, text: String) -> IdeResult<()> {
     host.debugger.send_input(session, &text)
 }
 
-pub async fn debug_hot_reload(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+pub async fn debug_hot_reload(host: &Host, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.hot_reload(session).await
 }
 
-pub async fn debug_hot_restart(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+pub async fn debug_hot_restart(host: &Host, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.hot_restart(session).await
 }
 
-pub async fn debug_step(
-    host: &Host,
-    _window: &str,
-    session: DebugSessionId,
-    thread_id: i64,
-    kind: StepKind,
-) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_step(host: &Host, session: DebugSessionId, thread_id: i64, kind: StepKind) -> IdeResult<()> {
     host.debugger.step(session, thread_id, kind).await
 }
 
+#[command(trust = trusted)]
 pub async fn debug_run_to(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     thread_id: i64,
     path: PathBuf,
@@ -305,14 +353,15 @@ pub async fn debug_run_to(
     host.debugger.run_to(session, thread_id, path, line, force).await
 }
 
-pub async fn debug_stop(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+#[command(trust = always)]
+pub async fn debug_stop(host: &Host, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.stop(session).await
 }
 
-/// The adapter's completions for an expression being typed in the frame `frame_id`.
+/// Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16).
+#[command(trust = trusted)]
 pub async fn debug_completions(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     frame_id: Option<i64>,
     text: String,
@@ -323,9 +372,9 @@ pub async fn debug_completions(
 }
 
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
+#[command(trust = trusted)]
 pub async fn debug_evaluate_in(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     frame_id: Option<i64>,
     expression: String,
@@ -335,31 +384,34 @@ pub async fn debug_evaluate_in(
 }
 
 /// Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`).
-pub fn debug_breakpoint_states(host: &Host, _window: &str, path: PathBuf) -> IdeResult<Vec<BreakpointState>> {
+#[command(trust = trusted)]
+pub fn debug_breakpoint_states(host: &Host, path: PathBuf) -> IdeResult<Vec<BreakpointState>> {
     Ok(host.debugger.breakpoint_states(&path))
 }
 
 /// This window's live sessions, including adapter-started child sessions.
+#[command(trust = always)]
 pub fn debug_sessions(host: &Host, window: &str) -> IdeResult<Vec<SessionInfo>> {
     Ok(host.debugger.sessions(Some(host.owner_window(window))))
 }
 
+#[command(trust = trusted)]
 pub fn debug_exception_filters(host: &Host, window: &str) -> IdeResult<Vec<SessionExceptionFilters>> {
     Ok(host.debugger.exception_filters(Some(host.owner_window(window))))
 }
 
+#[command(trust = trusted)]
 pub async fn debug_set_exception_breakpoints(
     host: &Host,
-    _window: &str,
     choices: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<()> {
     host.debugger.set_exception_breakpoints(choices).await
 }
 
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn debug_set_variable(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     container: i64,
     name: String,
@@ -371,28 +423,24 @@ pub async fn debug_set_variable(
 }
 
 /// Force Step Over: step over with every breakpoint suspended until the step ends.
-pub async fn debug_force_step_over(
-    host: &Host,
-    _window: &str,
-    session: DebugSessionId,
-    thread_id: i64,
-) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_force_step_over(host: &Host, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
     host.debugger.force_step_over(session, thread_id).await
 }
 
 /// Smart Step Into: the calls on the current line of `frame_id`.
+#[command(trust = trusted)]
 pub async fn debug_step_in_targets(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     frame_id: i64,
 ) -> IdeResult<Vec<StepInTarget>> {
     host.debugger.step_in_targets(session, frame_id).await
 }
 
+#[command(trust = trusted)]
 pub async fn debug_step_in_target(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     thread_id: i64,
     target_id: i64,
@@ -401,13 +449,15 @@ pub async fn debug_step_in_target(
 }
 
 /// Reset Frame (Drop Frame).
-pub async fn debug_restart_frame(host: &Host, _window: &str, session: DebugSessionId, frame_id: i64) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn debug_restart_frame(host: &Host, session: DebugSessionId, frame_id: i64) -> IdeResult<()> {
     host.debugger.restart_frame(session, frame_id).await
 }
 
+/// Breakpoints of a debugged page on DOM events and on requests (js-debug).
+#[command(trust = trusted)]
 pub async fn debug_js_custom_breakpoints(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     ids: Vec<String>,
     xhr: Vec<String>,
@@ -415,61 +465,65 @@ pub async fn debug_js_custom_breakpoints(
     host.debugger.js_set_custom_breakpoints(session, ids, xhr).await
 }
 
+/// The responses a debugged page gets in place of the server's, by a part of the URL; none
+/// switches the replacing off.
+#[command(trust = trusted)]
 pub async fn debug_js_response_overrides(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     rules: Vec<ide_dap::JsResponseRule>,
 ) -> IdeResult<()> {
     host.debugger.js_set_response_overrides(session, rules).await
 }
 
+/// The body of a response a debugged page received.
+#[command(trust = trusted)]
 pub async fn debug_js_response_body(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     request_id: String,
 ) -> IdeResult<ide_dap::JsResponseBody> {
     host.debugger.js_response_body(session, request_id).await
 }
 
-pub async fn debug_js_start_profile(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+/// Starts recording a debugged page's CPU profile.
+#[command(trust = trusted)]
+pub async fn debug_js_start_profile(host: &Host, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.js_start_profile(session).await
 }
 
-pub async fn debug_js_stop_profile(
-    host: &Host,
-    _window: &str,
-    session: DebugSessionId,
-) -> IdeResult<ide_core::IpcPath> {
+/// Ends the recording: a directory holding the profile as `page.cpuprofile`.
+#[command(trust = trusted)]
+pub async fn debug_js_stop_profile(host: &Host, session: DebugSessionId) -> IdeResult<ide_core::IpcPath> {
     host.debugger.js_stop_profile(session).await.map(Into::into)
 }
 
-pub fn debug_capabilities(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
+#[command(trust = trusted)]
+pub fn debug_capabilities(host: &Host, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
     host.debugger.capabilities(session)
 }
 
 /// Method breakpoints (all files); states aligned with `breakpoints`.
+#[command(trust = trusted)]
 pub async fn debug_set_function_breakpoints(
     host: &Host,
-    _window: &str,
     breakpoints: Vec<FunctionBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
     host.debugger.set_function_breakpoints(breakpoints).await
 }
 
 /// Field watchpoints; states aligned with `breakpoints`.
+#[command(trust = trusted)]
 pub async fn debug_set_data_breakpoints(
     host: &Host,
-    _window: &str,
     breakpoints: Vec<DataBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
     host.debugger.set_data_breakpoints(breakpoints).await
 }
 
+#[command(trust = trusted)]
 pub async fn debug_data_breakpoint_info(
     host: &Host,
-    _window: &str,
     session: DebugSessionId,
     container: i64,
     name: String,
@@ -479,20 +533,23 @@ pub async fn debug_data_breakpoint_info(
 }
 
 /// Attach to Process: the user's processes a debugger can attach to.
-pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResult<Vec<attach::AttachableProcess>> {
+#[command(trust = always)]
+pub async fn debug_attachable_processes() -> IdeResult<Vec<attach::AttachableProcess>> {
     tokio::task::spawn_blocking(attach::attachable_processes)
         .await
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
-/// A loopback port that is free right now, for a debug agent the launch line starts
-/// (`address=127.0.0.1:<port>`) — used when its "Listening for transport" line never reaches
-/// the console (a Surefire fork holds it until the tests run, which `suspend=y` prevents).
+/// A loopback port that is free right now, for a debug agent the launch line starts.
+#[command(trust = trusted)]
 pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
+    // `address=127.0.0.1:<port>` — used when its "Listening for transport" line never reaches
+    // the console (a Surefire fork holds it until the tests run, which `suspend=y` prevents).
     host.require_trust(window)?;
     ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
 }
 
+#[command(trust = trusted)]
 pub async fn debug_unity_processes(host: &Host, window: &str) -> IdeResult<Vec<attach::AttachableProcess>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -506,26 +563,29 @@ pub async fn debug_unity_processes(host: &Host, window: &str) -> IdeResult<Vec<a
 
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
+#[command(trust = trusted)]
 pub async fn debug_listen_for_jvm(
-    host: &Host,
+    ide: &Host,
     window: &str,
     request: ide_core::RequestId,
-    jvm_host: String,
+    host: String,
     port: u16,
 ) -> IdeResult<u16> {
-    host.require_trust(window)?;
-    let token = host.begin_request(request);
-    let result = jdwp::listen_for_jvm(&jvm_host, port, token).await;
-    host.end_request(request);
+    ide.require_trust(window)?;
+    let token = ide.begin_request(request);
+    let result = jdwp::listen_for_jvm(&host, port, token).await;
+    ide.end_request(request);
     result
 }
 
 /// HotSwap (Reload Changed Classes) in a java-debug session.
-pub async fn debug_redefine_classes(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<HotSwapResult> {
+#[command(trust = trusted)]
+pub async fn debug_redefine_classes(host: &Host, session: DebugSessionId) -> IdeResult<HotSwapResult> {
     host.debugger.redefine_classes(session).await
 }
 
-/// The debuggee JVM's loaded classes, or why they cannot be read.
+/// The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read.
+#[command(trust = trusted)]
 pub async fn debug_jvm_memory_classes(
     host: &Host,
     window: &str,
@@ -536,6 +596,7 @@ pub async fn debug_jvm_memory_classes(
 }
 
 /// Up to `limit` live instances of the class in the stopped JVM.
+#[command(trust = trusted)]
 pub async fn debug_jvm_memory_instances(
     host: &Host,
     window: &str,
@@ -547,7 +608,8 @@ pub async fn debug_jvm_memory_instances(
     host.debugger.jvm_memory_instances(session, class_name, limit).await
 }
 
-/// The fields (or array elements) of an instance listed by [`debug_jvm_memory_instances`].
+/// The fields (or array elements) of an instance in the stopped JVM.
+#[command(trust = trusted)]
 pub async fn debug_jvm_memory_fields(
     host: &Host,
     window: &str,
@@ -559,6 +621,7 @@ pub async fn debug_jvm_memory_fields(
 }
 
 /// The objects that hold a reference to `object`; `limit` 0 selects the default.
+#[command(trust = trusted)]
 pub async fn debug_jvm_memory_referrers(
     host: &Host,
     window: &str,
@@ -568,166 +631,6 @@ pub async fn debug_jvm_memory_referrers(
 ) -> IdeResult<JvmReferrersResult> {
     host.require_trust(window)?;
     host.debugger.jvm_memory_referrers(session, object, limit).await
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_start", |c| async move { debug_start(&c.host, &c.window, c.arg("config")?).await });
-    d.add("debug_set_breakpoints", |c| async move {
-        debug_set_breakpoints(&c.host, &c.window, c.arg("path")?, c.arg("breakpoints")?).await
-    });
-    d.add("debug_threads", |c| async move { debug_threads(&c.host, &c.window, c.arg("session")?).await });
-    d.add("debug_stack_trace", |c| async move {
-        debug_stack_trace(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await
-    });
-    d.add(
-        "debug_scopes",
-        |c| async move { debug_scopes(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await },
-    );
-    d.add("debug_variables", |c| async move {
-        debug_variables(&c.host, &c.window, c.arg("session")?, c.arg("reference")?).await
-    });
-    d.add("debug_evaluate", |c| async move {
-        debug_evaluate(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?, c.arg("expression")?).await
-    });
-    d.add(
-        "debug_resume",
-        |c| async move { debug_resume(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await },
-    );
-    d.add(
-        "debug_pause",
-        |c| async move { debug_pause(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await },
-    );
-    d.add("debug_send_input", |c| async move {
-        debug_send_input(&c.host, &c.window, c.arg("session")?, c.arg("text")?).await
-    });
-    d.add("debug_step", |c| async move {
-        debug_step(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?, c.arg("kind")?).await
-    });
-    d.add("debug_run_to", |c| async move {
-        debug_run_to(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("threadId")?,
-            c.arg("path")?,
-            c.arg("line")?,
-            c.arg("force")?,
-        )
-        .await
-    });
-    d.add("debug_stop", |c| async move { debug_stop(&c.host, &c.window, c.arg("session")?).await });
-    d.add("debug_completions", |c| async move {
-        debug_completions(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("frameId")?,
-            c.arg("text")?,
-            c.arg("line")?,
-            c.arg("column")?,
-        )
-        .await
-    });
-    d.add("debug_evaluate_in", |c| async move {
-        debug_evaluate_in(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("frameId")?,
-            c.arg("expression")?,
-            c.arg("context")?,
-        )
-        .await
-    });
-    d.add("debug_breakpoint_states", |c| async move { debug_breakpoint_states(&c.host, &c.window, c.arg("path")?) });
-    d.add("debug_sessions", |c| async move { debug_sessions(&c.host, &c.window) });
-    d.add("debug_exception_filters", |c| async move { debug_exception_filters(&c.host, &c.window) });
-    d.add("debug_set_exception_breakpoints", |c| async move {
-        debug_set_exception_breakpoints(&c.host, &c.window, c.arg("choices")?).await
-    });
-    d.add("debug_set_variable", |c| async move {
-        debug_set_variable(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("container")?,
-            c.arg("name")?,
-            c.arg("evaluateName")?,
-            c.arg("frameId")?,
-            c.arg("value")?,
-        )
-        .await
-    });
-    d.add("debug_force_step_over", |c| async move {
-        debug_force_step_over(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await
-    });
-    d.add("debug_step_in_targets", |c| async move {
-        debug_step_in_targets(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
-    });
-    d.add("debug_step_in_target", |c| async move {
-        debug_step_in_target(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?, c.arg("targetId")?).await
-    });
-    d.add("debug_restart_frame", |c| async move {
-        debug_restart_frame(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
-    });
-    d.add("debug_capabilities", |c| async move { debug_capabilities(&c.host, &c.window, c.arg("session")?) });
-    d.add("debug_js_response_overrides", |c| async move {
-        debug_js_response_overrides(&c.host, &c.window, c.arg("session")?, c.arg("rules")?).await
-    });
-    d.add("debug_js_response_body", |c| async move {
-        debug_js_response_body(&c.host, &c.window, c.arg("session")?, c.arg("requestId")?).await
-    });
-    d.add("debug_js_custom_breakpoints", |c| async move {
-        debug_js_custom_breakpoints(&c.host, &c.window, c.arg("session")?, c.arg("ids")?, c.arg("xhr")?).await
-    });
-    d.add(
-        "debug_js_start_profile",
-        |c| async move { debug_js_start_profile(&c.host, &c.window, c.arg("session")?).await },
-    );
-    d.add(
-        "debug_js_stop_profile",
-        |c| async move { debug_js_stop_profile(&c.host, &c.window, c.arg("session")?).await },
-    );
-    d.add("debug_set_function_breakpoints", |c| async move {
-        debug_set_function_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
-    });
-    d.add("debug_set_data_breakpoints", |c| async move {
-        debug_set_data_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
-    });
-    d.add("debug_data_breakpoint_info", |c| async move {
-        debug_data_breakpoint_info(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("container")?,
-            c.arg("name")?,
-            c.arg("frameId")?,
-        )
-        .await
-    });
-    d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
-    d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
-    d.add("debug_unity_processes", |c| async move { debug_unity_processes(&c.host, &c.window).await });
-    d.add("debug_listen_for_jvm", |c| async move {
-        debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
-    });
-    d.add(
-        "debug_redefine_classes",
-        |c| async move { debug_redefine_classes(&c.host, &c.window, c.arg("session")?).await },
-    );
-    d.add("debug_jvm_memory_classes", |c| async move {
-        debug_jvm_memory_classes(&c.host, &c.window, c.arg("session")?).await
-    });
-    d.add("debug_jvm_memory_instances", |c| async move {
-        debug_jvm_memory_instances(&c.host, &c.window, c.arg("session")?, c.arg("className")?, c.arg("limit")?).await
-    });
-    d.add("debug_jvm_memory_fields", |c| async move {
-        debug_jvm_memory_fields(&c.host, &c.window, c.arg("session")?, c.arg("object")?).await
-    });
-    d.add("debug_jvm_memory_referrers", |c| async move {
-        debug_jvm_memory_referrers(&c.host, &c.window, c.arg("session")?, c.arg("object")?, c.arg("limit")?).await
-    });
 }
 
 #[cfg(test)]
@@ -814,6 +717,36 @@ mod tests {
     }
 
     #[test]
+    fn plugin_java_agents_join_the_vm_options_of_jvm_launches() {
+        let agent = "-javaagent:/my plugins/agent.jar=port=0".to_owned();
+        let options = std::slice::from_ref(&agent);
+        let field = |config: &LaunchConfig, key: &str| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()[key].clone()
+        };
+        let debugged =
+            add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})), options);
+        assert_eq!(vm_args(&debugged), "-Xmx1g \"-javaagent:/my plugins/agent.jar=port=0\"");
+        assert_eq!(add_java_agents(debugged.clone(), options).extra_json, debugged.extra_json, "not added twice");
+        let none = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})), options);
+        assert_eq!(vm_args(&none), "\"-javaagent:/my plugins/agent.jar=port=0\"");
+        let list = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": ["-Xmx1g"]})), options);
+        assert_eq!(vm_args(&list), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({"vmArguments": ["-Xmx1g"]}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!([agent]));
+        // Attaching (remote debug included), other adapters, and no granted agent: unchanged.
+        for config in [
+            launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})),
+            launch("debugpy", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})),
+        ] {
+            assert_eq!(add_java_agents(config.clone(), options).extra_json, config.extra_json);
+        }
+        let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
+        assert_eq!(add_java_agents(config.clone(), &[]).extra_json, config.extra_json);
+    }
+
+    #[test]
     fn debug_server_port_only_for_local_java_debug() {
         let port = |adapter: &str, request: &str, extra| debug_server_port(&launch(adapter, request, extra));
         assert_eq!(port("java-debug", "launch", serde_json::json!({"debugServer": 4711})), Some(4711));
@@ -833,3 +766,49 @@ mod tests {
         }
     }
 }
+
+ide_command::domain!(
+    debug:
+    debug_attachable_processes,
+    debug_breakpoint_states,
+    debug_capabilities,
+    debug_completions,
+    debug_data_breakpoint_info,
+    debug_evaluate,
+    debug_evaluate_in,
+    debug_exception_filters,
+    debug_force_step_over,
+    debug_free_port,
+    debug_js_custom_breakpoints,
+    debug_js_response_body,
+    debug_js_response_overrides,
+    debug_js_start_profile,
+    debug_js_stop_profile,
+    debug_jvm_memory_classes,
+    debug_jvm_memory_fields,
+    debug_jvm_memory_instances,
+    debug_jvm_memory_referrers,
+    debug_listen_for_jvm,
+    debug_pause,
+    debug_redefine_classes,
+    debug_restart_frame,
+    debug_resume,
+    debug_run_to,
+    debug_scopes,
+    debug_send_input,
+    debug_sessions,
+    debug_set_breakpoints,
+    debug_set_data_breakpoints,
+    debug_set_exception_breakpoints,
+    debug_set_function_breakpoints,
+    debug_set_variable,
+    debug_stack_trace,
+    debug_start,
+    debug_step,
+    debug_step_in_target,
+    debug_step_in_targets,
+    debug_stop,
+    debug_threads,
+    debug_unity_processes,
+    debug_variables,
+);

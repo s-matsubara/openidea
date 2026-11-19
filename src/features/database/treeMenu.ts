@@ -7,6 +7,8 @@ import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
 import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
 import { readClipboardPlainText } from "@/platform/clipboard";
+import { useRemote } from "@/platform/remote";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 
 const act = (
   action: string,
@@ -81,6 +83,23 @@ function sqlScripts(n: DbNode, table: boolean): MenuItem {
   return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
 }
 
+/** Export / Restore with the client tools of a PostgreSQL or MySQL node; they run on this machine, so not in remote windows. */
+function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
+  const source = sourceById(nodeTarget(n));
+  if (useRemote.getState().session) return [];
+  const [dump, load] = dumpScope(n, source)
+    ? ["db.dumpWithPgDump", "db.restoreWithPgRestore"]
+    : mysqlDumpScope(n, source)
+      ? ["db.dumpWithMysqldump", "db.restoreWithMysql"]
+      : [];
+  if (!dump || !load) return [];
+  return [act(dump, n), ...(restore ? [act(load, n, { disabled: !!source?.readOnly })] : [])];
+}
+
+function importExport(items: MenuItem[]): MenuItem[] {
+  return items.length ? [{ label: "Import/Export", submenu: items }] : [];
+}
+
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
@@ -118,6 +137,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sep,
         sqlScripts(n, false),
         act("db.compareSchemas", n),
+        ...importExport(dumpItems(n, true)),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),
       ];
@@ -131,6 +151,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sep,
         navigation(),
         sqlScripts(n, false),
+        ...importExport(dumpItems(n, true)),
       ];
     case "schema":
     case "folder":
@@ -144,6 +165,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sep,
         sqlScripts(n, false),
         ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
+        ...importExport(dumpItems(n, true)),
         ...(n.kind === "schema" ? [sep, drop] : []),
       ];
     case "table":
@@ -177,7 +199,13 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sqlScripts(n, true),
         ...(n.kind === "table" && !view
           ? [
-              { label: "Import/Export", submenu: [act("db.importData", n, { disabled: driver === "clickhouse" })] },
+              {
+                label: "Import/Export",
+                submenu: [
+                  act("db.importData", n, { disabled: driver === "clickhouse" }),
+                  ...(dumpItems(n, false).length ? [sep, ...dumpItems(n, false)] : []),
+                ],
+              },
               { label: "Object Actions", submenu: [act("db.truncate", n)] },
             ]
           : []),

@@ -866,6 +866,14 @@ pub struct Endpoint {
     pub location: Location,
 }
 
+/// The clipboard as `ui.read-clipboard` returns it (API 1.11): `None` for a kind it doesn't
+/// hold; `image` is PNG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    pub image: Option<Vec<u8>>,
+}
+
 /// A notification button that runs one of the publishing plugin's commands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -957,6 +965,28 @@ pub struct BlameLine {
     pub author: String,
     pub date: i64,
     pub summary: String,
+}
+
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    Resolved,
+    OmittedForConflict,
+    OmittedForDuplicate,
+    VersionManaged,
+}
+
+/// One occurrence in the flat dependency graph of `build.dependencies` (API 1.10);
+/// `parent` indexes the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    pub group: String,
+    pub artifact: String,
+    pub version: String,
+    pub scope: String,
+    pub status: DependencyStatus,
+    pub requested_version: Option<String>,
+    pub parent: Option<u32>,
 }
 
 /// Non-secret settings of a plugin-owned project database source (API 1.4).

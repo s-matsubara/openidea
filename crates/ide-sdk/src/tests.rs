@@ -1,7 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, apply_to_run_configs_in, configure_server, jdtls_jdk, maven_command, maven_options,
-    project_jdk, python_interpreter, ruff_configuration, terminal_activation, tool_install_environment, tsdk,
-    without_derived, without_derived_in,
+    apply_to_run_configs, apply_to_run_configs_in, configure_python_extra_paths, configure_server,
+    configure_vue_module_resolution, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
+    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -176,6 +176,72 @@ fn picked_interpreters_must_run_python_code_even_with_valid_venv_metadata() {
     std::fs::remove_file(&python).unwrap();
     assert!(crate::python_interpreter_sdk(&python, None).is_none());
     assert!(crate::python_interpreter_sdk(tmp.path(), None).is_none());
+}
+
+fn extra_paths(cfg: &LanguageServerConfig, section: &str) -> Vec<String> {
+    serde_json::to_value(cfg.initialization_options.as_ref().unwrap())
+        .unwrap()
+        .pointer(&format!("/settings/{section}/analysis/extraPaths"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn basedpyright_gets_dependency_roots_as_extra_paths() {
+    let mut cfg = server("basedpyright");
+    let roots = [Path::new("B:/proj/dep").to_path_buf(), Path::new("/home/me/lib").to_path_buf()];
+    configure_python_extra_paths(&mut cfg, &roots);
+    assert_eq!(
+        extra_paths(&cfg, "basedpyright"),
+        roots.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pyright_gets_dependency_roots_in_the_python_section() {
+    let mut cfg = server("pyright");
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "python"), vec!["/deps/lib"]);
+    assert!(extra_paths(&cfg, "basedpyright").is_empty(), "pyright does not use the basedpyright section");
+}
+
+#[test]
+fn dependency_extra_paths_keep_existing_paths_and_deduplicate() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options = Some(
+        toml::Value::try_from(serde_json::json!({
+            "settings": { "basedpyright": { "analysis": { "extraPaths": ["/user/stubs", "/deps/lib", 7] } } }
+        }))
+        .unwrap(),
+    );
+    // `7` is a non-string: it is dropped, the two string paths are kept first, and the
+    // duplicate dependency is not appended again.
+    configure_python_extra_paths(
+        &mut cfg,
+        &[Path::new("/deps/lib").to_path_buf(), Path::new("/new/dep").to_path_buf()],
+    );
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/user/stubs", "/deps/lib", "/new/dep"]);
+}
+
+#[test]
+fn dependency_extra_paths_replace_a_malformed_settings_section() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(serde_json::json!({ "settings": { "basedpyright": "strict" } })).unwrap());
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/deps/lib"]);
+}
+
+#[test]
+fn non_python_servers_and_empty_roots_are_untouched() {
+    let mut ruff = server("ruff");
+    configure_python_extra_paths(&mut ruff, &[Path::new("/deps/lib").to_path_buf()]);
+    assert!(ruff.initialization_options.is_none());
+
+    let mut pyright = server("pyright");
+    configure_python_extra_paths(&mut pyright, &[]);
+    assert!(pyright.initialization_options.is_none());
 }
 
 #[test]
@@ -1320,6 +1386,59 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn conda_creates_named_environments_in_its_envs_directory() {
+    use crate::python::conda_create_args;
+    use std::path::Path;
+    assert_eq!(conda_create_args(Path::new("demo"), Some("3.12.4")), ["create", "-n", "demo", "-y", "python=3.12"]);
+    assert_eq!(conda_create_args(Path::new("/work/app/.conda"), None), ["create", "-p", "/work/app/.conda", "-y"]);
+    for path in [r"C:\envs\demo", "envs/demo", "D:demo", ".."] {
+        assert_eq!(conda_create_args(Path::new(path), None)[1], "-p", "{path}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_named_conda_environment_is_found_where_conda_put_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("miniconda3");
+    let conda = tmp.path().join("conda");
+    // `create -n <name>` makes <root>/envs/<name> with a copy of the base python; `env list` names every env.
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        &conda,
+        format!(
+            "#!/bin/sh\nroot='{root}'\nif [ \"$1\" = env ]; then echo '# conda environments:'; echo \"base  $root\"; \
+             for e in \"$root\"/envs/*/; do [ -d \"$e\" ] && echo \"$(basename \"$e\")  ${{e%/}}\"; done; exit 0; fi\n\
+             [ \"$1 $2\" = 'create -n' ] || exit 2\nmkdir -p \"$root/envs/$3/bin\"\ncp '{python}' \"$root/envs/$3/bin/python\"\necho created\n",
+            root = root.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&conda, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let base = python.clone();
+    let which = |tool: &str| (tool == "conda").then(|| conda.clone());
+    let create = || {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Conda,
+            &base,
+            Path::new("ds"),
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create().unwrap();
+    assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
+    let again = create().unwrap_err();
+    assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
 fn neutral_dir_is_fresh_and_empty() {
     let a = crate::python::neutral_dir().unwrap();
     let b = crate::python::neutral_dir().unwrap();
@@ -2461,7 +2580,10 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     // Another bare name for the interpreter comes back as the interpreter's own.
     let mut loaded = saved("python", "python3", &["app.py"], &[]);
     apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
-    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+    let mut normalized = without_derived(&loaded, root, &s);
+    assert_eq!(normalized.command, exe("python"));
+    apply_to_run_configs(std::slice::from_mut(&mut normalized), root, &s);
+    assert_eq!(normalized, loaded, "normalizing the name must preserve the resolved configuration");
 
     // A saved configuration follows a later interpreter change instead of a frozen PATH.
     let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
@@ -2587,6 +2709,20 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
     assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+    let mut reloaded = stored.clone();
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &settings);
+    assert_eq!(reloaded, config, "saving must preserve the complete resolved configuration");
+
+    // A saved bare member must also follow a different primary project's auto-detected venv.
+    let other_primary = root.join("other-primary");
+    let other_python = fake_venv(&other_primary, ".venv");
+    let mut moved = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut moved), &bare, Some(&other_primary), &settings);
+    let mut expected = run("python", "python3", &["main.py"]);
+    expected.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut expected), &bare, Some(&other_primary), &settings);
+    assert_eq!(moved.command, other_python.to_string_lossy());
+    assert_eq!(moved, expected, "the saved configuration must not freeze the original venv or PATH");
 
     // The member's explicit interpreter wins over the primary project's venv —
     // when it exists (bare names stay bare; a missing path falls back).
@@ -2734,4 +2870,51 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     std::fs::write(&real, "").unwrap();
     s.languages.python.interpreter = real.to_string_lossy().into_owned();
     assert_eq!(tool_install_environment(root, &s).commands["python"], real);
+}
+
+#[test]
+fn vue_module_resolution_plugin_follows_the_vue_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+    assert_eq!(plugins[0]["name"], "@vue/typescript-plugin");
+    assert_eq!(plugins[1]["name"], "openidea-vue-module-resolution");
+    let index = tmp.path().join("tsplugins/node_modules/openidea-vue-module-resolution/index.js");
+    assert_eq!(std::fs::read_to_string(&index).unwrap(), include_str!("vue-module-resolution.js"));
+    // Running again replaces its own entry instead of stacking copies.
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+}
+
+#[test]
+fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
+    assert!(cfg.initialization_options.is_none());
 }

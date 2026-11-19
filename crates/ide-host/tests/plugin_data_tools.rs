@@ -80,7 +80,8 @@ impl Harness {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn database_calls_enforce_grants_trust_ownership_and_uninstall_lifetime() {
-    let f = Harness::new();
+    // Nothing here tests the command budget, and a slow runner's first calls can exceed 250 ms.
+    let f = Harness::with_timeout(Duration::from_secs(10));
     assert!(f.run("sources", None).is_err());
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let source = f.source();
@@ -138,7 +139,7 @@ async fn database_connect_asks_only_the_invoking_window_and_uses_normal_connecti
     assert_eq!(window, "main");
     assert!(!f.plugins.answer_command("second", &request, ide_host::plugins::CommandAnswer::Value(None)));
     tokio::time::sleep(Duration::from_millis(350)).await; // Password entry can outlive the 250 ms command budget.
-    ops::db::connect(&f.host, "main", &source).await.unwrap();
+    ops::db::db_connect(&f.host, "main", source.to_string()).await.unwrap();
     f.plugins.answer_command("main", &request, ide_host::plugins::CommandAnswer::Value(None));
     run.await.unwrap().unwrap();
     assert!(!f.host.project("main").unwrap().db.connected().is_empty());

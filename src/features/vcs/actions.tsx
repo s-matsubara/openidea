@@ -60,7 +60,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { currentRepo, isJjPath, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { currentRepo, isJjPath, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { openJjWorkingDiffForLine } from "./jjDiffInput";
 import { tx } from "@/platform/i18n";
@@ -78,6 +78,16 @@ function argPath(arg: unknown): string | undefined {
   if (arg && typeof arg === "object" && "path" in arg && typeof (arg as { path: unknown }).path === "string")
     return (arg as { path: string }).path;
   return undefined;
+}
+
+/** Whether Git has no commit of the file: unversioned, ignored, or added and not committed yet. */
+function hasNoCommits(status: { staged: string | null; unstaged: string | null }): boolean {
+  return (
+    status.staged === "added" ||
+    status.unstaged === "untracked" ||
+    status.unstaged === "ignored" ||
+    status.staged === "ignored"
+  );
 }
 
 function argPaths(arg: unknown): string[] | undefined {
@@ -438,7 +448,7 @@ export function registerVcsActions(): () => void {
       when: FILE_VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -459,6 +469,7 @@ export function registerVcsActions(): () => void {
           useCommit.getState().groupByStaging,
           undefined,
           useCommit.getState().groupByRepo,
+          useCommit.getState().showUnversionedSeparately,
         );
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.
@@ -593,6 +604,15 @@ export function registerVcsActions(): () => void {
       toggled: () => {
         const ed = activeEditor();
         return !!ed && annotationsShown(ed.view);
+      },
+      // As in IDEA, a file Git has no commit of (unversioned, ignored, or added and not yet
+      // committed) has nothing to annotate; shown annotations can always be closed.
+      enabled: ({ arg }) => {
+        const ed = activeEditor();
+        const path = argPath(arg) ?? ed?.ctx.path;
+        if (!path || (ed?.ctx.path === path && annotationsShown(ed.view))) return true;
+        const status = statusOf(path);
+        return !status || !hasNoCommits(status);
       },
       run: ({ arg }) => annotate(arg),
     },

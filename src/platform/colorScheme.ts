@@ -318,7 +318,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("markupTag", "Markup › Tag", [LD], "tag"),
   syn("markupAttribute", "Markup › Attribute", [LD], "attribute"),
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
-  ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
+  ...[1, 2, 3, 4, 5].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
   // Python's tree mirrors PyCharm's colour page (PythonColorsPage.java): every key the editor can
   // restyle, in the page's order. Language-scoped like java.*: shared-token attributes reuse the
@@ -497,13 +497,46 @@ function blocks(css: string): Array<{ selectors: string[]; decls: Vars }> {
         if (!selector.startsWith("@")) {
           const decls: Vars = new Map();
           for (const m of text.slice(start, i).matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) decls.set(m[1]!, m[2]!.trim());
-          out.push({ selectors: selector.split(",").map((s) => s.trim()), decls });
+          out.push({ selectors: splitSelectors(selector), decls });
         }
         start = i + 1;
       }
     }
   }
   return out;
+}
+
+/** A selector list split at its top-level commas, not those inside `:not(…)`. */
+function splitSelectors(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(list.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(list.slice(start).trim());
+  return out;
+}
+
+/** Whether a `[data-red-green]` rule of tokens.css applies to a window showing built-in scheme `id`. */
+function redGreenApplies(id: SchemeId, selector: string): boolean {
+  if (!selector.includes("[data-red-green]") || typeof document === "undefined") return false;
+  const root = document.implementation.createHTMLDocument("").documentElement;
+  root.dataset.theme = themeKind(id);
+  root.dataset.redGreen = "";
+  if (id === "dark-hc") root.dataset.contrast = "high";
+  else if (id !== "light" && id !== "dark") root.dataset.colorTheme = id;
+  try {
+    return root.matches(selector);
+  } catch {
+    return false;
+  }
 }
 
 function themeSelectors(id: SchemeId): string[] {
@@ -515,7 +548,7 @@ function themeSelectors(id: SchemeId): string[] {
 
 let source: string = tokensCss;
 let parsed: ReturnType<typeof blocks> | null = null;
-const resolvedCache = new Map<SchemeId, Vars>();
+const resolvedCache = new Map<string, Vars>();
 
 /** Replaces the token source (tests: CSS `?raw` imports are empty under vitest). */
 export function _setSchemeSource(css: string) {
@@ -524,15 +557,22 @@ export function _setSchemeSource(css: string) {
   resolvedCache.clear();
 }
 
-/** All tokens of a theme with `var()` references resolved (so they survive under another theme). */
-export function schemeTokens(id: SchemeId, css: string = source): Vars {
-  const cached = css === source ? resolvedCache.get(id) : undefined;
+/**
+ * All tokens of a theme with `var()` references resolved (so they survive under another theme);
+ * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it.
+ */
+export function schemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+  const key = redGreen ? `${id}+red-green` : id;
+  const cached = css === source ? resolvedCache.get(key) : undefined;
   if (cached) return cached;
   const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
   const own = themeSelectors(id);
   const merged: Vars = new Map();
   for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
   for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
+  if (redGreen)
+    for (const b of all)
+      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
   const resolve = (value: string, depth = 0): string =>
     depth > 8
       ? value
@@ -549,7 +589,7 @@ export function schemeTokens(id: SchemeId, css: string = source): Vars {
         );
   const out: Vars = new Map();
   for (const [k, v] of merged) out.set(k, resolve(v));
-  if (css === source) resolvedCache.set(id, out);
+  if (css === source) resolvedCache.set(key, out);
   return out;
 }
 
@@ -621,11 +661,18 @@ export function overrideDeclarations(
     const o = overrides[attr.id] ?? (attr.id === "selectionForeground" ? overrides.selection : undefined);
     if (!o) continue;
     if (setOrCleared(o.foreground) && attr.fg) {
+      // No foreground means the default text colour, not invisible text.
       const keepsTextVisible =
         attr.id === "selectionForeground" || attr.id === "searchResult" || attr.id === "searchResultCurrent";
-      out.push([attr.fg, keepsTextVisible && o.foreground === CLEAR_COLOR ? "currentColor" : o.foreground]);
-      // Keep Console Colors and the terminal ANSI palette in sync.
-      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, o.foreground]);
+      const fg =
+        o.foreground === CLEAR_COLOR && attr.id !== "text"
+          ? keepsTextVisible
+            ? "currentColor"
+            : "var(--fg-editor)"
+          : o.foreground!;
+      out.push([attr.fg, fg]);
+      // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
+      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, fg]);
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
@@ -702,10 +749,12 @@ export function listSchemes(customs: CustomColorSchemes = {}) {
   return [...SCHEMES, ...Object.entries(customSchemes(customs)).map(([id, s]) => ({ id, name: s.name }))];
 }
 
-export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}): Vars {
+/** With `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours. */
+export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}, redGreen = false): Vars {
   const custom = customSchemes(customs)[id];
-  const base = isBuiltinTheme(id) ? id : (custom?.parent ?? "light");
-  const tokens = new Map(schemeTokens(base));
+  const builtin = isBuiltinTheme(id);
+  const base = builtin ? id : (custom?.parent ?? "light");
+  const tokens = new Map(schemeTokens(base, source, redGreen && builtin));
   for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
   return tokens;
 }
@@ -745,12 +794,13 @@ export function resolvedAttribute(
   id: string,
   attrId: string,
   customs: CustomColorSchemes = {},
+  redGreen = false,
 ): TextAttributesOverride {
   const attr = ATTRIBUTES.find((a) => a.id === attrId);
   if (!attr) return {};
   const custom = customSchemes(customs)[id];
   const own = custom?.attributes[attr.id];
-  const vars = resolvedSchemeTokens(id, customs);
+  const vars = resolvedSchemeTokens(id, customs, redGreen);
   if (attr.language)
     for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
 
@@ -806,7 +856,7 @@ export function schemeCss(
   const el = root === undefined ? (typeof document !== "undefined" ? document.documentElement : null) : root;
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
-    const tokens = resolvedSchemeTokens(id, valid);
+    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"));
     for (const [k, v] of tokens)
       if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
         decls.push([k, v]);
@@ -829,7 +879,9 @@ export function schemeCss(
     ]
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
-    if (languageBody.length) css += `.cm-editor[data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+    // The editor of that language, and a block of it in another editor (a Markdown code fence).
+    if (languageBody.length)
+      css += `.cm-editor[data-language="${language}"], .cm-editor [data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
   }
   // Apply only the Rust attributes that the scheme defines. Unconfigured roles keep the
   // existing syntax/semantic styling, including static, mutable and deprecated modifiers.

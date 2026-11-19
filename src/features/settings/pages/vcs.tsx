@@ -238,6 +238,22 @@ function LargeFilesRow() {
   );
 }
 
+function InlineBlameRows() {
+  const [show] = useSetting<boolean>("vcs.git.inlineBlame");
+  return (
+    <>
+      <BoundToggle k="vcs.git.inlineBlame" label="Show inline blame for the current line" />
+      <Indented>
+        <BoundToggle
+          k="vcs.git.inlineBlameClickable"
+          label="Open the commit when the inline blame is clicked"
+          disabled={!show}
+        />
+      </Indented>
+    </>
+  );
+}
+
 function PushDialogRows() {
   const [show] = useSetting<boolean>("vcs.git.showPushDialog");
   return (
@@ -292,6 +308,31 @@ function MessageLimits() {
         <BoundToggle k="vcs.commit.wrapAtMargin" label="Wrap when typing reaches right margin" disabled={!limitBody} />
       </Indented>
     </>
+  );
+}
+
+function AgentInstructionsRow() {
+  const [value, set] = useSetting<string>("vcs.commit.agentInstructions");
+  const id = useId();
+  return (
+    <Row
+      label="Instructions for Generate Commit Message with Agent"
+      htmlFor={id}
+      hint="Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in."
+      stacked
+    >
+      <textarea
+        id={id}
+        className={styles.instructions}
+        rows={4}
+        spellCheck={false}
+        placeholder={tx(
+          "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
+        )}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+      />
+    </Row>
   );
 }
 
@@ -421,6 +462,17 @@ export const VCS_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Commit Message Generation",
+        options: [
+          {
+            kind: "custom",
+            label: "Instructions for Generate Commit Message with Agent",
+            keywords: ["agent", "ai", "prompt", "conventional commits"],
+            component: AgentInstructionsRow,
+          },
+        ],
+      },
+      {
         title: "Commit Checks",
         options: [
           {
@@ -546,7 +598,12 @@ export const VCS_PAGES: PageSpec[] = [
             keywords: ["Test", "git version"],
             component: GitExecutableRow,
           },
-          { kind: "toggle", key: "vcs.git.inlineBlame", label: "Show inline blame for the current line" },
+          {
+            kind: "custom",
+            label: "Show inline blame for the current line",
+            keywords: ["Open the commit when the inline blame is clicked"],
+            component: InlineBlameRows,
+          },
           {
             kind: "toggle",
             key: "vcs.git.showBranchInProjectView",
@@ -632,9 +689,17 @@ export const VCS_PAGES: PageSpec[] = [
                 k="vcs.git.incomingCheck"
                 label="Explicitly check for incoming commits on remotes"
                 options={INCOMING}
-                hint="Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure."
+                hint="Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure."
               />
             ),
+          },
+          {
+            kind: "number",
+            key: "vcs.git.incomingCheckInterval",
+            label: "Check for incoming commits every",
+            ...L.incomingCheckInterval,
+            integer: true,
+            unit: "min",
           },
         ],
       },
