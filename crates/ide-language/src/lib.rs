@@ -124,9 +124,11 @@ pub struct FrameworkFiles {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "kebab-case"))]
+#[serde(rename_all = "camelCase")]
 pub struct IndentConfig {
+    #[serde(alias = "tab-size")]
     pub tab_size: u32,
+    #[serde(alias = "insert-spaces")]
     pub insert_spaces: bool,
 }
 

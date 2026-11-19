@@ -43,11 +43,11 @@ export interface JetBrainsImportPlan {
 
 /** The settings the import builds on (`settingsGetGlobal`). */
 interface CurrentSettings {
-  editor: {
-    fontFamily: string;
-    fontSize: number | null;
-    customSchemes: unknown;
-    colorOverrides: Record<string, unknown>;
+  editor?: {
+    fontFamily?: string;
+    fontSize?: number | null;
+    customSchemes?: unknown;
+    colorOverrides?: Record<string, unknown>;
     codeStyle?: { languages?: Record<string, LanguageCodeStyle> };
   };
   customKeymaps?: Record<string, CustomKeymap>;
@@ -139,10 +139,10 @@ function codeScheme(files: Record<string, string>, name: string): Element | unde
 
 export async function planJetBrainsImport(
   bundle: JetBrainsSettings,
-  current: CurrentSettings,
+  current: CurrentSettings = {},
   fontHeight: FontHeight = measuredFontHeight,
 ): Promise<JetBrainsImportPlan> {
-  const { editor } = current;
+  const { editor = {} } = current;
   const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [], unknownActions: [] };
   const add = (key: string, value: string | number | boolean | undefined, label: string, shown?: string) => {
     if (value === undefined) return;
@@ -151,7 +151,8 @@ export async function planJetBrainsImport(
   };
 
   let customs = customSchemes(editor.customSchemes);
-  let overrides = editor.colorOverrides;
+  const originalOverrides = editor.colorOverrides ?? {};
+  let overrides = originalOverrides;
   const imported = new Map<string, string>(); // name in the .icls → scheme id
   for (const [file, text] of Object.entries(bundle.files)) {
     if (!file.startsWith("colors/")) continue;
@@ -173,7 +174,7 @@ export async function planJetBrainsImport(
   }
   if (imported.size) {
     plan.writes.push(["editor.customSchemes", customs]);
-    if (overrides !== editor.colorOverrides) plan.writes.push(["editor.colorOverrides", overrides]);
+    if (overrides !== originalOverrides) plan.writes.push(["editor.colorOverrides", overrides]);
     const global = options(bundle.files["options/colors.scheme.xml"], "EditorColorsManagerImpl", "global_color_scheme");
     const id = imported.get(global.get("") ?? "");
     if (id) add("editor.colorScheme", id, tx("Current color scheme"), customs[id]?.name);
@@ -216,7 +217,7 @@ export async function planJetBrainsImport(
   // spacing; and the default spacing still applies when only the font changed.
   const base = size ?? editor.fontSize;
   if (base && (family || size || spacing)) {
-    const natural = (await fontHeight(family ?? editor.fontFamily, base)) ?? base * DEFAULT_LINE_SPACING;
+    const natural = (await fontHeight(family ?? editor.fontFamily ?? "", base)) ?? base * DEFAULT_LINE_SPACING;
     add("editor.lineHeight", Math.ceil(natural * (spacing ?? DEFAULT_LINE_SPACING)), tx("Line height"));
   }
   add("editor.ligatures", bool(font.get("USE_LIGATURES")), tx("Enable ligatures"));

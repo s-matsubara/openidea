@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { Icon, Input, T, fileIconName } from "@/ui";
-import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
+import { commands, isTauri, type LanguageInfo } from "@/platform/ipc";
 import {
   addPattern,
   effectivePatterns,

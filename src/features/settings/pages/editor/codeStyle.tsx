@@ -9,7 +9,7 @@
  */
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
-import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
+import { commands, isTauri, type LanguageInfo } from "@/platform/ipc";
 import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { NumberInput, Row, Select } from "../../components/Form";

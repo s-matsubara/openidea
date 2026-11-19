@@ -317,3 +317,10 @@ describe("planJetBrainsImport", () => {
     expect(plan.writes).toEqual([]);
   });
 });
+
+it.each([undefined, {}, { editor: {} }])("imports into default settings when settings are %j", async (current) => {
+  const plan = await planJetBrainsImport(webstorm, current, fontHeight);
+  const writes = Object.fromEntries(plan.writes);
+  expect(writes["editor.customSchemes"]).toBeDefined();
+  expect(writes["editor.fontSize"]).toBe(17);
+});

@@ -28,9 +28,9 @@ pub fn decode_bytes(bytes: &[u8]) -> String {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_owned();
     }
-    let mut detector = chardetng::EncodingDetector::new();
+    let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
     detector.feed(bytes, true);
-    let (text, _) = detector.guess(None, true).decode_without_bom_handling(bytes);
+    let (text, _) = detector.guess(None, chardetng::Utf8Detection::Allow).decode_without_bom_handling(bytes);
     text.into_owned()
 }
 

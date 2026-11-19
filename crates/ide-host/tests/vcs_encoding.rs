@@ -73,6 +73,7 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
     project.documents.save(doc.id).unwrap();
     vcs::vcs_stage_hunks(&host, "main", path.clone(), vec![0]).await.unwrap();
     let repo = ide_vcs::Repo::discover(&root).unwrap().unwrap();
+    repo.set_execution_allowed(true);
     assert_eq!(
         repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(),
         ide_vfs::encode(&old.replace("value = 1", "value = 2"), "gbk", false).unwrap()

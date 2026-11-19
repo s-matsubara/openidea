@@ -16,7 +16,7 @@ import {
   type DocumentInfo,
   type DocumentLanguage,
   type FoldRange,
-  type LanguageInfo_Serialize,
+  type LanguageInfo as GeneratedLanguageInfo,
   type LineEnding,
   type OutlineItem,
   type Range,
@@ -28,7 +28,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { EditorState } from "@codemirror/state";
 import { customRegions } from "./cm/regions";
 
-export type LanguageInfo = LanguageInfo_Serialize;
+export type LanguageInfo = GeneratedLanguageInfo;
 
 export interface DocPatchedEvent {
   workspaceEdit?: boolean;

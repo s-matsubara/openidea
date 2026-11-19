@@ -610,7 +610,7 @@ impl Kinds {
 }
 
 /// Field name of `child` in `parent`, and its previous / next sibling.
-fn neighbours<'t>(parent: &Node<'t>, child: &Node<'t>) -> (Option<&'static str>, Option<Node<'t>>, Option<Node<'t>>) {
+fn neighbours<'t>(parent: &Node<'t>, child: &Node<'t>) -> (Option<&'t str>, Option<Node<'t>>, Option<Node<'t>>) {
     let mut cursor = parent.walk();
     if !cursor.goto_first_child() {
         return (None, None, None);
@@ -659,7 +659,7 @@ fn is_type_like_parent(kind: &str) -> bool {
 }
 
 /// Field name of `node` in its parent.
-pub(crate) fn field_name(node: &Node) -> Option<&'static str> {
+pub(crate) fn field_name<'t>(node: &Node<'t>) -> Option<&'t str> {
     let parent = node.parent()?;
     let mut cursor = parent.walk();
     if !cursor.goto_first_child() {

@@ -125,6 +125,8 @@ impl WebServer {
     /// `dir` as a served root, listening from now on if it was not yet. Its key is its name,
     /// made unique.
     async fn root(&self, dir: &Path, serves: Serves) -> IdeResult<Arc<Root>> {
+        let canonical = tokio::fs::canonicalize(dir).await.map_err(|e| IdeError::invalid(e.to_string()))?;
+        let dir = canonical.as_path();
         let mut roots = self.roots.lock().await;
         if let Some(root) = roots.values().find(|r| r.dir == dir && r.serves == serves) {
             return Ok(root.clone());
@@ -256,7 +258,9 @@ async fn serve(mut sock: TcpStream, root: &Root) -> std::io::Result<()> {
             ));
         }
     }
-    out.push_str("Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n");
+    out.push_str(
+        "Content-Security-Policy: connect-src 'self'\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n",
+    );
     // A page of another origin (another root's too) cannot load what is served here as a
     // script, style or image. Browsers do not apply this to frames or navigations.
     out.push_str("Cross-Origin-Resource-Policy: same-origin\r\nConnection: close\r\n\r\n");
@@ -750,5 +754,42 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let server = WebServer { home: Some(std::fs::canonicalize(&home).unwrap()), ..WebServer::new() };
         assert!(server.url_for(None, &home.join("missing.html")).await.is_err());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonical_paths_stay_within_the_registered_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        let outside = dir.path().join("site-private");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("page.html"), "inside").unwrap();
+        std::fs::write(root.join("payload"), "index via symlink").unwrap();
+        std::fs::create_dir(root.join("safe")).unwrap();
+        symlink(root.join("payload"), root.join("safe/index.html")).unwrap();
+        std::fs::write(outside.join("index.html"), "secret").unwrap();
+        symlink(outside.join("index.html"), root.join("escape.html")).unwrap();
+        symlink(&outside, root.join("escape-dir")).unwrap();
+        symlink(outside.join("index.html"), root.join("sub/index.html")).unwrap();
+        symlink(root.join("page.html"), root.join("internal.html")).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&root, &alias).unwrap();
+
+        let server = WebServer::new();
+        let url = server.url_for(Some(&root), &root.join("page.html")).await.unwrap();
+        assert_eq!(url, server.url_for(Some(&alias), &alias.join("page.html")).await.unwrap());
+        let base = url.trim_end_matches("/page.html");
+        for path in ["escape.html", "escape-dir", "escape-dir/", "escape-dir/index.html", "sub/"] {
+            let response = get(&format!("{base}/{path}"), None).await;
+            assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
+            assert!(!response.contains("secret"));
+        }
+        assert!(get(&format!("{base}/internal.html"), None).await.ends_with("inside"));
+        let index = get(&format!("{base}/safe/"), None).await;
+        assert!(index.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(index.contains("Content-Security-Policy: connect-src 'self'"));
+        assert!(index.ends_with("index via symlink"));
     }
 }
