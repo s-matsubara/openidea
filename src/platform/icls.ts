@@ -69,6 +69,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   MARKDOWN_CODE_SPAN: "mdCode",
   MARKDOWN_LINK_TEXT: "mdLink",
   REGEXP: "regexp",
+  "JSON.PROPERTY_KEY": "json.propertyKey",
+  "JSON.KEYWORD": "json.keyword",
 };
 const LANGUAGE_KEYS: Record<string, string> = {
   KEYWORD: "keyword",
@@ -519,6 +521,7 @@ export function exportIcls(
     ...(attr.effect && isHexColor(tokens.get(attr.effect)) ? { effectColor: tokens.get(attr.effect) } : {}),
     ...tokenEffect(attr),
     ...custom?.attributes[attr.id],
+    ...(attr.id === "selectionForeground" && !overrides.selectionForeground ? overrides.selection : {}),
     ...overrides[attr.id],
   });
   const colors: string[] = [];

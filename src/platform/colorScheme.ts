@@ -29,6 +29,8 @@ export interface AttributeDef {
   effect?: string;
   /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
   token?: string;
+  /** Token used in the preview when this language-specific colour is unset. */
+  fallbackToken?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
   /** The attribute's renderer applies font style and effects (tokens, the Git surfaces,
@@ -132,12 +134,14 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     id: "searchResult",
     name: "Search result",
     path: ["General", "Search Results"],
+    fg: "--fg-editor-search-match",
     bg: "--bg-search-match",
   },
   {
     id: "searchResultCurrent",
     name: "Current search result",
     path: ["General", "Search Results"],
+    fg: "--fg-editor-search-match-current",
     bg: "--bg-search-match-current",
   },
   {
@@ -391,7 +395,14 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
   ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  { ...syn("json.propertyKey", "Property key", ["JSON"], "property"), language: "JSON" },
+  { ...syn("json.keyword", "Keyword", ["JSON"], "keyword"), language: "JSON" },
 ];
+
+const SCOPED_LANGUAGES = new Set([
+  ...Object.values(SCHEME_LANGUAGE_SCOPES),
+  ...ATTRIBUTES.flatMap((attr) => (attr.language ? [attr.language] : [])),
+]);
 
 // --- scheme base values ------------------------------------------------------
 
@@ -602,11 +613,18 @@ export function overrideDeclarations(
   if (!overrides) return out;
   for (const attr of ATTRIBUTES) {
     if (attr.language !== language) continue;
-    const o = overrides[attr.id];
+    const o = overrides[attr.id] ?? (attr.id === "selectionForeground" ? overrides.selection : undefined);
     if (!o) continue;
     if (setOrCleared(o.foreground) && attr.fg) {
       // No foreground means the default text colour, not invisible text.
-      const fg = o.foreground === CLEAR_COLOR && attr.id !== "text" ? "var(--fg-editor)" : o.foreground!;
+      const keepsTextVisible =
+        attr.id === "selectionForeground" || attr.id === "searchResult" || attr.id === "searchResultCurrent";
+      const fg =
+        o.foreground === CLEAR_COLOR && attr.id !== "text"
+          ? keepsTextVisible
+            ? "currentColor"
+            : "var(--fg-editor)"
+          : o.foreground!;
       out.push([attr.fg, fg]);
       // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
       if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, fg]);
@@ -742,7 +760,7 @@ export function resolvedAttribute(
     for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
 
   const token = attr.token;
-  const foreground = attr.fg ? vars.get(attr.fg) : undefined;
+  const foreground = (attr.fg && vars.get(attr.fg)) ?? (attr.fallbackToken && vars.get(`--syn-${attr.fallbackToken}`));
   const background = attr.bg ? vars.get(attr.bg) : token ? vars.get(`--syn-${token}-bg`) : undefined;
   const effectCss = attr.effect ? vars.get(attr.effect) : token ? vars.get(`--syn-${token}-effect`) : undefined;
   const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
@@ -809,7 +827,7 @@ export function schemeCss(
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
-  for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
+  for (const language of SCOPED_LANGUAGES) {
     const languageBody = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),

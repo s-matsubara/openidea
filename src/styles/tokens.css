@@ -197,6 +197,7 @@ html {
   --border-indent-guide: #323438;
   --border-indent-guide-active: #4e5157;
   --border-right-margin: #323438;
+  --fg-editor-selection: currentColor;
   --bg-editor-selection: #214283;
   --bg-editor-selection-inactive: #1d3460;
   --fg-editor-selection: inherit;
@@ -428,6 +429,8 @@ html {
   --bg-search-match: #ba9752;
   --bg-search-match-current: #f2c55c;
   --fg-search-match: #191a1c;
+  --fg-editor-search-match: var(--fg-search-match);
+  --fg-editor-search-match-current: var(--fg-search-match);
   --bg-dialog: #191a1c;
   --bg-popup-inline: #26282c;
   --bg-popup-advertiser: #26282c;

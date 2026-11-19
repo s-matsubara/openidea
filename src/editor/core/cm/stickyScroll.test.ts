@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { stickyHighlights } from "@/editor/api";
+import { Decoration } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
@@ -82,4 +84,17 @@ describe("sticky line content", () => {
     // The `(` in the string is not a bracket.
     expect(brackets(el)).toEqual(["(2", "(3", ")3", "{3"]);
   });
+});
+
+it("preserves semantic highlights together with rainbow brackets in pinned headers", () => {
+  const state = EditorState.create({
+    doc: "Widget(value)",
+    extensions: stickyHighlights.of(Decoration.set([Decoration.mark({ class: "semantic-type" }).range(0, 6)])),
+  });
+  const target = document.createElement("span");
+  const scanner = new BracketScanner(DEFAULT_RAINBOW_OPTIONS);
+  renderLineContent(state, 1, target, scanner.marks(state, 0, state.doc.length), scanner.colors);
+  expect(target.textContent).toBe("Widget(value)");
+  expect(target.querySelector(".semantic-type")?.textContent).toBe("Widget");
+  expect([...target.querySelectorAll(".cm-rainbow-bracket-1")].map((node) => node.textContent)).toEqual(["(", ")"]);
 });

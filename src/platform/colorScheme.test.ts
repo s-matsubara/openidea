@@ -422,3 +422,9 @@ describe("color schemes", () => {
     expect(resolvedAttribute("dark", "error")).toMatchObject({ effect: "wave", bold: false, italic: false });
   });
 });
+
+it("preserves legacy fork selection foreground overrides", () => {
+  expect(schemeCss("dark", { dark: { selection: { foreground: "#abcdef" } } })).toContain(
+    "--fg-editor-selection: #abcdef !important",
+  );
+});

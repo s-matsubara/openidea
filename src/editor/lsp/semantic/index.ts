@@ -16,6 +16,7 @@ import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
 import { Prec, StateEffect, StateField, type EditorState, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { stickyHighlights } from "@/editor/api";
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
@@ -156,7 +157,7 @@ export function semanticRanges(
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes });
+    semantics?.tokenClasses?.({ type, text: doc.sliceString(from, to), modifiers: names, kind, classes });
     const local =
       rainbow &&
       !constant &&
@@ -334,5 +335,9 @@ export function semanticExtension(): Extension {
   // `Prec.high`, and at equal precedence the later source ends up outside —
   // its inner span then re-set the colour (a field's `variableName` grey hid
   // `cm-sem-property`).
-  return [semanticField, semanticPlugin, Prec.highest(EditorView.decorations.from(semanticField))];
+  return [
+    semanticField,
+    semanticPlugin,
+    Prec.highest([EditorView.decorations.from(semanticField), stickyHighlights.from(semanticField)]),
+  ];
 }

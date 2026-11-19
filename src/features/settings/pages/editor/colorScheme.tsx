@@ -174,7 +174,7 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   const bold = attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit";
   const effect = attr.defaultEffect === "underline" ? "underline" : "none";
   return {
-    color: `var(--syn-${t})`,
+    color: attr.fallbackToken ? `var(--syn-${t}, var(--syn-${attr.fallbackToken}))` : `var(--syn-${t})`,
     fontWeight: `var(--syn-${t}-bold, ${bold})` as CSSProperties["fontWeight"],
     fontStyle: `var(--syn-${t}-italic, ${italic})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,

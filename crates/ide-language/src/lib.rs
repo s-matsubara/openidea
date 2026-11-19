@@ -375,6 +375,17 @@ pub struct SymbolTag {
     pub bases: Vec<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::IndentConfig;
+
+    #[test]
+    fn indent_config_accepts_kebab_case_and_serializes_camel_case() {
+        let config: IndentConfig = toml::from_str("tab-size = 4\ninsert-spaces = true").unwrap();
+        assert_eq!(serde_json::to_value(config).unwrap(), serde_json::json!({ "tabSize": 4, "insertSpaces": true }));
+    }
+}
+
 /// One inline TS/JS `<script>` block of a Vue SFC / HTML document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptRegion {
