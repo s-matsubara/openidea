@@ -1,43 +1,70 @@
 name: Release
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.0); must already exist"
+        description: "Existing fork tag to release (vYYYY.x.x), reachable from main"
+        type: string
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
+  TAG: ${{ inputs.tag }}
+  # https://github.com/l0ng-ai/openidea/releases/download/v0.1.49/plugins-index.json
+  OPENIDEA_OFFICIAL_PLUGIN_KEYS: qeQbOdlTC+YSrUxSSSQZf8zGOmlA8nEBKRY15nPKN04=
 
 jobs:
-  # Creates (or reuses) one draft release that every platform build uploads into.
+  # Only this run may resume its draft. A separate dispatch must use a new tag.
   create-release:
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
+      commit_sha: ${{ steps.target.outputs.sha }}
       release_id: ${{ steps.release.outputs.id }}
     steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
-      - name: Tag matches app version
+      - id: target
+        name: Validate main dispatch and resolve target tag
+        uses: actions/github-script@v9
+        with:
+          script: |
+            if (context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main" ||
+                `${context.repo.owner}/${context.repo.repo}` !== "s-matsubara/openidea")
+              throw new Error("Release must be dispatched from s-matsubara/openidea main");
+            const tag = process.env.TAG;
+            if (!/^v[0-9]{4}\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag ?? ""))
+              throw new Error("Expected an explicit fork tag: vYYYY.x.x");
+            const { owner, repo } = context.repo;
+            let { data: { object } } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            for (let depth = 0; object.type === "tag" && depth < 8; depth++) {
+              ({ data: { object } } = await github.rest.git.getTag({ owner, repo, tag_sha: object.sha }));
+            }
+            if (object.type !== "commit" || !/^[0-9a-f]{40}$/.test(object.sha))
+              throw new Error("Tag must resolve to a commit");
+            const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+              owner, repo, basehead: `${object.sha}...main`,
+            });
+            if (comparison.merge_base_commit.sha !== object.sha)
+              throw new Error("Target tag must be reachable from main");
+            core.setOutput("sha", object.sha);
+      - uses: actions/checkout@v7
+        with: { ref: "${{ steps.target.outputs.sha }}" }
+      - name: Tag matches app versions
         run: |
-          app="v$(jq -r .version src-tauri/tauri.conf.json)"
-          if [ "$app" != "$TAG" ]; then
-            echo "::error::tag $TAG does not match tauri.conf.json version $app"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json, os, tomllib
+          tag = os.environ["TAG"]
+          versions = [json.load(open(p))["version"] for p in ["package.json", "src-tauri/tauri.conf.json"]]
+          versions.append(tomllib.load(open("src-tauri/Cargo.toml", "rb"))["package"]["version"])
+          if any(f"v{version}" != tag for version in versions):
+              raise SystemExit(f"Tag {tag} does not match app versions: {versions}")
+          PY
       # A shipped plugin API is frozen: its WIT must be the snapshot api_frozen.rs checks later
       # versions against (plugins/README.md, "Evolving the plugin API").
       - name: Plugin API snapshot matches wit/
@@ -49,121 +76,478 @@ jobs:
             exit 1
           fi
       - id: release
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
+        env:
+          COMMIT_SHA: ${{ steps.target.outputs.sha }}
         with:
           script: |
             const tag = process.env.TAG;
             const { owner, repo } = context.repo;
+            const marker = `<!-- openidea-release:${context.runId}:${process.env.COMMIT_SHA} -->`;
             const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
-              if (!existing.draft) core.setFailed(`release ${tag} is already published`);
+              if (!existing.draft || !existing.body?.includes(marker))
+                throw new Error(`Release ${tag} is published or belongs to another run; do not redispatch it`);
               core.setOutput("id", existing.id);
               return;
             }
-            // Prereleases are skipped: the notes span stable release to stable release.
-            const previous = releases.find((r) => !r.draft && !r.prerelease);
-            const { data: notes } = await github.rest.repos.generateReleaseNotes({
-              owner, repo, tag_name: tag, previous_tag_name: previous?.tag_name,
-            });
             const { data } = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: `OpenIDEA ${tag}`,
-              draft: true, prerelease: tag.includes("-"), body: notes.body,
+              target_commitish: process.env.COMMIT_SHA,
+              draft: true, prerelease: false, generate_release_notes: true, body: marker,
             });
             core.setOutput("id", data.id);
 
-  binaries:
-    permissions:
-      contents: write
+  build:
     needs: create-release
-    uses: ./.github/workflows/release-build.yml
-    with:
-      tag: ${{ github.event.inputs.tag || github.ref_name }}
-      release_id: ${{ needs.create-release.outputs.release_id }}
-    secrets: inherit
-
-  # The official plugins, signed, and the marketplace index released apps read
-  # (releases/latest/download/plugins-index.json). They are not in the
-  # installers: users install them from Settings › Plugins. Without the
-  # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
-  # writes) nothing is published and the release goes on. The index also lists
-  # the community plugins of the registry (COMMUNITY_PLUGINS_INDEX; refreshed
-  # between releases by plugins-index.yml), and the release carries the
-  # openidea-plugin tool for Linux x64, which that workflow and the registry's
-  # checks run.
-  plugins:
-    permissions:
-      contents: write
-    needs: create-release
-    name: Official plugins
-    runs-on: ubuntu-22.04
+    name: Build (${{ matrix.name }})
     env:
-      SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+      # Keep desktop builds on the Thin LTO profile used by upstream.
+      CARGO_PROFILE_RELEASE_LTO: thin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          # - name: macOS x64
+          #   os: macos-latest
+          #   target: x86_64-apple-darwin
+          - name: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          # - name: Linux arm64
+          #   os: ubuntu-22.04-arm
+          #   target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
     steps:
-      - id: key
-        run: |
-          if [ -z "$SIGNING_KEY" ]; then
-            echo "::warning::PLUGIN_SIGNING_KEY is not set: the official plugins are not published"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/checkout@v5
-        if: steps.key.outputs.skip != 'true'
-        with: { ref: "${{ env.TAG }}" }
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.key.outputs.skip != 'true'
-        with: { targets: wasm32-wasip2 }
-      - uses: Swatinem/rust-cache@v2
-        if: steps.key.outputs.skip != 'true'
-        with: { key: release-plugins }
-      - uses: pnpm/action-setup@v5
-        if: steps.key.outputs.skip != 'true'
+      - &owned-draft
+        name: Require this run's unpublished release
+        uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          COMMIT_SHA: ${{ needs.create-release.outputs.commit_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.TAG;
+            const sha = process.env.COMMIT_SHA;
+            const marker = `<!-- openidea-release:${context.runId}:${sha} -->`;
+            const { data: release } = await github.rest.repos.getRelease({
+              owner, repo, release_id: Number(process.env.RELEASE_ID),
+            });
+            if (!release.draft || release.tag_name !== tag || !release.body?.includes(marker))
+              throw new Error("Refusing to modify a published, unrelated or foreign-run release");
+            let { data: { object } } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            for (let depth = 0; object.type === "tag" && depth < 8; depth++) {
+              ({ data: { object } } = await github.rest.git.getTag({ owner, repo, tag_sha: object.sha }));
+            }
+            if (object.type !== "commit" || object.sha !== sha)
+              throw new Error("Target tag moved since validation; refusing to continue");
+      - uses: actions/checkout@v7
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
+      - uses: pnpm/action-setup@v6
         with: { version: 11 }
-      - uses: actions/setup-node@v5
-        if: steps.key.outputs.skip != 'true'
-        with: { node-version: 22 }
-      # Builds the web pages; fails when a checked-in component isn't built from these sources.
-      - name: Build
-        if: steps.key.outputs.skip != 'true'
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "${{ matrix.target }}"
+          env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET OPENIDEA_OFFICIAL_PLUGIN_KEYS"
+      - id: workspace-cache
+        uses: ./.github/actions/release-cache
+        with: { scope: desktop, target: "${{ matrix.target }}" }
+      - name: Linux deps
+        if: runner.os == 'Linux'
         run: |
-          plugins/build.sh --check
-          cargo build --release --locked -p ide-host --bin openidea-plugin
-      - name: Pack, index and upload
-        if: steps.key.outputs.skip != 'true'
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      # Tauri signs both macOS bundles here. Notary and updater credentials
+      # are supplied only to the later macOS job.
+      - name: Build and code-sign macOS bundles
+        if: runner.os == 'macOS'
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_CERTIFICATE:?Missing Developer ID certificate}"
+          : "${APPLE_SIGNING_IDENTITY:?Missing Developer ID signing identity}"
+          pnpm tauri build --target "$TARGET" --bundles app,dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          bundle="target/$TARGET/release/bundle"
+          app="$bundle/macos/OpenIDEA.app"
+          developer_id='anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+          codesign --verify --deep --strict "$app"
+          codesign --verify -R "$developer_id" "$app"
+          mkdir -p "$RUNNER_TEMP/macos-release"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/macos-release/OpenIDEA.app.zip"
+          for dmg in "$bundle"/dmg/*.dmg; do
+            codesign --verify -R "$developer_id" "$dmg"
+            cp "$dmg" "$RUNNER_TEMP/macos-release/"
+          done
+      - name: Save signed macOS bundles for notarization
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-release-${{ matrix.target }}
+          path: ${{ runner.temp }}/macos-release/
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+      - name: Export updater signing credentials when configured
+        if: runner.os != 'macOS'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for var in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [[ -n "${!var}" ]]; then
+              printf '%s<<__EOF__\n%s\n__EOF__\n' "$var" "${!var}" >> "$GITHUB_ENV"
+            fi
+          done
+      - uses: tauri-apps/tauri-action@v0
+        if: runner.os != 'macOS'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ env.TAG }}
+          args: --target ${{ matrix.target }}
+          uploadUpdaterJson: false
+      # Portable Windows builds (#1857): on Windows Tauri embeds the
+      # frontend in the exe and WebView2 is a system component, so zipping
+      # the raw exe gives an unpack-and-run alternative to the installers.
+      - name: Portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $target = "${{ matrix.target }}"
+          $arch = if ($target -like "x86_64*") { "x64" } else { "arm64" }
+          $version = $env:TAG -replace '^v', ''
+          $asset = "OpenIDEA_${version}_windows_${arch}_portable.zip"
+          $dir = "target/$target/release"
+          $files = @("$dir/openidea.exe")
+          if (Test-Path "$dir/WebView2Loader.dll") {
+            $files += "$dir/WebView2Loader.dll"
+          }
+          Compress-Archive -Path $files -DestinationPath $asset -Force
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
+          gh release upload $env:TAG $asset "$asset.sha256" --clobber
+      - name: Snapshot compiled workspace inputs
+        run: python3 scripts/release-cache.py capture
+      - uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.workspace-cache.outputs.paths }}
+          key: ${{ steps.workspace-cache.outputs.key }}
+      - name: Remove dependency-cache snapshot
+        run: rm -f target/.release-inputs.json
+
+  notarize-macos:
+    needs: [create-release, build]
+    name: Notarize macOS bundles
+    runs-on: macos-latest
+    steps:
+      - *owned-draft
+      - uses: actions/checkout@v7
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
+      - uses: pnpm/action-setup@v6
+        with: { version: 11 }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22.23.4, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: macos-release-*
+          path: ${{ runner.temp }}/notarization
+          merge-multiple: false
+      - name: Notarize, staple and upload
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           set -euo pipefail
-          tool="$PWD/target/release/openidea-plugin"
-          key="$RUNNER_TEMP/openidea.key"
-          out="$RUNNER_TEMP/market"
-          (umask 077 && printf '%s' "$SIGNING_KEY" > "$key")
-          trap 'rm -f "$key"' EXIT
-          mkdir -p "$out"
-          for dir in plugins/official/*/; do
-            id="$(sed -n 's/^id *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
-            version="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
-            "$tool" pack "$dir" --key "$key" --publisher openidea --out "$out/$id-$version.oiplugin"
+          : "${APPLE_ID:?Missing Apple ID}"
+          : "${APPLE_PASSWORD:?Missing Apple app-specific password}"
+          : "${APPLE_TEAM_ID:?Missing Apple team ID}"
+
+          notarize() {
+            local result
+            if ! result=$(xcrun notarytool submit "$1" --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait --output-format json) ||
+              ! jq -e '.status == "Accepted"' <<< "$result" >/dev/null; then
+              printf '%s\n' "$result"
+              return 1
+            fi
+          }
+
+          notarized_assets=()
+          version="${TAG#v}"
+          # download-artifact extracts a single match directly into the destination.
+          shopt -s nullglob
+          root="$RUNNER_TEMP/notarization"
+          images=("$root"/OpenIDEA_"${version}"_*.dmg "$root"/macos-release-*/OpenIDEA_"${version}"_*.dmg)
+          if (( ${#images[@]} == 0 )); then
+            echo "::error::Missing macOS build artifact"
+            exit 1
+          fi
+          for dmg in "${images[@]}"; do
+            dir="${dmg%/*}"
+            arch="${dmg##*_}"
+            arch="${arch%.dmg}"
+            app="$dir/OpenIDEA.app"
+            zip="$app.zip"
+            test -f "$zip" || { echo "::error::Incomplete macOS build artifact"; exit 1; }
+
+            notarize "$zip"
+            ditto -x -k "$zip" "$dir"
+            xcrun stapler staple "$app"
+            xcrun stapler validate "$app"
+
+            notarize "$dmg"
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            notarized_assets+=("$dmg")
+
+            if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+              archive="$dir/OpenIDEA_${arch}.app.tar.gz"
+              COPYFILE_DISABLE=1 tar -czf "$archive" -C "$dir" OpenIDEA.app
+              pnpm tauri signer sign --app-version "$version" "$archive"
+              notarized_assets+=("$archive" "$archive.sig")
+            fi
           done
-          # The published index's revocations, earlier keys and community plugins carry over.
-          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/plugins-index.json" \
-            -o "$out/plugins-index.json" || rm -f "$out/plugins-index.json"
-          # Downloads point at this release: older versions kept for older IDEs stay where they were published.
-          "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json" \
-            --download-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
-          "$tool" merge "$out/plugins-index.json" "$COMMUNITY_PLUGINS_INDEX" --keep openidea ||
-            echo "::warning::the community plugins were not refreshed"
-          gzip -9 -c "$tool" > "$out/openidea-plugin-linux-x86_64.gz"
-          gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" \
-            "$out/openidea-plugin-linux-x86_64.gz" --clobber
+          gh release upload "$TAG" "${notarized_assets[@]}" --clobber
+
+  # The remote development server, per host platform it can run on. The desktop
+  # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
+  # Linux builds are static (musl), so they run whatever the host's glibc.
+  server:
+    needs: create-release
+    name: Server (${{ matrix.os }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-musl, os: linux, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, os: linux, arch: aarch64 }
+          - { runner: macos-latest, target: aarch64-apple-darwin, os: macos, arch: aarch64 }
+          - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - *owned-draft
+      - uses: actions/checkout@v7
+        with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "server-${{ matrix.target }}"
+          env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
+      - id: workspace-cache
+        uses: ./.github/actions/release-cache
+        with: { scope: server, target: "${{ matrix.target }}" }
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: |
+          # musl-tools only ships `musl-gcc`; cc-rs would look for `<arch>-linux-musl-gcc`.
+          if [ "$RUNNER_OS" = Linux ]; then export CC_${TARGET//-/_}=musl-gcc; fi
+          cargo build --release --locked -p ide-host --bin openidea-server --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET: openidea-server-${{ matrix.os }}-${{ matrix.arch }}.gz
+        run: |
+          gzip -9 -c target/${{ matrix.target }}/release/openidea-server > "$ASSET"
+          if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+      - name: Snapshot compiled workspace inputs
+        run: python3 scripts/release-cache.py capture
+      - uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.workspace-cache.outputs.paths }}
+          key: ${{ steps.workspace-cache.outputs.key }}
+      - name: Remove dependency-cache snapshot
+        run: rm -f target/.release-inputs.json
+
+  # Official plugins are published by l0ng-ai/openidea.
+  # # The official plugins, signed, and the marketplace index released apps read
+  # # (releases/latest/download/plugins-index.json). They are not in the
+  # # installers: users install them from Settings › Plugins. Without the
+  # # signing key (secret PLUGIN_SIGNING_KEY: the file `openidea-plugin keygen`
+  # # writes) nothing is published and the release goes on. The index also lists
+  # # the community plugins of the registry (COMMUNITY_PLUGINS_INDEX; refreshed
+  # # in this release), and the release carries the openidea-plugin tool for Linux
+  # # x64 used by the registry checks.
+  # plugins:
+  #   needs: create-release
+  #   name: Official plugins
+  #   runs-on: ubuntu-22.04
+  #   env:
+  #     SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+  #     COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
+  #   steps:
+  #     - *owned-draft
+  #     - id: key
+  #       run: |
+  #         if [ -z "$SIGNING_KEY" ]; then
+  #           echo "::warning::PLUGIN_SIGNING_KEY is not set: the official plugins are not published"
+  #           echo "skip=true" >> "$GITHUB_OUTPUT"
+  #         fi
+  #     - uses: actions/checkout@v5
+  #       if: steps.key.outputs.skip != 'true'
+  #       with: { ref: "${{ needs.create-release.outputs.commit_sha }}" }
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       if: steps.key.outputs.skip != 'true'
+  #       with: { targets: wasm32-wasip2 }
+  #     - uses: Swatinem/rust-cache@v2
+  #       if: steps.key.outputs.skip != 'true'
+  #       with:
+  #         key: release-plugins
+  #         env-vars: "ImageOS ImageVersion SDKROOT MACOSX_DEPLOYMENT_TARGET"
+  #     - id: workspace-cache
+  #       uses: ./.github/actions/release-cache
+  #       if: steps.key.outputs.skip != 'true'
+  #       with: { scope: plugins, target: native-wasm32-wasip2 }
+  #     - uses: pnpm/action-setup@v5
+  #       if: steps.key.outputs.skip != 'true'
+  #       with: { version: 11 }
+  #     - uses: actions/setup-node@v5
+  #       if: steps.key.outputs.skip != 'true'
+  #       with: { node-version: 22 }
+  #     # Builds the web pages; fails when a checked-in component isn't built from these sources.
+  #     - name: Build
+  #       if: steps.key.outputs.skip != 'true'
+  #       run: |
+  #         plugins/build.sh --check
+  #         cargo build --release --locked -p ide-host --bin openidea-plugin
+  #     - name: Pack, index and upload
+  #       if: steps.key.outputs.skip != 'true'
+  #       shell: bash
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       run: |
+  #         set -euo pipefail
+  #         tool="$PWD/target/release/openidea-plugin"
+  #         key="$RUNNER_TEMP/openidea.key"
+  #         out="$RUNNER_TEMP/market"
+  #         (umask 077 && printf '%s' "$SIGNING_KEY" > "$key")
+  #         trap 'rm -f "$key"' EXIT
+  #         mkdir -p "$out"
+  #         for dir in plugins/official/*/; do
+  #           id="$(sed -n 's/^id *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
+  #           version="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "$dir/plugin.toml" | head -1)"
+  #           "$tool" pack "$dir" --key "$key" --publisher openidea --out "$out/$id-$version.oiplugin"
+  #         done
+  #         # The published index's revocations, earlier keys and community plugins carry over.
+  #         curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/plugins-index.json" \
+  #           -o "$out/plugins-index.json" || rm -f "$out/plugins-index.json"
+  #         # Downloads point at this release: older versions kept for older IDEs stay where they were published.
+  #         "$tool" index "$out" --publisher openidea --name OpenIDEA --key "$key" --out "$out/plugins-index.json" \
+  #           --download-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+  #         "$tool" merge "$out/plugins-index.json" "$COMMUNITY_PLUGINS_INDEX" --keep openidea ||
+  #           echo "::warning::the community plugins were not refreshed"
+  #         gzip -9 -c "$tool" > "$out/openidea-plugin-linux-x86_64.gz"
+  #         gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" \
+  #           "$out/openidea-plugin-linux-x86_64.gz" --clobber
+  #     - name: Snapshot compiled workspace inputs
+  #       if: steps.key.outputs.skip != 'true'
+  #       run: python3 scripts/release-cache.py capture
+  #     - uses: actions/cache/save@v5
+  #       if: steps.key.outputs.skip != 'true'
+  #       with:
+  #         path: ${{ steps.workspace-cache.outputs.paths }}
+  #         key: ${{ steps.workspace-cache.outputs.key }}
+  #     - name: Remove dependency-cache snapshot
+  #       if: steps.key.outputs.skip != 'true'
+  #       run: rm -f target/.release-inputs.json
+
+  # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
+  # Fails when a platform is missing, so a release never ships a manifest without it.
+  updater-manifest:
+    needs: [create-release, build, notarize-macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - *owned-draft
+      - uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = Number(process.env.RELEASE_ID);
+            const tag = process.env.TAG;
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id });
+            const sigs = assets.filter((a) => a.name.endsWith(".sig"));
+            if (sigs.length === 0) {
+              core.notice("no signed bundles (TAURI_SIGNING_PRIVATE_KEY unset): skipping latest.json");
+              return;
+            }
+            // Bundle suffix → updater platform keys, as tauri-action names them.
+            const kinds = [
+              // [/_aarch64\.AppImage$/, ["linux-aarch64", "linux-aarch64-appimage"]],
+              // [/_arm64\.deb$/, ["linux-aarch64-deb"]],
+              // [/\.aarch64\.rpm$/, ["linux-aarch64-rpm"]],
+              [/_amd64\.AppImage$/, ["linux-x86_64", "linux-x86_64-appimage"]],
+              [/_amd64\.deb$/, ["linux-x86_64-deb"]],
+              [/\.x86_64\.rpm$/, ["linux-x86_64-rpm"]],
+              [/_aarch64\.app\.tar\.gz$/, ["darwin-aarch64", "darwin-aarch64-app"]],
+              // [/_x64\.app\.tar\.gz$/, ["darwin-x86_64", "darwin-x86_64-app"]],
+            ];
+            const platforms = {};
+            for (const sig of sigs) {
+              const bundle = sig.name.slice(0, -".sig".length);
+              const kind = kinds.find(([re]) => re.test(bundle));
+              if (!kind) continue;
+              const { data } = await github.rest.repos.getReleaseAsset({
+                owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" },
+              });
+              const signature = Buffer.from(data).toString("utf8").trim();
+              const url = `https://github.com/${owner}/${repo}/releases/download/${tag}/${encodeURIComponent(bundle)}`;
+              for (const key of kind[1]) platforms[key] = { signature, url };
+            }
+            const missing = kinds.flatMap(([, keys]) => keys).filter((k) => !platforms[k]);
+            if (missing.length) {
+              core.setFailed(`latest.json would miss ${missing.join(", ")}`);
+              return;
+            }
+            const manifest = { version: tag.replace(/^v/, ""), notes: "", pub_date: new Date().toISOString(), platforms };
+            const old = assets.find((a) => a.name === "latest.json");
+            if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+            await github.rest.repos.uploadReleaseAsset({
+              owner, repo, release_id, name: "latest.json",
+              data: JSON.stringify(manifest, null, 2),
+              headers: { "content-type": "application/json" },
+            });
+            core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
 
   publish:
-    permissions:
-      contents: write
-    needs: [create-release, binaries, plugins]
-    runs-on: ubuntu-latest
+    # Add plugins back here if fork plugin publishing is re-enabled.
+    needs: [create-release, build, server, notarize-macos, updater-manifest]
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/github-script@v8
+      - *owned-draft
+      - uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
@@ -171,10 +555,3 @@ jobs:
             await github.rest.repos.updateRelease({
               ...context.repo, release_id: Number(process.env.RELEASE_ID), draft: false,
             });
-
-  # The China mirror the updater's CNB source reads; a failure here leaves the GitHub release as is.
-  cnb-mirror:
-    needs: publish
-    uses: ./.github/workflows/cnb-mirror.yml
-    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
-    secrets: inherit

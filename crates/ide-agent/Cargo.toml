@@ -1,7 +1,6 @@
 [package]
 name = "ide-agent"
 description = "Coding agents over the Agent Client Protocol: tasks, sessions, worktrees and their timelines"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

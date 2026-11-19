@@ -828,7 +828,7 @@ async fn probe_http_mcp_server(server: &ide_core::settings::AgentMcpServer) -> M
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "OpenIDEA", "version": ide_core::version::app_version() },
         }
     });
 

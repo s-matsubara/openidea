@@ -297,7 +297,7 @@ impl SnowflakePool {
             .connect_timeout(timeout)
             .pool_max_idle_per_host(4)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("OpenIDEA/", env!("CARGO_PKG_VERSION")));
+            .user_agent(format!("OpenIDEA/{}", ide_core::version::app_version()));
         let proxy = ide_core::proxy_settings::proxy();
         let http = ide_http::client::with_proxy(builder, &proxy)
             .build()
@@ -527,7 +527,7 @@ impl SnowflakePool {
         }
         let mut data = json!({
             "CLIENT_APP_ID": APP,
-            "CLIENT_APP_VERSION": env!("CARGO_PKG_VERSION"),
+            "CLIENT_APP_VERSION": ide_core::version::app_version(),
             "ACCOUNT_NAME": login.account,
             "LOGIN_NAME": login.user,
             "CLIENT_ENVIRONMENT": { "APPLICATION": APP, "OS": std::env::consts::OS },

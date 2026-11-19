@@ -121,7 +121,7 @@ pub(crate) async fn discover(
 
 fn initialize_params() -> Value {
     json!({
-        "clientInfo": { "name": "openidea", "title": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
+        "clientInfo": { "name": "openidea", "title": "OpenIDEA", "version": ide_core::version::app_version() },
         "capabilities": { "experimentalApi": true, "optOutNotificationMethods": OPT_OUT },
     })
 }

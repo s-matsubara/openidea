@@ -1,7 +1,6 @@
 [package]
 name = "ide-db"
 description = "Database tools: data sources, connections, introspection, query execution and table editing"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

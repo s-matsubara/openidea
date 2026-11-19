@@ -1,7 +1,6 @@
 [package]
 name = "ide-analysis"
 description = "Project-wide code analysis over syntax trees: duplicate detection (Locate Duplicates) and structural search & replace"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

@@ -1,6 +1,6 @@
 /**
  * Prepares the release commit: `pnpm release:prepare 0.1.38` sets the app version in
- * Cargo.toml, package.json and src-tauri/tauri.conf.json, refreshes Cargo.lock, and,
+ * src-tauri/Cargo.toml, package.json and src-tauri/tauri.conf.json, refreshes Cargo.lock, and,
  * when wit/ carries a newer plugin API than the released snapshot, copies wit/*.wit
  * over sdk/rust/openidea-plugin/tests/api/released/ (the release workflow refuses a
  * tag whose wit/ and snapshot versions differ). Commit the result as `chore: v<version>`.
@@ -25,23 +25,23 @@ function compare(a: string, b: string): number {
   return 0;
 }
 
-/** The line index and value of `version` in `[workspace.package]`. */
-function workspaceVersionLine(lines: string[]): { index: number; version: string } {
-  const start = lines.findIndex((line) => line.trim() === "[workspace.package]");
+/** The line index and value of `version` in `[package]`. */
+function packageVersionLine(lines: string[]): { index: number; version: string } {
+  const start = lines.findIndex((line) => line.trim() === "[package]");
   for (let i = start + 1; start >= 0 && i < lines.length && !lines[i]!.startsWith("["); i++) {
     const match = /^version = "([^"]+)"$/.exec(lines[i]!.trim());
     if (match) return { index: i, version: match[1]! };
   }
-  throw new Error("Cargo.toml: no version in [workspace.package]");
+  throw new Error("Cargo.toml: no version in [package]");
 }
 
 export function cargoVersion(toml: string): string {
-  return workspaceVersionLine(toml.split("\n")).version;
+  return packageVersionLine(toml.split("\n")).version;
 }
 
 export function setCargoVersion(toml: string, version: string): string {
   const lines = toml.split("\n");
-  const { index } = workspaceVersionLine(lines);
+  const { index } = packageVersionLine(lines);
   lines[index] = `version = "${version}"`;
   return lines.join("\n");
 }
@@ -85,15 +85,15 @@ export function edit(path: string, change: (text: string) => string) {
 function main() {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const version = parseVersion(process.argv[2]);
-  const current = cargoVersion(readFileSync(join(root, "Cargo.toml"), "utf8"));
+  const current = cargoVersion(readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8"));
   if (compare(version, current) <= 0) throw new Error(`${version} is not newer than the current ${current}`);
 
-  edit(join(root, "Cargo.toml"), (text) => setCargoVersion(text, version));
+  edit(join(root, "src-tauri/Cargo.toml"), (text) => setCargoVersion(text, version));
   edit(join(root, "package.json"), (text) => setJsonVersion(text, version));
   edit(join(root, "src-tauri/tauri.conf.json"), (text) => setJsonVersion(text, version));
   const cargo = spawnSync("cargo", ["update", "--workspace"], { cwd: root, stdio: "inherit" });
   if (cargo.status !== 0) throw new Error("cargo update --workspace failed");
-  console.log(`version ${current} -> ${version} (Cargo.toml, Cargo.lock, package.json, tauri.conf.json)`);
+  console.log(`version ${current} -> ${version} (src-tauri/Cargo.toml, Cargo.lock, package.json, tauri.conf.json)`);
 
   const api = syncApiSnapshot(root);
   console.log(

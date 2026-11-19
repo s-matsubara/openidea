@@ -62,7 +62,11 @@ commands:
 environment:
   OPENIDEA_PLUGINS_DIR    the IDE's plugins directory (default: the app data directory)";
 
+#[path = "../common/release_version.rs"]
+mod release_version;
+
 fn main() -> ExitCode {
+    release_version::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("new") => cmd_new(&args[1..]),
@@ -77,7 +81,11 @@ fn main() -> ExitCode {
         Some("index") => cmd_index(&args[1..]),
         Some("merge") => cmd_merge(&args[1..]),
         Some("--version" | "-V") => {
-            println!("openidea-plugin {} (plugin API {})", env!("CARGO_PKG_VERSION"), ide_extension::ENGINE_VERSION);
+            println!(
+                "openidea-plugin {} (plugin API {})",
+                ide_core::version::app_version(),
+                ide_extension::ENGINE_VERSION
+            );
             Ok(())
         }
         Some("help" | "--help" | "-h") | None => {
@@ -242,7 +250,7 @@ fn sdk_dependency(explicit: Option<&str>, plugin_dir: &Path) -> Result<String, S
         Some(p) => PathBuf::from(p),
         None => match dunce::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")) {
             Ok(tree) if plugin_dir.starts_with(&tree) => tree.join("sdk/rust/openidea-plugin"),
-            _ => return Ok(format!("{{ git = \"{REPOSITORY}\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))),
+            _ => return Ok(format!("{{ git = \"{REPOSITORY}\", tag = \"v{}\" }}", ide_core::version::app_version())),
         },
     };
     let sdk = dunce::canonicalize(&sdk).map_err(|_| {
@@ -816,7 +824,10 @@ mod tests {
         let outside = dunce::canonicalize(std::env::temp_dir()).unwrap().join("my-plugin");
         assert_eq!(
             sdk_dependency(None, &outside).unwrap(),
-            format!("{{ git = \"https://github.com/l0ng-ai/openidea\", tag = \"v{}\" }}", env!("CARGO_PKG_VERSION"))
+            format!(
+                "{{ git = \"https://github.com/l0ng-ai/openidea\", tag = \"v{}\" }}",
+                ide_core::version::app_version()
+            )
         );
         let sdk = tree.join("sdk/rust/openidea-plugin");
         assert!(sdk_dependency(Some(sdk.to_str().unwrap()), &outside).unwrap().starts_with("{ path = "));

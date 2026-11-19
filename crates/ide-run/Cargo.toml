@@ -1,7 +1,6 @@
 [package]
 name = "ide-run"
 description = "Run configurations: detection, persistence, process lifecycle and output streaming"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

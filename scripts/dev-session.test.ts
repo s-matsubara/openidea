@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:net";
+import { readFileSync } from "node:fs";
 import { claimSession, preferredVitePort, withDevConfig, worktreeId } from "./dev-session.ts";
 
 const servers: Server[] = [];
@@ -50,9 +51,25 @@ describe("development worktrees", () => {
   });
 
   it("matches the Rust identity and separates paths, including Unicode", () => {
-    expect(worktreeId("/repo/idea")).toBe("ai.l0ng.openidea.dev.w158e9c5954b7bf64");
+    const { identifier } = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+    expect(worktreeId("/repo/idea")).toBe(`${identifier}.dev.w158e9c5954b7bf64`);
+    expect(preferredVitePort(worktreeId("/repo/idea"))).toBe(
+      preferredVitePort("ai.l0ng.openidea.dev.w158e9c5954b7bf64"),
+    );
     expect(worktreeId("/repo/idea")).not.toBe(worktreeId("/repo/idea-other"));
     expect(worktreeId("/repo/项目")).not.toBe(worktreeId("/repo/项目2"));
+  });
+
+  it("recognizes an old launcher for the same worktree before profile migration", async () => {
+    const port = await freePort();
+    const worktree = "/repo/idea";
+    const legacy = { worktree, identifier: "ai.l0ng.openidea.dev.w158e9c5954b7bf64", pid: process.pid };
+    const owner = await claimSession(legacy, port);
+    if (!("server" in owner)) throw new Error("Expected to own the port");
+    servers.push(owner.server);
+
+    const newLaunch = await claimSession({ ...legacy, identifier: worktreeId(worktree) }, port);
+    expect(newLaunch).toEqual({ existing: legacy });
   });
 
   it("allows exactly one launcher during concurrent starts and releases the lock", async () => {

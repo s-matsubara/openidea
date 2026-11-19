@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 /// Moves the rebuildable local data (tools, language servers, indexes, caches).
@@ -50,6 +51,79 @@ fn resolve_env(env: &str, var: Option<OsString>, os: Option<PathBuf>, identifier
         return Err(format!("{env} must be an absolute path: {}", root.display()));
     }
     Ok(root.join(identifier))
+}
+
+/// Seed the new debug profile before any settings, histories or webviews open.
+pub fn inherit_dev_profile(legacy: &str, identifier: &str) -> Result<(), String> {
+    let mut pairs = vec![
+        (config_dir(legacy)?, config_dir(identifier)?),
+        (data_dir(legacy)?, data_dir(identifier)?),
+        (log_dir(legacy)?, log_dir(identifier)?),
+    ];
+    // Tauri puts WebView2/WebKitGTK profile data under the OS local data path,
+    // independently of OPENIDEA_LOCAL_DATA_DIR. WKWebView uses the bundle's store.
+    if cfg!(any(target_os = "windows", target_os = "linux"))
+        && let Some(local) = dirs::data_local_dir()
+    {
+        pairs.push((local.join(legacy), local.join(identifier)));
+    }
+    pairs.sort();
+    pairs.dedup();
+    for (source, target) in pairs {
+        copy_dev_profile(&source, &target)
+            .map_err(|error| format!("{} to {}: {error}", source.display(), target.display()))?;
+    }
+    Ok(())
+}
+
+fn copy_dev_profile(source: &Path, target: &Path) -> io::Result<()> {
+    if source == target || !source.try_exists()? {
+        return Ok(());
+    }
+    fs::create_dir_all(target)?;
+    let mut state = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(target.join(".openidea-dev-profile-migration"))?;
+    state.lock()?;
+    let mut completed = String::new();
+    state.read_to_string(&mut completed)?;
+    if completed == "complete\n" {
+        return Ok(());
+    }
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let relative = Path::new(&name);
+        let destination = target.join(relative);
+        if !dev_profile_entry(relative) || destination.symlink_metadata().is_ok() {
+            continue;
+        }
+        let staging = tempfile::tempdir_in(target)?;
+        let copy = staging.path().join("entry");
+        copy_tree_with(&entry.path(), &copy, relative, &dev_profile_entry, true)?;
+        match rename_missing(&copy, &destination) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            result => result?,
+        }
+    }
+    // The lock also serializes startup. Failed copies can be retried, and an
+    // entry deliberately deleted from the new profile stays deleted after success.
+    state.set_len(0)?;
+    state.rewind()?;
+    state.write_all(b"complete\n")?;
+    state.sync_all()
+}
+
+fn dev_profile_entry(relative: &Path) -> bool {
+    // Ignore jobs and process discovery scoped to the previous profile. Keep
+    // installed-agent metadata and user data, without copying managed runtimes.
+    (relative == Path::new("agents/registry.json") || !is_local(relative))
+        && relative != Path::new("local-data-migration.json")
+        && relative != Path::new("mcp/server.json")
+        && !relative.file_name().is_some_and(|name| name.to_string_lossy().contains(".openidea-tmp-"))
 }
 
 /// A custom local-data root chosen in Settings › System Settings › Caches,
@@ -485,15 +559,43 @@ fn remove_entry(path: &Path) -> io::Result<()> {
 }
 
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
+    copy_tree_with(source, target, Path::new(""), &|_| true, false)
+}
+
+fn copy_tree_with(
+    source: &Path,
+    target: &Path,
+    relative: &Path,
+    include: &impl Fn(&Path) -> bool,
+    preserve_links: bool,
+) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
+        if preserve_links {
+            let link = fs::read_link(source)?;
+            #[cfg(unix)]
+            return std::os::unix::fs::symlink(link, target);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::FileTypeExt;
+                return if metadata.file_type().is_symlink_dir() {
+                    std::os::windows::fs::symlink_dir(link, target)
+                } else {
+                    std::os::windows::fs::symlink_file(link, target)
+                };
+            }
+        }
         return Err(io::Error::other("refusing to follow a link during data migration"));
     }
     if metadata.is_dir() {
         fs::create_dir(target)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
-            copy_tree(&entry.path(), &target.join(entry.file_name()))?;
+            let name = entry.file_name();
+            let relative = relative.join(&name);
+            if include(&relative) {
+                copy_tree_with(&entry.path(), &target.join(name), &relative, include, preserve_links)?;
+            }
         }
     } else if metadata.is_file() {
         fs::copy(source, target)?;
@@ -551,6 +653,66 @@ fn relative_wrapper(text: &str, source: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_profile_inherits_history_seeds_missing_files_and_only_runs_once() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let target = root.path().join("new");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(source.join("mcp")).unwrap();
+        fs::create_dir_all(target.join("tools")).unwrap();
+        fs::write(source.join("settings.toml"), "old settings").unwrap();
+        let project = root.path().join("project");
+        let file = project.join("notes.txt");
+        let old_history = ide_workspace::history::LocalHistory::open(&source.join("history"), &project).unwrap();
+        old_history.record(&file, "earlier text", "Saved").unwrap();
+        drop(old_history);
+        fs::write(source.join("recent.json"), "recent projects").unwrap();
+        fs::write(source.join("mcp/server.json"), "stale discovery").unwrap();
+        fs::write(target.join("settings.toml"), "new settings").unwrap();
+
+        copy_dev_profile(&source, &target).unwrap();
+        assert_eq!(fs::read_to_string(target.join("settings.toml")).unwrap(), "new settings");
+        let new_history = ide_workspace::history::LocalHistory::open(&target.join("history"), &project).unwrap();
+        let entries = new_history.list(&file).unwrap();
+        assert_eq!(entries[0].label, "Saved");
+        assert_eq!(new_history.content(&entries[0].id).unwrap(), "earlier text");
+        assert_eq!(fs::read_to_string(target.join("recent.json")).unwrap(), "recent projects");
+        assert!(!target.join("mcp/server.json").exists());
+        assert_eq!(fs::read_to_string(source.join("settings.toml")).unwrap(), "old settings");
+
+        fs::remove_file(target.join("recent.json")).unwrap();
+        copy_dev_profile(&source, &target).unwrap();
+        assert!(!target.join("recent.json").exists());
+        assert!(source.join("recent.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dev_profile_keeps_linked_plugins_and_filters_rebuildable_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let target = root.path().join("new");
+        let plugin = root.path().join("external-plugin");
+        fs::create_dir_all(source.join("plugins")).unwrap();
+        fs::create_dir_all(source.join("agents/tools")).unwrap();
+        fs::create_dir_all(source.join("index")).unwrap();
+        fs::create_dir(&plugin).unwrap();
+        std::os::unix::fs::symlink(&plugin, source.join("plugins/dev-plugin")).unwrap();
+        fs::write(source.join("agents/registry.json"), "registered agents").unwrap();
+
+        std::thread::scope(|workers| {
+            let first = workers.spawn(|| copy_dev_profile(&source, &target));
+            let second = workers.spawn(|| copy_dev_profile(&source, &target));
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+        });
+        assert_eq!(fs::read_link(target.join("plugins/dev-plugin")).unwrap(), plugin);
+        assert!(target.join("agents/registry.json").is_file());
+        assert!(!target.join("agents/tools").exists());
+        assert!(!target.join("index").exists());
+    }
 
     #[test]
     fn config_data_and_log_dirs_follow_the_os_unless_their_variable_is_set() {

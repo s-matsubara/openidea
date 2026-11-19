@@ -1,7 +1,6 @@
 [package]
 name = "ide-ssh"
 description = "SSH connections: configurations, host keys, authentication, remote commands, SFTP and FTP files, port forwarding and askpass"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

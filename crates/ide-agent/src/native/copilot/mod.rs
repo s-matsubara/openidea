@@ -232,7 +232,7 @@ async fn handshake(peer: &Peer) -> Result<Option<String>, ResponseError> {
         "supportedTaskKinds": ["agent", "client", "shell"],
         "clientInfo": {
             "editorName": "OpenIDEA",
-            "editorVersion": env!("CARGO_PKG_VERSION"),
+            "editorVersion": ide_core::version::app_version(),
         },
     });
     match peer.request::<_, Value>("connect", params, None).await {

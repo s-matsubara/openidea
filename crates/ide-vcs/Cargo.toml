@@ -1,7 +1,6 @@
 [package]
 name = "ide-vcs"
 description = "Git integration: gitoxide for fast reads, git CLI for writes"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

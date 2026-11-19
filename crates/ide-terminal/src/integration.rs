@@ -91,7 +91,7 @@ const POWERSHELL_INIT: &str = r#"$openideaClearHost = (Get-Command Clear-Host).S
 
 /// Directory holding the generated startup files (written on demand).
 fn scripts_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("openidea-shell-integration-{}", env!("CARGO_PKG_VERSION")))
+    std::env::temp_dir().join(format!("openidea-shell-integration-{}", ide_core::version::app_version()))
 }
 
 fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {

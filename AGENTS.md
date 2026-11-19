@@ -62,14 +62,32 @@ Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per
 see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
 Unclear product decisions → `needs-decision` and stop.
 
+## Commit identity
+
+For this fork, use `17187820+s-matsubara@users.noreply.github.com` for both
+Git author and committer email and for `jj`'s `user.email`. Configure the
+repository explicitly; do not inherit a personal email from the environment.
+Before pushing, inspect all newly created fork commits for this identity.
+Keep GitHub's email privacy protection enabled. Never rewrite published commits
+or move published tags to fix identity metadata.
+
 ## Skills
 
 Do not use Impeccable or its related skills in this repository, including globally installed copies.
 
 Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 `verify` drives the running app through Tauri MCP and captures screenshot evidence;
-`issue-fix` takes an issue from reproduction to one PR;
+`issue-fix` takes an issue from reproduction to one PR.
+For every upstream release import, use `openidea-upstream-merge`: merge the verified
+release into the fork tip, preserve existing jj work and tags, and create a new
+`vYYYY.x.x` fork tag when requested. Do not rebase the fork stack or force-update
+main. `openidea-upstream-rebase` is retired.
 `eval` takes a failing code-intelligence eval to a fix with before / after numbers.
+
+Fork releases are manual dispatches from `main`: push main, then the new tag,
+then explicitly dispatch `release.yml --ref main` with that tag. Preserve this
+dispatch-only trigger on future imports; never restore tag-push release triggers.
+See `docs/releases/README.md` for the command, validation and retry rules.
 
 ## Commands
 
@@ -79,7 +97,7 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
 - `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
-  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
+  on `fixtures/` with that language's real server installed (manual verification; the fork has no Language smoke workflow).
 - `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
   run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
 - `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
@@ -96,6 +114,11 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   Tool versions: `.github/tool-versions.env` (shared with Language smoke).
 - `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
   `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
+  The application version is in `src-tauri/Cargo.toml`; do not bump the root
+  workspace version or add internal package versions. Internal `crates/*` omit
+  `package.version` (Cargo reports `0.0.0`). Run
+  `python3 scripts/verify-release-cache.py policy` after imports to catch newly
+  added crates that reintroduce version inheritance. See `docs/releases/build-cache.md`.
 
 ## Before opening a PR
 

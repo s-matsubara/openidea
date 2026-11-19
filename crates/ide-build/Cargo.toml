@@ -1,7 +1,6 @@
 [package]
 name = "ide-build"
 description = "Build tool models for the Maven and Gradle tool windows: POM parsing, Gradle task lists, background sync"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

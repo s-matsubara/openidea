@@ -1,7 +1,6 @@
 [package]
 name = "ide-android"
 description = "Android devices and logcat for the Logcat tool window, driven through the adb CLI"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

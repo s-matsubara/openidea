@@ -1,7 +1,6 @@
 [package]
 name = "ide-workspace"
 description = "Project model: open documents, settings layering, recent projects, session state, local history"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

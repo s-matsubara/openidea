@@ -1,0 +1,138 @@
+name: Cargo 1.100 cache control
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/verify-cargo-cache-layout.yml
+      - scripts/cargo-layout-control.py
+      - scripts/release-cache*
+      - scripts/verify-release-cache*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-layout-control-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_TERM_COLOR: never
+  BUILD_TARGET: x86_64-unknown-linux-musl
+  CC_x86_64_unknown_linux_musl: musl-gcc
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  request:
+    if: github.repository == 's-matsubara/openidea' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/cargo-1100-release-cache'
+    runs-on: ubuntu-22.04
+    outputs:
+      run: ${{ steps.request.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - id: request
+        name: Require an explicit measurement marker
+        run: |
+          if git log -1 --format=%B | grep -Fxq 'Cache-Control: cargo-1100-v2'; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  control:
+    needs: request
+    if: needs.request.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.100.0
+          targets: ${{ env.BUILD_TARGET }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.4
+      - name: Production musl compiler
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Preserve the controller outside the disposable checkout
+        run: cp scripts/cargo-layout-control.py "$RUNNER_TEMP/cargo-layout-control.py"
+      - name: Record immutable seed provenance
+        id: seed
+        run: python3 "$RUNNER_TEMP/cargo-layout-control.py" prepare seed
+      - id: workspace_seed
+        uses: ./.github/actions/release-cache
+        with:
+          scope: server-cargo-layout
+          target: ${{ env.BUILD_TARGET }}
+          namespace: cargo-layout-${{ github.run_id }}-${{ github.run_attempt }}
+          generation: seed
+      - name: Require empty seed namespace
+        env:
+          MATCHED: ${{ steps.workspace_seed.outputs.matched-key }}
+        run: test -z "$MATCHED"
+      - name: Compile immutable seed
+        run: python3 "$RUNNER_TEMP/cargo-layout-control.py" build seed
+      - name: Capture and verify real library archive contents
+        env:
+          CACHE_PATHS: ${{ steps.workspace_seed.outputs.paths }}
+          CACHE_PATHS_FILE: ${{ runner.temp }}/cargo-layout-paths.txt
+        run: |
+          python3 scripts/release-cache.py capture
+          printf '%s\n' "$CACHE_PATHS" > "$CACHE_PATHS_FILE"
+          python3 scripts/verify-release-cache.py inventory --report "$RUNNER_TEMP/cargo-layout-report/seed"
+      - uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.workspace_seed.outputs.paths }}
+          key: ${{ steps.workspace_seed.outputs.key }}
+      - name: Isolate a single dependency archive with no workspace artifacts
+        run: python3 "$RUNNER_TEMP/cargo-layout-control.py" save-dependencies
+      - name: Fresh checkout and exact dependency seed, app-only version change
+        env: &baseline
+          BASE_IMAGE: ${{ steps.seed.outputs.image }}
+          BASE_VERSION: ${{ steps.seed.outputs.version }}
+        run: |
+          python3 "$RUNNER_TEMP/cargo-layout-control.py" reset
+          python3 "$RUNNER_TEMP/cargo-layout-control.py" prepare dependency-only
+      - name: Measure dependency-only warm build
+        run: python3 "$RUNNER_TEMP/cargo-layout-control.py" build dependency-only
+      - name: Second fresh checkout and identical dependency seed and version change
+        env: *baseline
+        run: |
+          python3 "$RUNNER_TEMP/cargo-layout-control.py" reset
+          python3 "$RUNNER_TEMP/cargo-layout-control.py" prepare workspace-warm
+      - id: workspace_warm
+        uses: ./.github/actions/release-cache
+        with:
+          scope: server-cargo-layout
+          target: ${{ env.BUILD_TARGET }}
+          namespace: cargo-layout-${{ github.run_id }}-${{ github.run_attempt }}
+          generation: warm
+      - name: Require exact seed provenance and unchanged compatibility prefix
+        env:
+          MATCHED: ${{ steps.workspace_warm.outputs.matched-key }}
+          EXPECTED_KEY: ${{ steps.workspace_seed.outputs.key }}
+          PREFIX: ${{ steps.workspace_warm.outputs.prefix }}
+          EXPECTED_PREFIX: ${{ steps.workspace_seed.outputs.prefix }}
+        run: |
+          test "$MATCHED" = "$EXPECTED_KEY"
+          test "$PREFIX" = "$EXPECTED_PREFIX"
+      - name: Measure workspace warm build and verify every fresh flag and server version
+        run: python3 "$RUNNER_TEMP/cargo-layout-control.py" build workspace-warm
+      - name: Upload text-only diagnostics, never executables
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cargo-layout-report-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cargo-layout-report/**/*.json
+            ${{ runner.temp }}/cargo-layout-report/**/*.jsonl
+          if-no-files-found: warn

@@ -63,7 +63,7 @@ impl ClickhousePool {
             .connect_timeout(timeout)
             .pool_max_idle_per_host(4)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("OpenIDEA/", env!("CARGO_PKG_VERSION")));
+            .user_agent(format!("OpenIDEA/{}", ide_core::version::app_version()));
         let ca = source.ssl_ca_file.trim();
         if !ca.is_empty() {
             let pem = read_pem(ca, "CA certificate")?;

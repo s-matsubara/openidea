@@ -60,7 +60,11 @@ async function main(): Promise<number> {
   if ("existing" in claim) {
     console.log("Development session already running for this worktree:");
     console.log(JSON.stringify(claim.existing, null, 2));
-    console.log("Use pnpm dev:status to find its MCP port.");
+    console.log(
+      claim.existing.identifier === session.identifier
+        ? "Use pnpm dev:status to find its MCP port."
+        : "Stop the development session using the old identifier before starting the new one.",
+    );
     return 0;
   }
   let vite: import("vite").ViteDevServer | undefined;

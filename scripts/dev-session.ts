@@ -1,15 +1,18 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { fileURLToPath } from "node:url";
 
 export const worktreeRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
+const { identifier: releaseIdentifier } = JSON.parse(
+  readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+) as { identifier: string };
 
 export function worktreeId(root: string): string {
   let hash = 0xcbf29ce484222325n;
   for (const byte of Buffer.from(root)) {
     hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
   }
-  return `ai.l0ng.openidea.dev.w${hash.toString(16).padStart(16, "0")}`;
+  return `${releaseIdentifier}.dev.w${hash.toString(16).padStart(16, "0")}`;
 }
 
 export interface DevSession {
@@ -71,7 +74,7 @@ export async function claimSession(
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
       const existing = await readSession(port);
-      if (existing?.worktree === session.worktree && existing.identifier === session.identifier) {
+      if (existing?.worktree === session.worktree) {
         return { existing };
       }
     }

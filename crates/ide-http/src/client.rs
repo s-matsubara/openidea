@@ -58,7 +58,7 @@ pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::P
         .redirect(redirect)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
-        .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));
+        .user_agent(format!("OpenIDEA-HttpClient/{}", ide_core::version::app_version()));
     with_proxy(builder, proxy).build().map_err(|e| fail(e.to_string()))
 }
 

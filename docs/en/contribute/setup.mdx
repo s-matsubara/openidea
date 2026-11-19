@@ -69,7 +69,9 @@ Always launch through `pnpm tauri dev` / `pnpm dev:app`, not the raw `pnpm exec 
 
 - starts Vite on a port derived from the worktree path (moving on if it is taken) and passes the actual URL to Tauri;
 - refuses to start a second launcher for the same worktree and prints the running session instead;
-- gives each worktree's debug build its own app identity (`ai.l0ng.openidea.dev.w<hash>`), so data, settings, logs and the single-instance lock are separate per worktree. Different worktrees and an installed release can run at the same time.
+- gives each worktree's debug build its own app identity (`<release identifier>.dev.w<hash>`), using `src-tauri/tauri.conf.json` for the release identifier. Data, settings, logs and the single-instance lock are separate per worktree. Different worktrees and an installed release can run at the same time.
+
+Stop the old development session before upgrading a fork worktree from `ai.l0ng.openidea.dev.w<hash>`. The first launch under the new identifier copies settings, user data and logs into missing entries in the new worktree profile. The old profile remains available for recovery. Caches and managed tools are recreated as needed.
 
 Launching the same debug binary again focuses its running window and forwards its path argument. `--release` uses the normal release identity and bypasses the wrapper.
 

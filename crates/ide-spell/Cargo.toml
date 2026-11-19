@@ -1,7 +1,6 @@
 [package]
 name = "ide-spell"
 description = "Spell checking (Proofreading › Typo): word extraction from comments, strings and declared names, Hunspell en_US / en_GB dictionary, programming terms, user dictionaries"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

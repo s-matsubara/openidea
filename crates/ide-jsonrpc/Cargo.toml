@@ -1,7 +1,6 @@
 [package]
 name = "ide-jsonrpc"
 description = "Content-Length framed transport and JSON-RPC 2.0 peer shared by LSP and DAP clients"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

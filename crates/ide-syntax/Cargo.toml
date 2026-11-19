@@ -1,7 +1,6 @@
 [package]
 name = "ide-syntax"
 description = "Tree-sitter structure service: node/expression lookup, syntax errors, scopes & locals, identifier occurrences, structural ranges (LSP fallback)"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

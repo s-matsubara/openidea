@@ -1,7 +1,6 @@
 [package]
 name = "ide-scaffold"
 description = "New Project generators: the generator catalog (`generators/*.toml`), project templates, official framework CLIs and initializr-style project services"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

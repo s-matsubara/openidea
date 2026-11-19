@@ -1,7 +1,6 @@
 [package]
 name = "ide-jvm-attach"
 description = "HotSpot attach-socket client and class-histogram parser for the debugger's JVM Memory view"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

@@ -1,7 +1,6 @@
 [package]
 name = "ide-dap"
 description = "Debug adapter protocol client: sessions, breakpoints, threads, frames, variables, evaluation"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

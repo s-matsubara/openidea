@@ -87,6 +87,7 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ide_core::version::set_app_version(env!("CARGO_PKG_VERSION"));
     ide_workspace::process::mark_start();
     #[cfg(windows)]
     windows_error_mode::quiet_error_dialogs();
@@ -100,6 +101,11 @@ pub fn run() {
     // The `openidea` command: answer and exit, no UI.
     if let Some(code) = cli::run(&context.config().identifier) {
         std::process::exit(code);
+    }
+    #[cfg(debug_assertions)]
+    if let Err(error) = dev::inherit_profile(&context.config().identifier) {
+        eprintln!("Cannot inherit the previous OpenIDEA development profile: {error}");
+        std::process::exit(1);
     }
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);

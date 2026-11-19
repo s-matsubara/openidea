@@ -74,7 +74,7 @@ pub(crate) async fn authenticate(
         "AUTHENTICATOR": "EXTERNALBROWSER",
         "BROWSER_MODE_REDIRECT_PORT": port.to_string(),
         "CLIENT_APP_ID": APP,
-        "CLIENT_APP_VERSION": env!("CARGO_PKG_VERSION"),
+        "CLIENT_APP_VERSION": ide_core::version::app_version(),
     } });
     let envelope = api.send(Request::post(AUTHENTICATOR, body).query("requestId", uuid()).timeout(timeout)).await?;
     if !envelope.success {

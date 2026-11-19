@@ -1,7 +1,6 @@
 [package]
 name = "ide-command"
 description = "Declares OpenIDEA's backend commands once and derives their adapters, trust class and placement"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

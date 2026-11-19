@@ -1,7 +1,6 @@
 [package]
 name = "ide-notebook"
 description = "Lossless native notebook documents and owned Jupyter kernels"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 

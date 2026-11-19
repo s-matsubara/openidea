@@ -69,7 +69,9 @@ pnpm tauri dev
 
 - 按 worktree 路径算出 Vite 端口（被占用就顺延），再把实际地址传给 Tauri；
 - 同一个 worktree 已有启动器在运行时不再启动第二个，而是打印现有会话；
-- 让每个 worktree 的 debug 构建有独立的应用标识（`ai.l0ng.openidea.dev.w<hash>`），数据、设置、日志和单实例锁互不干扰。不同 worktree 与已安装的正式版可以同时运行。
+- 使用 `src-tauri/tauri.conf.json` 中的正式版标识，为每个 worktree 的 debug 构建生成独立的应用标识（`<正式版标识>.dev.w<hash>`）。各 worktree 的数据、设置、日志和单实例锁相互独立。不同 worktree 与已安装的正式版可以同时运行。
+
+将 fork 的 worktree 从 `ai.l0ng.openidea.dev.w<hash>` 升级到新标识前，请先停止旧的开发会话。首次启动时，程序会把设置、用户数据和日志复制到新 worktree 配置目录中缺少的项目，并保留旧目录以供恢复。缓存和托管工具会按需重新创建。
 
 再次启动同一个 debug 二进制，会聚焦已运行的窗口并把路径参数转交给它。`--release` 使用正式版标识，不经过包装脚本。
 
