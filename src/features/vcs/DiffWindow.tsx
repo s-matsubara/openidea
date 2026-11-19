@@ -26,7 +26,7 @@ import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
 import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
-import { refreshNow, useVcs } from "./store";
+import { isJjPath, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
@@ -45,11 +45,16 @@ const useDiff = create<{
 }>(() => ({ data: null, project: "", title: "", error: null, closing: false }));
 
 /** The launch's diff as the diff viewer's input data. */
-function toDiffData(launch: DiffLaunch): DiffData {
+export function diffWindowData(launch: DiffLaunch): DiffData {
+  const side = (value: DiffLaunch["left"]): DiffSide => {
+    if (isJjPath(launch.path) && (value.type === "text" || value.type === "worktree"))
+      return { ...value, jjBlame: value.jjBlame ?? null } as DiffSide;
+    return value as DiffSide;
+  };
   return {
     path: launch.path,
-    left: launch.left as DiffSide,
-    right: launch.right as DiffSide,
+    left: side(launch.left),
+    right: side(launch.right),
     line: launch.line ?? undefined,
   };
 }
@@ -202,15 +207,20 @@ export function activateDiffWindow(parent: string): () => void {
     // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
     useProject.setState({ settings: project.settings });
     const roots = await call(commands.vcsRoots());
+    const gitRoots = roots.filter((root) => root.kind !== "jj");
+    const jjRoots = roots.filter((root) => root.kind === "jj");
     useVcs.setState({
-      available: roots.length > 0,
+      available: gitRoots.length > 0,
       root: project.root,
-      roots: roots.map((root) => root.root),
+      roots: gitRoots.map((root) => root.root),
+      jjRoots,
+      kinds: Object.fromEntries(roots.map((root) => [root.root, root.kind ?? "git"])),
     });
     setContext("projectOpen", true);
-    setContext("vcsAvailable", roots.length > 0);
+    setContext("vcsAvailable", gitRoots.length > 0);
+    setContext("vcsJjAvailable", jjRoots.length > 0);
     await refreshNow();
-    const data = toDiffData(launch);
+    const data = diffWindowData(launch);
     useDiff.setState({ project: project.name, data });
     showCaption(diffCaption(data));
   })().catch((error) => useDiff.setState({ error: String(error) }));

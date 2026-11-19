@@ -63,6 +63,7 @@ import { errorMessage, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
+import { JjMergeEditor } from "./JjMergeEditor";
 import type { MergeData } from "./mergeKind";
 import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
@@ -100,7 +101,7 @@ const SIDE_DIFF = ideaDiffConfig("none", "words");
 /** A file without a language; one value, so finding none again doesn't rebuild the panes. */
 const NO_LANGUAGE: Extension = [];
 
-export function MergeEditor({ input }: { input: EditorInput }) {
+function GitMergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
   const [state, setState] = useState<{
     ours: string;
@@ -650,4 +651,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
+}
+
+export function MergeEditor({ input }: { input: EditorInput }) {
+  return (input.data as MergeData).vcs === "jj" ? <JjMergeEditor input={input} /> : <GitMergeEditor input={input} />;
 }

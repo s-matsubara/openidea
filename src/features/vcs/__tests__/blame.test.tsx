@@ -4,11 +4,11 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
-import { annotationsShown, blameSlot, toggleAnnotations } from "../blame";
+import { annotationsShown, blameSlot, toggleAnnotations, toggleJjAnnotations } from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
-const mocks = vi.hoisted(() => ({ blame: vi.fn(), log: vi.fn(), action: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({ blame: vi.fn(), jjBlame: vi.fn(), log: vi.fn(), action: vi.fn(), notify: vi.fn() }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
@@ -21,7 +21,7 @@ vi.mock("@/platform/ipc", async (original) => {
   const actual = await original<typeof import("@/platform/ipc")>();
   return {
     ...actual,
-    commands: { ...actual.commands, vcsBlame: mocks.blame, vcsLog: mocks.log },
+    commands: { ...actual.commands, vcsBlame: mocks.blame, vcsJjAnnotate: mocks.jjBlame, vcsLog: mocks.log },
   };
 });
 
@@ -121,4 +121,24 @@ describe("git blame gutter and commit popup", () => {
     });
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", sha);
   });
+});
+
+it("colors jj commits while retaining metadata and avoiding Git popup requests", async () => {
+  mocks.jjBlame.mockResolvedValue({ status: "ok", data: lines });
+  view = new EditorView({
+    parent: document.body,
+    state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+  });
+  await toggleJjAnnotations(view, { root: "/jj", path: "/jj/file.ts", commit: sha });
+  const markers = view.dom.querySelectorAll<HTMLElement>(`[data-commit="${sha}"], [data-commit="${otherSha}"]`);
+  expect(markers).toHaveLength(3);
+  expect(markers[0]!.style.getPropertyValue("--blame-bg")).toBe(markers[1]!.style.getPropertyValue("--blame-bg"));
+  expect(markers[0]!.style.getPropertyValue("--blame-bg")).not.toBe(markers[2]!.style.getPropertyValue("--blame-bg"));
+  expect(markers[0]!.title).toContain(lines[0]!.summary);
+  fireEvent.mouseOver(markers[0]!);
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  fireEvent.click(markers[0]!);
+  expect(mocks.log).not.toHaveBeenCalled();
+  expect(mocks.blame).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
 });

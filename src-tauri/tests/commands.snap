@@ -640,11 +640,15 @@ vcs_has_hook                                 always             project_host bin
 vcs_ignore_blame_revision                    trusted            project_host bindings async
 vcs_init                                     always             project_host bindings async
 vcs_jj_add_workspace                         trusted            project_host bindings async
+vcs_jj_annotate                              trusted            project_host bindings async
 vcs_jj_fetch                                 trusted            project_host bindings async
 vcs_jj_fetch_options                         trusted            project_host bindings async
 vcs_jj_fetch_selected                        trusted            project_host bindings async
+vcs_jj_file_diff                             trusted            project_host bindings async
 vcs_jj_history                               trusted            project_host bindings async
+vcs_jj_history_file_diff                     trusted            project_host bindings async
 vcs_jj_history_files                         trusted            project_host bindings async
+vcs_jj_history_line_stats                    trusted            project_host bindings async
 vcs_jj_log_action                            trusted            project_host bindings async
 vcs_jj_pull                                  trusted            project_host bindings async
 vcs_jj_pull_options                          trusted            project_host bindings async
