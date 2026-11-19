@@ -10,9 +10,9 @@
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { create } from "zustand";
-import type { Branch, BranchInfo, FileStatus, Stash } from "@/bindings";
+import type { Branch, BranchInfo, FileStatus, Stash, VcsRoot } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
-import { setContext } from "@/platform/context";
+import { setContext, useContextKeys } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { setFileDecorations } from "@/workbench/contributions";
 import { effectiveKind, repoLabel, rootOf, statusDecorations, stripSlash } from "./model";
@@ -25,9 +25,12 @@ export interface RepoHead {
 export interface VcsState {
   /** The open project is a git repository. */
   available: boolean;
+  /** Readable jj roots; independent of Git operation availability. */
+  jjRoots: VcsRoot[];
   root: string | null;
   /** Repository roots, the project's own repository first. */
   roots: string[];
+  kinds: Record<string, "git" | "jj">;
   /** Root → merge / rebase / cherry-pick / revert in progress there. */
   operations: Record<string, string>;
   /** Root → its current branch (`head` null when detached) and HEAD commit. */
@@ -54,8 +57,10 @@ export interface VcsState {
 
 const initial: VcsState = {
   available: false,
+  jjRoots: [],
   root: null,
   roots: [],
+  kinds: {},
   operations: {},
   heads: {},
   repo: null,
@@ -74,6 +79,14 @@ const initial: VcsState = {
 };
 
 export const useVcs = create<VcsState>(() => ({ ...initial }));
+
+/** Capability follows the innermost discovered root, including unsupported jj roots. */
+export function isJjPath(path: string): boolean {
+  const kinds = useVcs.getState().kinds;
+  if (kinds[stripSlash(path)] === "jj") return true;
+  const root = rootOf(path, Object.keys(kinds));
+  return root !== null && kinds[root] === "jj";
+}
 
 /** Root of the selected repository; `null` = the project's primary one. */
 export function currentRepo(): string | null {
@@ -173,7 +186,8 @@ export function onConflictsCleared(fn: () => void) {
 }
 
 export function scheduleRefresh(delay = 200) {
-  if (!useVcs.getState().available) return;
+  const { available, jjRoots } = useVcs.getState();
+  if (!available && !jjRoots.length) return;
   pendingFull = true;
   pendingPaths.clear();
   clearTimeout(timer);
@@ -186,7 +200,16 @@ export function scheduleRefresh(delay = 200) {
  * refresh, which answers for them anyway.
  */
 export function schedulePathsRefresh(paths: readonly string[], delay = 250) {
-  if (!useVcs.getState().available || pendingFull) return;
+  if (pendingFull) return;
+  const { available, jjRoots } = useVcs.getState();
+  if (jjRoots.length) {
+    const inBatch = coveredBy(paths);
+    if (!available || paths.some(isJjPath) || jjRoots.some(({ root }) => inBatch(root))) {
+      scheduleRefresh(delay);
+      return;
+    }
+  }
+  if (!available) return;
   for (const path of paths) pendingPaths.add(path);
   clearTimeout(timer);
   timer = setTimeout(() => void runScheduled(), delay);
@@ -207,7 +230,7 @@ async function runScheduled(): Promise<void> {
  * that await it read the state their operation produced.
  */
 export function refreshNow(): Promise<void> {
-  if (!useVcs.getState().available) return Promise.resolve();
+  if (!useVcs.getState().available && !useVcs.getState().jjRoots.length) return Promise.resolve();
   if (inflight) {
     // A full refresh answers for every path: queue it as one, drained after the running read, so a
     // pending batch of paths cannot swallow it (and the caller still reads the state it produced).
@@ -222,20 +245,40 @@ export function refreshNow(): Promise<void> {
     useVcs.setState({ loading: true });
     try {
       const s = useVcs.getState();
+      const vcsRoots = await call(commands.vcsRoots());
+      const jjRoots = vcsRoots.filter((r) => r.kind === "jj");
+      useVcs.setState({ jjRoots, kinds: Object.fromEntries(vcsRoots.map((r) => [r.root, r.kind ?? "git"])) });
+      const roots = vcsRoots.filter((r) => r.kind !== "jj").map((r) => r.root);
+      const selectedRepo = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
+      if (!selectedRepo) {
+        useVcs.setState({
+          available: false,
+          roots: [],
+          repo: null,
+          status: [],
+          byPath: new Map(),
+          branch: null,
+          operations: {},
+          heads: {},
+          branches: [],
+          stashes: [],
+          branchesLoaded: false,
+          stashesLoaded: false,
+          error: null,
+        });
+        setContext("vcsAvailable", false);
+        applyStatus([], null);
+        return;
+      }
       const scoped = Promise.all([
-        call(commands.vcsBranchInfo(s.repo)),
-        s.branchesLoaded ? call(commands.vcsBranches(s.repo)) : Promise.resolve(s.branches),
-        s.stashesLoaded ? call(commands.vcsStashes(s.repo)) : Promise.resolve(s.stashes),
+        call(commands.vcsBranchInfo(selectedRepo)),
+        s.branchesLoaded && selectedRepo === s.repo ? call(commands.vcsBranches(selectedRepo)) : Promise.resolve([]),
+        s.stashesLoaded && selectedRepo === s.repo ? call(commands.vcsStashes(selectedRepo)) : Promise.resolve([]),
       ]).then(
         (values) => ({ values }),
         (error: unknown) => ({ error }),
       );
-      const [vcsRoots, status, selected] = await Promise.all([
-        call(commands.vcsRoots()),
-        call(commands.vcsStatus()),
-        scoped,
-      ]);
-      const roots = vcsRoots.map((r) => r.root);
+      const [status, selected] = await Promise.all([call(commands.vcsStatus()), scoped]);
       if ("error" in selected) {
         // The selected repository is gone (removed since the last scan): fall back to the primary one.
         if (!s.repo || roots.includes(s.repo)) throw selected.error;
@@ -244,16 +287,21 @@ export function refreshNow(): Promise<void> {
         return;
       }
       const [branch, branches, stashes] = selected.values;
-      const operations = Object.fromEntries(vcsRoots.filter((r) => r.operation).map((r) => [r.root, r.operation!]));
+      const operations = Object.fromEntries(
+        vcsRoots.filter((r) => r.kind !== "jj" && r.operation).map((r) => [r.root, r.operation!]),
+      );
       // `null` (before the first refresh) is the primary repository, listed first.
       const shown = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
-      const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
-      useVcs.setState({ operations, heads });
-      const sameRoots = roots.join("\n") === s.roots.join("\n");
-      if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
+      const heads = Object.fromEntries(
+        vcsRoots.filter((r) => r.kind !== "jj").map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]),
+      );
+      useVcs.setState({ available: true, operations, heads });
+      setContext("vcsAvailable", true);
+      if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
+      if (selectedRepo !== s.repo) useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
       // Branch info and branches above are of another repository: load the selected one's.
       if (repo !== shown || (s.repo && repo !== s.repo)) {
         useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
@@ -367,7 +415,13 @@ export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
   const before = conflictedFiles().length;
   const byPath = new Map(status.map((f) => [stripSlash(f.path), f]));
   useVcs.setState({ status, byPath, branch, statusLoaded: true });
-  setFileDecorations("vcs", statusDecorations(status, workflowSettings().vcs.showDirtyDirectories));
+  setFileDecorations(
+    "vcs",
+    statusDecorations(
+      [...status, ...useVcs.getState().jjRoots.flatMap((r) => r.workingCopy?.files ?? [])],
+      workflowSettings().vcs.showDirtyDirectories,
+    ),
+  );
   const conflicts = conflictedFiles(status);
   if (before === 0 && conflicts.length > 0) conflictListener?.(conflicts);
   else if (before > 0 && conflicts.length === 0) conflictsClearedListener?.();
@@ -396,20 +450,39 @@ export async function discoverRoots() {
   const root = useVcs.getState().root;
   if (!root || !isTauri()) return;
   const roots = await call(commands.vcsRoots()).catch(() => []);
-  if (!roots.length || useVcs.getState().root !== root || useVcs.getState().available) return;
-  useVcs.setState({ available: true });
-  setContext("vcsAvailable", true);
+  if (useVcs.getState().root !== root || useVcs.getState().available) return;
+  useVcs.setState({ kinds: Object.fromEntries(roots.map((r) => [r.root, r.kind ?? "git"])) });
+  useVcs.setState({ jjRoots: roots.filter((r) => r.kind === "jj") });
+  if (!roots.length) return;
+  const available = roots.some((r) => r.kind !== "jj");
+  useVcs.setState({ available });
+  setContext("vcsAvailable", available);
   void refreshNow();
 }
 
 /** Tracks the open project and backend events. Returns a disposer. */
 export function installVcsStore(): () => void {
+  const syncPathCapability = () => {
+    const path = useContextKeys.getState().editorPath;
+    setContext("vcsJjPath", typeof path === "string" && isJjPath(path));
+  };
+  const offPath = useContextKeys.subscribe((s, prev) => {
+    if (s.editorPath !== prev.editorPath) syncPathCapability();
+  });
+  const offKinds = useVcs.subscribe((s, prev) => {
+    if (s.kinds !== prev.kinds) syncPathCapability();
+    if (s.jjRoots !== prev.jjRoots) setContext("vcsJjAvailable", s.jjRoots.length > 0);
+  });
+  syncPathCapability();
+  setContext("vcsJjAvailable", useVcs.getState().jjRoots.length > 0);
   const onProject = () => {
     const project = useProject.getState().project;
     const available = !!project?.isGit;
     const root = project?.root ?? null;
     if (useVcs.getState().root === root && useVcs.getState().available === available) return;
     clearTimeout(timer);
+    pendingFull = false;
+    pendingPaths.clear();
     useVcs.setState({ ...initial, available, root, version: useVcs.getState().version + 1 });
     setContext("vcsAvailable", available);
     setFileDecorations("vcs", new Map());
@@ -421,7 +494,7 @@ export function installVcsStore(): () => void {
     if (s.project !== prev.project) onProject();
   });
   const offVcs = onIdeEvent("vcsChanged", () => {
-    if (useVcs.getState().available) scheduleRefresh(200);
+    if (useVcs.getState().available || useVcs.getState().jjRoots.length) scheduleRefresh(200);
     else void discoverRoots();
   });
   // `.git/**` internals show up through other watchers too; refreshing status
@@ -438,12 +511,25 @@ export function installVcsStore(): () => void {
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,
     (show) => {
-      if (useVcs.getState().available) setFileDecorations("vcs", statusDecorations(useVcs.getState().status, show));
+      if (useVcs.getState().available || useVcs.getState().jjRoots.length)
+        setFileDecorations(
+          "vcs",
+          statusDecorations(
+            [...useVcs.getState().status, ...useVcs.getState().jjRoots.flatMap((r) => r.workingCopy?.files ?? [])],
+            show,
+          ),
+        );
     },
   );
   return () => {
+    offPath();
+    offKinds();
+    setContext("vcsJjPath", false);
+    setContext("vcsJjAvailable", false);
     offSettings();
     clearTimeout(timer);
+    pendingFull = false;
+    pendingPaths.clear();
     unsubProject();
     offVcs();
     offFs();

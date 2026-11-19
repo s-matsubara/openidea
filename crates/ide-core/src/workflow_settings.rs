@@ -15,6 +15,7 @@ pub struct VcsSettings {
     pub limit_history: bool,
     pub history_limit: u32,
     pub git: GitSettings,
+    pub jj: JjSettings,
     pub commit: CommitSettings,
     pub confirmation: VcsConfirmationSettings,
     pub shelf: ShelfSettings,
@@ -30,12 +31,20 @@ impl Default for VcsSettings {
             limit_history: true,
             history_limit: 1000,
             git: GitSettings::default(),
+            jj: JjSettings::default(),
             commit: CommitSettings::default(),
             confirmation: VcsConfirmationSettings::default(),
             shelf: ShelfSettings::default(),
             issue_navigation: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct JjSettings {
+    /// Path to jj; empty = auto-detect.
+    pub executable: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

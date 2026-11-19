@@ -22,7 +22,7 @@ import { goToRef, selectedCommits, updateLogOptions, useGitLog } from "./logStor
 import { commitKey, commitRepo } from "./multiRoot";
 import { currentRepoRoot, focusRepo } from "./store";
 
-const VCS = "vcsAvailable";
+const VCS = "vcsAvailable && !vcsJjHistory";
 const LOG = "vcsAvailable || projectOpen || vcsLogFocus";
 
 function showFocusedHistoryDiff() {

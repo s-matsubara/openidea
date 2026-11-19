@@ -40,7 +40,7 @@ pub fn info(project: &Project) -> ProjectInfo {
             .map(|w| w.display_name(&project.root, &primary))
             .unwrap_or_else(|| primary.clone()),
         name: workspace.as_ref().filter(|w| w.is_container(&project.root)).map(|w| w.name.clone()).unwrap_or(primary),
-        is_git: !project.repos.read().is_empty(),
+        is_git: project.repos.read().all().iter().any(|r| r.kind() == ide_vcs::VcsKind::Git),
         settings,
         root: project.root.clone().into(),
         workspace,

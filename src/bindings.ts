@@ -1170,9 +1170,9 @@ export const commands = {
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
-	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
-	runSaveTemplates: (templates: RunConfig_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_templates", { templates })),
-	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>, request: number | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
+	runSaveConfigs: (configs: RunConfig[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
+	runSaveTemplates: (templates: RunConfig[]) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_templates", { templates })),
+	runStart: (config: RunConfig, onOutput: Channel<OutputChunk>, request: RequestId | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
 	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
 	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
@@ -1439,6 +1439,7 @@ export const commands = {
 	vcsDeleteTag: (repo: string | null, name: string) => typedError<DeletedTag, IdeError>(__TAURI_INVOKE("vcs_delete_tag", { repo, name })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
+	vcsDetectedJj: () => __TAURI_INVOKE<string | null>("vcs_detected_jj"),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
@@ -1469,6 +1470,36 @@ export const commands = {
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
+	vcsJjAddWorkspace: (root: string, name: string, path: string, revision: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_add_workspace", { root, name, path, revision })),
+	vcsJjAnnotate: (root: string, path: string, commit: string, text: string) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_jj_annotate", { root, path, commit, text })),
+	/**  Commit checked files in a single discovered Jujutsu repository. */
+	/**  Description edits are scoped to an exact discovered root, independently of Git. */
+	vcsJjFetch: (root: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch", { root })),
+	vcsJjFetchOptions: (root: string) => typedError<JjFetchOptions, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_options", { root })),
+	vcsJjFetchSelected: (root: string, remote: string, tag: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_fetch_selected", { root, remote, tag })),
+	vcsJjFileDiff: (path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_file_diff", { path, commit })),
+	/**  History requires an exact discovered root; never fall back to the primary repository. */
+	vcsJjHistory: (root: string, cursor: JjHistoryCursor | null) => typedError<JjHistoryPage, IdeError>(__TAURI_INVOKE("vcs_jj_history", { root, cursor })),
+	vcsJjHistoryFileDiff: (root: string, path: string, commit: string) => typedError<JjFileDiff, IdeError>(__TAURI_INVOKE("vcs_jj_history_file_diff", { root, path, commit })),
+	/**  Immutable historical reads require the exact owning root, including nested repositories. */
+	vcsJjHistoryFiles: (root: string, commit: string) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_jj_history_files", { root, commit })),
+	vcsJjHistoryLineStats: (root: string, commit: string) => typedError<FileLineStats[], IdeError>(__TAURI_INVOKE("vcs_jj_history_line_stats", { root, commit })),
+	/**  Log mutations require the exact discovered Jujutsu root and current row identity. */
+	vcsJjLogAction: (root: string, commit: string, change: string, action: JjLogAction) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_log_action", { root, commit, change, action })),
+	/**  Read the patch for only the checked files in the reviewed Jujutsu working copy. */
+	vcsJjPull: (root: string, remote: string, bookmark: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_pull", { root, remote, bookmark })),
+	vcsJjPullOptions: (root: string) => typedError<JjPullOptions, IdeError>(__TAURI_INVOKE("vcs_jj_pull_options", { root })),
+	vcsJjPush: (root: string, request: JjPushRequest) => typedError<JjPushPreview, IdeError>(__TAURI_INVOKE("vcs_jj_push", { root, request })),
+	vcsJjPushOptions: (root: string) => typedError<JjPushOptions, IdeError>(__TAURI_INVOKE("vcs_jj_push_options", { root })),
+	vcsJjRebase: (root: string, source: string | null, destination: string, skipEmptied: boolean, ignoreImmutable: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_jj_rebase", { root, source, destination, skipEmptied, ignoreImmutable })),
+	vcsJjRebaseOptions: (root: string) => typedError<JjRebaseOptions, IdeError>(__TAURI_INVOKE("vcs_jj_rebase_options", { root })),
+	vcsJjRemoveWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_remove_workspace", { root, expected })),
+	/**  Checked-file rollback requires an exact discovered root and clean documents. */
+	/**  Explicit stale recovery may update files in a secondary workspace outside project roots. */
+	vcsJjUpdateWorkspace: (root: string, expected: JjWorkspace) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_jj_update_workspace", { root, expected })),
+	vcsJjVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_jj_version", { path })),
+	/**  Workspace commands always execute against an exact trusted project root. */
+	vcsJjWorkspaces: (root: string) => typedError<JjWorkspace[], IdeError>(__TAURI_INVOKE("vcs_jj_workspaces", { root })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
@@ -1647,33 +1678,7 @@ export const commands = {
 	 */
 	windowStartDrag: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_start_drag")),
 	/**  What this window was opened for (taken once). */
-	windowTakeLaunch: () => __TAURI_INVOKE<{
-	/**  Project folder to open. */
-	project: IpcPath | null,
-	/**
-	 *  Files to open in the editor: in `project` once it is open, else in this
-	 *  window's project or (without one) in LightEdit.
-	 */
-	files: IpcPath[],
-	/**  Remote project to open (Remote Development). */
-	remote: RemoteLaunch | null,
-	/**  Settings windows: the page to show. */
-	settingsPage: string | null,
-	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
-	newProjects: boolean,
-	/**  Where to place the caret in some of `files` (`openidea --line 12 --column 5 <file>`). */
-	positions: FilePosition[],
-	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
-	comparison: ComparisonLaunch | null,
-	/**  Diff windows: the diff to show (boxed: most launches have none). */
-	diffWindow: DiffLaunch_Serialize | null,
-	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
-	diff: DiffFilesLaunch | null,
-	/**  Files requested after the pending diff take focus after it opens. */
-	diffBeforeFiles: boolean,
-	/**  Deployment windows: the server and local selection to compare. */
-	deployment: DeploymentLaunch | null,
-} | null>("window_take_launch"),
+	windowTakeLaunch: () => __TAURI_INVOKE<Launch | null>("window_take_launch"),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Fills the work area without the platform zoom animation. Returns whether it is filled now. */
 	windowToggleZoom: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_zoom")),
@@ -6534,6 +6539,144 @@ export type JetBrainsSettings = {
 	files: { [key in string]: string },
 };
 
+/**  A file in an immutable Jujutsu revision. */
+export type JjBlameTarget = {
+	root: string,
+	path: string,
+	commit: string,
+};
+
+/**  Draft identity: an immutable anchor plus the description the user started editing. */
+export type JjDescriptionEdit = {
+	commit: string,
+	change: string,
+	original: string,
+	description: string,
+};
+
+export type JjFetchOptions = {
+	remotes: string[],
+	tags: JjRemoteTag[],
+};
+
+/**  Immutable text pair for the shared diff viewer. */
+export type JjFileDiff = {
+	beforeAbsent?: boolean | null,
+	afterAbsent?: boolean | null,
+	beforeBlame?: JjBlameTarget | null,
+	afterBlame?: JjBlameTarget | null,
+	before: string,
+	after: string,
+	beforeLabel: string,
+	afterLabel: string,
+};
+
+export type JjHistoryCommit = {
+	id: string,
+	changeId: string,
+	description: string,
+	parents: string[],
+	localBookmarks: string[],
+	remoteBookmarks: string[],
+	tags: string[],
+	author: string,
+	email: string,
+	timeMs: string,
+	workingCopy: boolean,
+};
+
+/**  A pinned operation and the oldest returned frontier, scoped to one workspace. */
+export type JjHistoryCursor = {
+	root: string,
+	operation: string,
+	seen: string[],
+};
+
+export type JjHistoryPage = {
+	commits: JjHistoryCommit[],
+	next: JjHistoryCursor | null,
+};
+
+/**  Log actions are separate from Git operations and accept full row identities only. */
+export type JjLogAction = { kind: "describe"; description: string } | { kind: "new" } | { kind: "edit" } | { kind: "abandon" } | { kind: "bookmark"; name: string } | { kind: "moveBookmark"; name: string } | { kind: "tag"; name: string };
+
+export type JjPullOptions = {
+	remotes: string[],
+	bookmarks: JjRemoteBookmark[],
+	preferred: JjRemoteBookmark | null,
+};
+
+/**  Explicit Jujutsu push choices. Conflicted/deleted refs are deliberately excluded. */
+export type JjPushOptions = {
+	bookmarks: string[],
+	tags: string[],
+	remotes: string[],
+};
+
+export type JjPushPreview = {
+	summary: string,
+	token: string,
+	/**  Selected-reference history, capped at 100; not the exact network object set. */
+	commits: JjHistoryCommit[],
+};
+
+export type JjPushRequest = {
+	bookmarks: string[],
+	tags: string[],
+	allTags?: boolean,
+	remote: string,
+	/**  None previews; Some executes only if the current preview still matches. */
+	review: string | null,
+};
+
+export type JjRebaseOptions = {
+	source: JjRebaseRevision,
+	destinations: JjRebaseRevision[],
+	preferred: string | null,
+	trunkLabel: string | null,
+};
+
+export type JjRebaseRevision = {
+	commitId: string,
+	label: string,
+	kind: JjRebaseRevisionKind,
+	remote: string | null,
+};
+
+export type JjRebaseRevisionKind = "revision" | "bookmark" | "tag";
+
+export type JjRemoteBookmark = {
+	name: string,
+	remote: string,
+};
+
+export type JjRemoteTag = {
+	name: string,
+	remote: string,
+};
+
+export type JjSettings = {
+	/**  Path to jj; empty = auto-detect. */
+	executable?: string,
+};
+
+/**  A display snapshot of @. Files reuse the shared status model, without staging semantics. */
+export type JjWorkingCopy = {
+	changeId: string,
+	commitId: string,
+	description: string,
+	files: FileStatus[],
+};
+
+/**  Registered workspace metadata. Older jj registrations may have no recorded root. */
+export type JjWorkspace = {
+	name: string,
+	path: string | null,
+	changeId: string,
+	commitId: string,
+	current?: boolean,
+};
+
 /**  The script frame that made a request, where the browser ran it (0-based line and column). */
 export type JsInitiator = {
 	function: string,
@@ -10487,10 +10630,16 @@ export type VcsConfirmationSettings = {
 	onPatchCreated?: string,
 };
 
+/**  The VCS that owns a worktree. This determines operation capabilities. */
+export type VcsKind = "git" | "jj";
+
 /**  A repository of the project (IDEA's VCS root). */
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	kind: VcsKind,
+	unavailableReason: string | null,
+	workingCopy: JjWorkingCopy | null,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
@@ -10507,6 +10656,7 @@ export type VcsSettings = {
 	limitHistory?: boolean,
 	historyLimit?: number,
 	git?: GitSettings,
+	jj?: JjSettings,
 	commit?: CommitSettings,
 	confirmation?: VcsConfirmationSettings,
 	shelf?: ShelfSettings,

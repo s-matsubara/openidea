@@ -1,3 +1,4 @@
+import { jjActions, showContextualPushDialog } from "./jjActions";
 import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
@@ -12,7 +13,7 @@ import {
   projectViewSelection,
   toolWindowService,
 } from "@/workbench/contributions";
-import { annotationsShown, toggleAnnotations } from "./blame";
+import { annotationsShown, toggleAnnotations, toggleJjWorkingAnnotations } from "./blame";
 import { showBranchesPopup } from "./BranchWidget";
 import { checkoutRevision, newBranch, newBranchInRepos } from "./branchOps";
 import {
@@ -24,7 +25,7 @@ import {
   stashChanges,
   showUnstashDialog,
 } from "./changeOps";
-import { setAmend, useCommit } from "./commitStore";
+import { setAmend, setCommitDiffPreview, useCommit } from "./commitStore";
 import { currentPlan } from "./commitSelection";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
@@ -59,14 +60,17 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { currentRepo, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
+import { currentRepo, isJjPath, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
+import { openJjWorkingDiffForLine } from "./jjDiffInput";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
 import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
 
 const VCS = "vcsAvailable";
+// Project-tree selections have their own path gate; the last editor may belong to jj.
+const FILE_VCS = "vcsAvailable && (!vcsJjPath || activeToolWindow == project)";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
 
 function argPath(arg: unknown): string | undefined {
@@ -173,7 +177,7 @@ function showGitWindow() {
   toolWindowService().show("git", true);
 }
 
-async function annotate(arg: unknown) {
+async function annotate(arg: unknown, jj = false) {
   const path = argPath(arg);
   let handle = activeEditor();
   if (path && handle?.ctx.path !== path) {
@@ -184,7 +188,8 @@ async function annotate(arg: unknown) {
     notifications().notify({ group: "vcs", level: "info", title: "Open a file to annotate it" });
     return;
   }
-  await toggleAnnotations(handle.view, handle.ctx.path);
+  if (isJjPath(handle.ctx.path)) await toggleJjWorkingAnnotations(handle.view, handle.ctx.path);
+  else if (!jj) await toggleAnnotations(handle.view, handle.ctx.path);
 }
 
 /** VCS Operations popup: the change and file entries, then Git's own, then Local History. */
@@ -199,7 +204,7 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.compareWithBranch" },
   { kind: "separator" },
   { kind: "action", action: "vcs.branches" },
-  { kind: "action", action: "vcs.push" },
+  { kind: "action", action: "vcs.gitPush" },
   { kind: "action", action: "vcs.stash" },
   { kind: "action", action: "vcs.unstash" },
   { kind: "separator" },
@@ -224,6 +229,15 @@ function showOperations() {
 
 export function registerVcsActions(): () => void {
   const actions: Action[] = [
+    {
+      id: "vcs.jjToggleDiffPreview",
+      title: "Preview Diff",
+      category: "Jujutsu",
+      icon: "editor-preview",
+      when: "vcsJjAvailable",
+      toggled: () => useCommit.getState().commitDiffPreview,
+      run: () => setCommitDiffPreview(!useCommit.getState().commitDiffPreview),
+    },
     {
       id: "vcs.operations",
       title: "VCS Operations…",
@@ -293,10 +307,19 @@ export function registerVcsActions(): () => void {
     {
       id: "vcs.push",
       title: "Push…",
+      category: "Version Control",
+      icon: "git-push",
+      hidden: true,
+      when: "vcsAvailable || vcsJjAvailable",
+      run: ({ arg }) => showContextualPushDialog(arg && typeof arg === "object" ? (arg as PushTarget) : {}),
+    },
+    {
+      id: "vcs.gitPush",
+      title: "Push…",
       category: "Git",
       icon: "git-push",
       when: VCS,
-      run: ({ arg }) => void showPushDialog(arg && typeof arg === "object" ? (arg as PushTarget) : {}),
+      run: () => void showPushDialog(),
     },
     {
       id: "vcs.update",
@@ -376,12 +399,16 @@ export function registerVcsActions(): () => void {
       title: "Rollback…",
       category: "Git",
       icon: "undo",
-      when: VCS,
+      when: `(${FILE_VCS}) || (vcsJjPath && editorTextFocus)`,
       keywords: ["revert", "discard"],
       run: ({ arg }) => {
         const explicit = argPaths(arg);
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
+        if (!explicit?.length && ed?.view.hasFocus && isJjPath(ed.ctx.path)) {
+          rollbackSelectedLines(ed.view);
+          return;
+        }
         if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
         // The Commit window's subject is its tree selection; when the selection holds
         // nothing rollbackable (unversioned files, stale paths), the checked changes are
@@ -418,7 +445,7 @@ export function registerVcsActions(): () => void {
       title: "Show Diff",
       category: "Git",
       icon: "diff",
-      when: VCS,
+      when: FILE_VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
       keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
@@ -471,12 +498,15 @@ export function registerVcsActions(): () => void {
       title: "Show Diff in New Window",
       category: "Git",
       icon: "diff",
-      when: VCS,
+      when: "vcsAvailable || vcsJjAvailable",
       keyWhen: "!editorTextFocus",
       run: ({ arg }) => {
         const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
         const path = selectedPaths(arg)[0];
-        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        const data =
+          requested ??
+          focusedDiffNavigator()?.viewer?.()?.data ??
+          (path && !isJjPath(path) ? workingDiffData(path) : null);
         if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
@@ -489,7 +519,7 @@ export function registerVcsActions(): () => void {
       title: "Compare with Branch or Revision…",
       category: "Git",
       icon: "diff",
-      when: VCS,
+      when: FILE_VCS,
       run: async ({ arg }) => {
         const paths = selectedPaths(arg);
         if (!paths.length) {
@@ -541,9 +571,9 @@ export function registerVcsActions(): () => void {
       // The diff of the file at the changed lines under the caret or selection (the change marker popup's Show Diff).
       id: "vcs.showDiffForLines",
       title: "Show Diff for Lines",
-      category: "Git",
+      category: "Version Control",
       icon: "diff",
-      when: VCS,
+      when: "vcsAvailable || vcsJjPath",
       enabled: () => {
         const ed = activeEditor();
         return !!ed && hunksInSelection(ed.view.state).length > 0;
@@ -555,6 +585,12 @@ export function registerVcsActions(): () => void {
         const { state } = ed.view;
         const head = state.selection.main.head;
         const line = hunk.from <= head && head <= hunk.to ? state.doc.lineAt(head).number - 1 : hunk.start;
+        if (isJjPath(ed.ctx.path))
+          return openJjWorkingDiffForLine(
+            ed.ctx.path,
+            line,
+            () => activeEditor()?.view === ed.view && ed.view.state.doc === state.doc,
+          );
         return executeAction("vcs.showDiff", { path: ed.ctx.path, line });
       },
     },
@@ -563,7 +599,7 @@ export function registerVcsActions(): () => void {
       title: "Annotate with Git Blame",
       category: "Git",
       icon: "history",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["blame", "annotations"],
       toggled: () => {
         const ed = activeEditor();
@@ -579,6 +615,19 @@ export function registerVcsActions(): () => void {
         return !status || !hasNoCommits(status);
       },
       run: ({ arg }) => annotate(arg),
+    },
+    {
+      id: "vcs.jjAnnotate",
+      title: "Annotate with Jujutsu Blame",
+      category: "Jujutsu",
+      icon: "history",
+      when: "vcsJjPath",
+      keywords: ["blame", "annotations"],
+      toggled: () => {
+        const ed = activeEditor();
+        return !!ed && annotationsShown(ed.view);
+      },
+      run: ({ arg }) => annotate(arg, true),
     },
     {
       id: "vcs.localHistory",
@@ -623,6 +672,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       run: () => void checkoutRevision(),
     },
+    ...jjActions,
     {
       id: "vcs.showLog",
       title: "Show Git Log",
@@ -643,7 +693,7 @@ export function registerVcsActions(): () => void {
       title: "Show History for File",
       category: "Git",
       icon: "history",
-      when: VCS,
+      when: FILE_VCS,
       run: ({ arg }) => {
         const path = contextPaths(arg)[0];
         if (!path) return;
@@ -698,7 +748,7 @@ export function registerVcsActions(): () => void {
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",
       title: destination === "gitignore" ? "Add to .gitignore" : "Add to .git/info/exclude",
       category: "Git",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["ignore", "unversioned", "exclude"],
       run: ({ arg }) => addToIgnore(contextPaths(arg), destination),
     })),
@@ -707,7 +757,7 @@ export function registerVcsActions(): () => void {
       title: "Add to VCS",
       category: "Git",
       icon: "plus",
-      when: VCS,
+      when: FILE_VCS,
       keywords: ["git add", "stage"],
       run: ({ arg }) => {
         return addToVcs(contextPaths(arg));

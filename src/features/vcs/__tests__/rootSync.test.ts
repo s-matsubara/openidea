@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BranchInfo } from "@/bindings";
+import type { BranchInfo, FileStatus, VcsRoot } from "@/bindings";
 
 const ipc = vi.hoisted(() => ({ branchInfo: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -20,6 +20,24 @@ const info = (head: string | null, upstream: string | null, ahead = 0, behind = 
   ahead,
   behind,
   operation: null,
+});
+
+const file = (path: string, unstaged: FileStatus["unstaged"], renamedFrom: string | null = null): FileStatus => ({
+  path,
+  relPath: path.slice(path.lastIndexOf("/") + 1),
+  staged: null,
+  unstaged,
+  renamedFrom,
+});
+
+const jj = (root: string, files: FileStatus[]): VcsRoot => ({
+  root,
+  kind: "jj",
+  unavailableReason: null,
+  workingCopy: { changeId: "change", commitId: "commit", description: "", files },
+  operation: null,
+  head: null,
+  headCommit: null,
 });
 
 const COLORS = {
@@ -113,7 +131,7 @@ describe("installRootSync", () => {
       status: "ok",
       data: root === "/p" ? info("main", "origin/main", 1, 0) : info("dev", null),
     }));
-    useVcs.setState({ available: true, roots: ["/p", "/p/lib"], status: [] });
+    useVcs.setState({ available: true, roots: ["/p", "/p/lib"], status: [], jjRoots: [], heads: {}, remoteBusy: null });
   });
 
   afterEach(() => {
@@ -168,8 +186,6 @@ describe("installRootSync", () => {
     enable(true);
     dispose = installRootSync();
     await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(2));
-    const file = (path: string, unstaged: string) =>
-      ({ path, relPath: path, staged: null, unstaged, renamedFrom: null }) as never;
     useVcs.setState({
       status: [
         file("/p/a.ts", "modified"),
@@ -190,6 +206,48 @@ describe("installRootSync", () => {
     useVcs.setState({ status: [] });
     await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1"]));
     expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates the count for a jj-only workspace without a Git query or setting", () => {
+    enable(false);
+    const root = jj("/p", [file("/p/renamed.txt", "renamed", "old.txt"), file("/p/conflict.txt", "conflicted")]);
+    useVcs.setState({ available: false, roots: [], jjRoots: [root] });
+    dispose = installRootSync();
+    expect(getFileDecoration("/p")?.suffix).toEqual([
+      { text: "2", icon: "edit", label: "2 changed files", color: "var(--vcs-modified)" },
+    ]);
+    useVcs.setState({ jjRoots: [jj("/p", [file("/p/a.ts", "modified")])] });
+    expect(getFileDecoration("/p")?.suffix?.[0]?.text).toBe("1");
+    useVcs.setState({ jjRoots: [jj("/p", [])] });
+    expect(getFileDecoration("/p")?.suffix).toBeUndefined();
+    useVcs.setState({ jjRoots: [{ ...root, unavailableReason: "missing jj executable" }] });
+    expect(getFileDecoration("/p")?.suffix).toBeUndefined();
+    useVcs.setState({ jjRoots: [{ ...root, workingCopy: null }] });
+    expect(getFileDecoration("/p")?.suffix).toBeUndefined();
+    expect(ipc.branchInfo).not.toHaveBeenCalled();
+  });
+
+  it("counts nested Git and jj roots independently", async () => {
+    enable(true);
+    const jjRoot = jj("/p/jj", [file("/p/jj/a.ts", "added"), file("/p/jj/b.ts", "deleted")]);
+    useVcs.setState({
+      roots: ["/p", "/p/jj/git"],
+      status: [file("/p/a.ts", "untracked"), file("/p/jj/git/a.ts", "modified")],
+      jjRoots: [jjRoot, jj("/p/jj/nested", [file("/p/jj/nested/a.ts", "conflicted")])],
+    });
+    dispose = installRootSync();
+    expect(getFileDecoration(jjRoot.root)?.suffix?.map((s) => s.text)).toEqual(["2"]);
+    expect(getFileDecoration("/p/jj/nested")?.suffix?.map((s) => s.text)).toEqual(["1"]);
+    await vi.waitFor(() => {
+      expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1", "1"]);
+      expect(getFileDecoration("/p/jj/git")?.suffix?.map((s) => s.text)).toEqual(["dev", "1"]);
+    });
+    expect(ipc.branchInfo.mock.calls).toEqual([["/p"], ["/p/jj/git"]]);
+    useVcs.setState({ jjRoots: [jjRoot] });
+    expect(getFileDecoration("/p/jj/nested")?.suffix).toBeUndefined();
+    enable(false);
+    expect(getFileDecoration("/p")?.suffix).toBeUndefined();
+    expect(getFileDecoration(jjRoot.root)?.suffix?.[0]?.text).toBe("2");
   });
 
   it("queries again when a HEAD moves or a fetch / pull / push finishes, without a .git event", async () => {

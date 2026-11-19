@@ -47,8 +47,34 @@ fn pack_stamp(pack_dir: &Path) -> Option<SystemTime> {
     std::fs::metadata(pack_dir).ok()?.modified().ok()
 }
 
+/// The nearest VCS marker determines ownership; jj wins at a colocated root.
+pub(crate) fn jj_root(path: &Path) -> Option<PathBuf> {
+    let start = if path.is_file() { path.parent()? } else { path };
+    for dir in start.ancestors() {
+        if dir.join(".jj").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        if dir.join(".git").exists() {
+            return None;
+        }
+    }
+    None
+}
+
 pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let start = if path.is_file() { path.parent().unwrap_or(path) } else { path };
+    if let Some(root) = jj_root(start) {
+        return Ok(Some(Repo {
+            execution_allowed: std::sync::atomic::AtomicBool::new(false),
+            kind: crate::VcsKind::Jj,
+            root: absolute(&root)?,
+            git_dir: root.join(".git"),
+            inner: std::sync::Mutex::new(None),
+            ignored: Default::default(),
+            log_index: Default::default(),
+            log_signatures: Default::default(),
+        }));
+    }
     if let Err(e) = gix::discover::upwards(start) {
         use gix::discover::upwards::Error as E;
         return match e.downcast_any_ref::<E>() {
@@ -72,9 +98,10 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(false),
+        kind: crate::VcsKind::Git,
         root,
         git_dir,
-        inner: std::sync::Mutex::new(cache),
+        inner: std::sync::Mutex::new(Some(cache)),
         ignored: Default::default(),
         log_index: Default::default(),
         log_signatures: Default::default(),
@@ -101,12 +128,14 @@ impl Repo {
     /// A thread-local gitoxide handle; reopened when configuration or packed refs change.
     /// gitoxide's packed-ref snapshot only reloads for a newer mtime, which a replacement may preserve.
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
+        self.require_git()?;
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
             return gix::open_opts(&self.git_dir, gix::open::Options::default().filter_config_section(|_| false))
                 .map_err(gx);
         }
         let mut cache = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let cache = cache.as_mut().ok_or_else(|| IdeError::unavailable("Git repository is unavailable"))?;
         let now = stamp(&cache.files);
         let pack_now = pack_stamp(&cache.pack_dir);
         if now != cache.stamp || pack_now != cache.pack_stamp {
@@ -127,6 +156,7 @@ impl Repo {
     /// Repository-relative path with `/` separators. Accepts absolute paths inside the
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
+        self.require_git()?;
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         Ok(self.index_spelling(self.given_rel_path(path)?))
     }

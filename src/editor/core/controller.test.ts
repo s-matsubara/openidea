@@ -499,7 +499,7 @@ describe("EditorController", () => {
           "vcs.showHistoryForSelection",
           "vcs.rollback",
         ],
-        ["vcs.push", "vcs.pull", "vcs.fetch"],
+        ["vcs.gitPush", "vcs.pull", "vcs.fetch"],
         ["vcs.merge", "vcs.rebase"],
         ["vcs.branches", "vcs.newBranch", "vcs.newTag", "vcs.resetHead"],
         ["vcs.stash", "vcs.unstash"],

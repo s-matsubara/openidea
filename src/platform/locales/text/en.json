@@ -2184,6 +2184,7 @@
   "Missing blank line between subject and body": "Missing blank line between subject and body",
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
   "Add blank line": "Add blank line",
+  "Jujutsu working copy is unavailable": "Jujutsu working copy is unavailable",
   "Cannot paste this path safely: its name contains control characters.": "Cannot paste this path safely: its name contains control characters.",
   "Cannot paste the dropped files": "Cannot paste the dropped files",
   "Lost the connection to {host}": "Lost the connection to {host}",
@@ -2454,5 +2455,16 @@
   "Load Maven Project": "Load Maven Project",
   "Skip": "Skip",
   "Resize Markdown preview": "Resize Markdown preview",
-  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.",
+  "No working-copy changes": "No working-copy changes",
+  "Working-copy status unavailable": "Working-copy status unavailable",
+  "Working copy changed; review the checked files and try again": "Working copy changed; review the checked files and try again",
+  "Select {name} for commit": "Select {name} for commit",
+  "{repo} ({count} selected)": "{repo} ({count} selected)",
+  "Commit to {count} repositories": "Commit to {count} repositories",
+  "{count} added": "{count} added",
+  "{count} modified": "{count} modified",
+  "{count} deleted": "{count} deleted",
+  "{count} renamed": "{count} renamed",
+  "{count} conflicted": "{count} conflicted"
 }

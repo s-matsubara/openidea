@@ -23,6 +23,7 @@ import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
+import { PullFrame } from "./pullFrame";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
 import {
@@ -234,53 +235,39 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
   };
 
   return (
-    <Dialog
-      open
-      title={tx`Pull to ${info?.head ?? "HEAD"}`}
-      onClose={onClose}
-      width={460}
-      buttons={[
-        { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.form}>
-        {remotes && !remotes.length ? (
-          <>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <div className={styles.hint}>
-              <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
-            </div>
-          </>
-        ) : (
-          <div className={styles.fieldRow}>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <Select
-              aria-label="Remote"
-              value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
-              onChange={setRemote}
-            />
-            <BranchSelect
-              aria-label="Remote branch"
-              className={styles.grow}
-              value={branch}
-              placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
-              onChange={setBranch}
-            />
-          </div>
-        )}
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
-        <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
+    <PullFrame title={tx`Pull to ${info?.head ?? "HEAD"}`} onClose={onClose} disabled={!remote} run={() => void run()}>
+      <RepoPicker repo={repo} onChange={chooseRepo} />
+      {remotes && !remotes.length ? (
         <div className={styles.hint}>
-          <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
+          <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
         </div>
+      ) : (
+        <div className={styles.fieldRow}>
+          <Select
+            aria-label="Remote"
+            value={remote}
+            options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
+            onChange={setRemote}
+          />
+          <BranchSelect
+            aria-label="Remote branch"
+            className={styles.grow}
+            value={branch}
+            placeholder="Branch"
+            options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
+            onChange={setBranch}
+          />
+        </div>
+      )}
+      <div className={styles.fieldLabel}>
+        <T>Options:</T>
       </div>
-    </Dialog>
+      <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
+      <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
+      <div className={styles.hint}>
+        <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
+      </div>
+    </PullFrame>
   );
 }
 

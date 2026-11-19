@@ -1,5 +1,5 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile, RevisionChange } from "@/bindings";
+import type { ChangedFile, JjBlameTarget, RevisionChange } from "@/bindings";
 import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -9,19 +9,20 @@ import { readWorkingText } from "./ops";
 import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
+import type { JjDiffChange } from "./jjDiffInput";
 
 export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
   | { type: "rev"; rev: string; path?: string; label?: string }
   /** The working file (unsaved editor buffer included). */
-  | { type: "worktree"; label?: string }
+  | { type: "worktree"; label?: string; jjBlame?: JjBlameTarget | null }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
   /**
    * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
    * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
    */
-  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
+  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean; jjBlame?: JjBlameTarget | null }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -56,6 +57,8 @@ export interface DiffData {
    * past the last / first difference move to the next / previous one. Entries carry no chain.
    */
   chain?: DiffData[];
+  /** Pinned Jujutsu change whose other files can be opened in the combined view. */
+  jjChange?: JjDiffChange;
   /** Select the first or last difference once shown (moving along the chain). */
   reveal?: "first" | "last";
   /**
@@ -167,8 +170,8 @@ export function diffTitle(data: DiffData): string {
   return `${baseName(data.path)} (${sideLabel(data.left)} ↔ ${sideLabel(data.right)})`;
 }
 
-export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  const combined = combinedOf(data);
+export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean; allInOne?: boolean } = {}) {
+  const combined = combinedOf(data, opts.allInOne);
   const input = combined ? combinedDiffInput(combined) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }

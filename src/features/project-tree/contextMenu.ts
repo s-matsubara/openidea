@@ -36,6 +36,7 @@ import {
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
+import { isJjPath } from "@/features/vcs/store";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -368,7 +369,11 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
-  if (inWorkspace && (project?.isGit || getContext().vcsAvailable === true)) {
+  if (
+    inWorkspace &&
+    (project?.isGit || getContext().vcsAvailable === true) &&
+    nodes.every((node) => !isJjPath(node.path))
+  ) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
@@ -396,7 +401,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           singleFile && act("vcs.showCurrentRevision", singleFile.path, "Show Current Revision"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
-          act("vcs.push", undefined, "Push…"),
+          act("vcs.gitPush", undefined, "Push…"),
           act("vcs.pull", arg, "Pull…"),
           act("vcs.fetch", undefined, "Fetch"),
           act("vcs.merge", arg, "Merge…"),

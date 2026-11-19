@@ -2,15 +2,15 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { Compartment, Prec, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type PluginValue, type ViewUpdate } from "@codemirror/view";
-import type { BlameLine } from "@/bindings";
+import type { BlameLine, JjBlameTarget } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
-import { formatDate } from "./model";
-import { useVcs } from "./store";
+import { formatDate, rootOf } from "./model";
+import { isJjPath, refreshNow, useVcs } from "./store";
 
 const ZERO = /^0+$/;
 
@@ -67,11 +67,12 @@ class BlameMarker extends GutterMarker {
   constructor(
     readonly line: BlameLine,
     readonly bg = "",
+    readonly jj = false,
   ) {
     super();
   }
   eq(o: BlameMarker) {
-    return o.line.commit === this.line.commit && o.bg === this.bg;
+    return o.line.commit === this.line.commit && o.bg === this.bg && o.jj === this.jj;
   }
   toDOM() {
     const el = document.createElement("span");
@@ -93,6 +94,7 @@ class BlameMarker extends GutterMarker {
       el.style.setProperty("--blame-bg", this.bg);
       el.style.backgroundColor = this.bg;
     }
+    if (this.jj) el.title = `${l.author} · ${formatDate(l.timeMs)}\n${l.commit}\n${l.summary}`;
     el.dataset.commit = l.commit;
     return el;
   }
@@ -103,25 +105,27 @@ const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.U
 const setBlame = StateEffect.define<BlameLine[]>();
 
 interface BlameState {
+  jj: boolean;
   lines: BlameLine[];
   markers: RangeSet<GutterMarker>;
 }
 
-function build(lines: readonly BlameLine[], doc: Text): RangeSet<GutterMarker> {
+function build(lines: readonly BlameLine[], doc: Text, jj = false): RangeSet<GutterMarker> {
   const bgs = commitBackgrounds(lines);
   const out = [];
   const n = Math.min(lines.length, doc.lines);
   for (let i = 0; i < n; i++) {
     const line = lines[i]!;
-    out.push(new BlameMarker(line, bgs.get(line.commit) ?? "").range(doc.line(i + 1).from));
+    out.push(new BlameMarker(line, bgs.get(line.commit) ?? "", jj).range(doc.line(i + 1).from));
   }
   return RangeSet.of(out);
 }
 
 const blameField = StateField.define<BlameState>({
-  create: () => ({ lines: [], markers: RangeSet.empty }),
+  create: () => ({ jj: false, lines: [], markers: RangeSet.empty }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setBlame)) return { lines: e.value, markers: build(e.value, tr.state.doc) };
+    for (const e of tr.effects)
+      if (e.is(setBlame)) return { ...value, lines: e.value, markers: build(e.value, tr.state.doc, value.jj) };
     return tr.docChanged ? { ...value, markers: value.markers.map(tr.changes) } : value;
   },
 });
@@ -133,7 +137,11 @@ async function refreshAnnotations(view: EditorView, path: string) {
   view.dispatch({ effects: setBlame.of(lines) });
 }
 
-/** Re-blames after edits and whenever HEAD moves (commit, Undo Commit, update, checkout). */
+function jjWorkingCommit(root: string, state = useVcs.getState()) {
+  return state.jjRoots.find((repo) => repo.root === root)?.workingCopy?.commitId;
+}
+
+/** Refreshes after edits or when the repository snapshot moves. */
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private destroyed = false;
@@ -141,9 +149,13 @@ class BlameRefresher implements PluginValue {
   constructor(
     private readonly view: EditorView,
     private readonly path: string,
+    private readonly jjRoot?: string,
   ) {
     this.offHead = useVcs.subscribe((s, p) => {
-      if (s.branch?.headCommit !== p.branch?.headCommit) this.schedule(100);
+      const changed = jjRoot
+        ? jjWorkingCommit(jjRoot, s) !== jjWorkingCommit(jjRoot, p)
+        : s.branch?.headCommit !== p.branch?.headCommit;
+      if (changed) this.schedule(100);
     });
   }
   update(u: ViewUpdate) {
@@ -152,7 +164,24 @@ class BlameRefresher implements PluginValue {
   private schedule(delay: number) {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      if (!this.destroyed) void refreshAnnotations(this.view, this.path);
+      const doc = this.view.state.doc;
+      const root = this.jjRoot;
+      const commit = root ? jjWorkingCommit(root) : undefined;
+      if (root && !commit) return;
+      const request =
+        root && commit
+          ? commands.vcsJjAnnotate(root, this.path, commit, doc.toString())
+          : commands.vcsBlame(this.path, null, null);
+      void call(request)
+        .then((lines) => {
+          if (
+            !this.destroyed &&
+            (!root || (this.view.state.doc === doc && jjWorkingCommit(root) === commit)) &&
+            this.view.state.field(blameField, false)
+          )
+            this.view.dispatch({ effects: setBlame.of(lines) });
+        })
+        .catch(() => undefined);
     }, delay);
   }
   destroy() {
@@ -238,9 +267,9 @@ class BlameInteraction implements PluginValue {
   }
 }
 
-function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
+function blameExtension(lines: BlameLine[], path: string, live: boolean, jj: boolean, jjRoot?: string): Extension {
   return [
-    blameField.init((state) => ({ lines, markers: build(lines, state.doc) })),
+    blameField.init((state) => ({ jj, lines, markers: build(lines, state.doc, jj) })),
     Prec.high(
       gutter({
         class: "cm-vcs-blame",
@@ -256,13 +285,13 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
               return false;
             }
             highlightSameCommit(view, l.commit);
-            scheduleOpenBlamePopup({ view, anchor, line: l, path });
+            if (!jj) scheduleOpenBlamePopup({ view, anchor, line: l, path });
             return false;
           },
           click(view, block) {
             closeBlamePopup(view);
             const l = lineAt(view, block.from);
-            if (l && !isUncommitted(l)) void executeAction("vcs.showCommit", l.commit);
+            if (!jj && l && !isUncommitted(l)) void executeAction("vcs.showCommit", l.commit);
             return true;
           },
           contextmenu(view, block, event) {
@@ -272,11 +301,15 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
             showContextMenu(event as MouseEvent, [
               ...(l && !isUncommitted(l)
                 ? [
-                    {
-                      label: "Show Commit in Git Log",
-                      icon: "commit",
-                      run: () => void executeAction("vcs.showCommit", l.commit),
-                    },
+                    ...(!jj
+                      ? [
+                          {
+                            label: "Show Commit in Git Log",
+                            icon: "commit",
+                            run: () => void executeAction("vcs.showCommit", l.commit),
+                          },
+                        ]
+                      : []),
                     {
                       label: "Copy Revision Number",
                       icon: "copy",
@@ -311,7 +344,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
     ),
     ViewPlugin.define((view) => new BlameInteraction(view)),
     // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
-    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
+    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path, jjRoot))] : []),
     blameTheme,
   ];
 }
@@ -320,9 +353,48 @@ export function annotationsShown(view: EditorView): boolean {
   return !!view.state.field(blameField, false);
 }
 
-function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
+function setAnnotations(
+  view: EditorView,
+  lines: BlameLine[] | null,
+  path: string,
+  live: boolean,
+  jj = false,
+  jjRoot?: string,
+) {
   if (!lines) closeBlamePopup(view);
-  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
+  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live, jj, jjRoot) : []) });
+}
+
+export async function toggleJjWorkingAnnotations(view: EditorView, path: string) {
+  if (annotationsShown(view)) {
+    setAnnotations(view, null, path, false);
+    return;
+  }
+  if (!isJjPath(path)) return;
+  await refreshNow();
+  const { jjRoots, kinds } = useVcs.getState();
+  const root = rootOf(path, Object.keys(kinds));
+  const repo = jjRoots.find((candidate) => candidate.root === root);
+  if (repo?.workingCopy && repo.root) {
+    await toggleJjAnnotations(view, { root: repo.root, path, commit: repo.workingCopy.commitId }, true);
+  } else {
+    reportAnnotationError(repo?.unavailableReason ?? tx("Jujutsu working copy is unavailable"));
+  }
+}
+
+export async function toggleJjAnnotations(view: EditorView, target: JjBlameTarget, live = false) {
+  if (annotationsShown(view)) {
+    setAnnotations(view, null, target.path, false);
+    return;
+  }
+  const doc = view.state.doc;
+  try {
+    const lines = await call(commands.vcsJjAnnotate(target.root, target.path, target.commit, doc.toString()));
+    if (view.state.doc === doc && (!live || jjWorkingCommit(target.root) === target.commit))
+      setAnnotations(view, lines, target.path, live, true, live ? target.root : undefined);
+  } catch (e) {
+    reportAnnotationError(e);
+  }
 }
 
 /**
@@ -364,11 +436,15 @@ export async function toggleAnnotations(view: EditorView, path: string, text?: s
     }
     setAnnotations(view, lines, path, text === undefined);
   } catch (e) {
-    notifications().notify({
-      group: "vcs",
-      level: "error",
-      title: "Cannot annotate",
-      body: e instanceof Error ? e.message : String(e),
-    });
+    reportAnnotationError(e);
   }
+}
+
+function reportAnnotationError(e: unknown) {
+  notifications().notify({
+    group: "vcs",
+    level: "error",
+    title: "Cannot annotate",
+    body: e instanceof Error ? e.message : String(e),
+  });
 }

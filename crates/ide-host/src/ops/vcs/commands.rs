@@ -151,6 +151,9 @@ impl LogAccess {
 pub struct VcsRoot {
     /// Worktree root.
     pub root: ide_core::IpcPath,
+    pub kind: VcsKind,
+    pub unavailable_reason: Option<String>,
+    pub working_copy: Option<JjWorkingCopy>,
     /// Merge / rebase / cherry-pick / revert in progress.
     pub operation: Option<String>,
     /// Current branch; `None` when HEAD is detached (or unreadable).
@@ -279,6 +282,10 @@ fn per_repo(
     if groups.is_empty() {
         return project.with_repo_recorded(None, recorded, |r| f(r, paths));
     }
+    // Reject mixed Git/jj selections before changing any repository.
+    for (repo, _) in &groups {
+        repo.require_git()?;
+    }
     for (repo, paths) in groups {
         project.with_repo_recorded(Some(repo.root()), recorded, |r| f(r, &paths))?;
     }
@@ -341,7 +348,9 @@ fn keep_private(root: &Path) {
 /// The project's repositories, the primary one first.
 #[command(trust = always)]
 pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
-    let repos = host.project(window)?.repos();
+    let project = host.project(window)?;
+    apply_git_executable(&project.settings.effective());
+    let repos = project.repos();
     let primary = repos.primary().map(|r| r.root().to_path_buf());
     let mut all: Vec<&std::sync::Arc<Repo>> = repos.all().iter().collect();
     all.sort_by_key(|r| Some(r.root()) != primary.as_deref());
@@ -349,7 +358,27 @@ pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
         .into_iter()
         .map(|r| {
             let (head, head_commit) = r.head().unwrap_or_default();
-            VcsRoot { root: r.root().to_path_buf().into(), operation: r.operation().ok().flatten(), head, head_commit }
+            let (working_copy, unavailable_reason) = if r.kind() == VcsKind::Jj {
+                r.set_ignored_names(project.settings.effective().ignored_names());
+                match r.jj_working_copy() {
+                    Ok(mut copy) => {
+                        copy.files.retain(|f| repos.for_path(&f.path).is_some_and(|owner| owner.root() == r.root()));
+                        (Some(copy), None)
+                    }
+                    Err(e) => (None, Some(e.to_string())),
+                }
+            } else {
+                (None, None)
+            };
+            VcsRoot {
+                root: r.root().to_path_buf().into(),
+                kind: r.kind(),
+                unavailable_reason,
+                working_copy,
+                operation: r.operation().ok().flatten(),
+                head,
+                head_commit,
+            }
         })
         .collect())
 }
@@ -366,7 +395,441 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     let project = host.project(window)?;
     blocking(move || {
         let text = project.text_of(&path)?;
-        project.with_backend_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        if repo.kind() == VcsKind::Jj {
+            repo.jj_line_hunks(&path, &text)
+        } else {
+            project.with_backend_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+        }
+    })
+    .await
+}
+
+/// Log mutations require the exact discovered Jujutsu root and current row identity.
+#[command(trust = trusted)]
+pub async fn vcs_jj_log_action(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+    change: String,
+    action: ide_vcs::JjLogAction,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu action root is not a project repository"))?;
+        if action.changes_working_copy() {
+            for doc in project.documents.open_documents() {
+                let info = project.documents.snapshot(doc)?;
+                if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                    return Err(ide_core::IdeError::invalid(
+                        "Save unsaved documents before changing the Jujutsu working copy",
+                    ));
+                }
+            }
+        }
+        let result = repo.jj_log_action(&commit, &change, &action);
+        // Reload clean documents even if jj reports an error after partial work.
+        if action.changes_working_copy() {
+            project.documents.sync_from_disk();
+        }
+        result
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_pull_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPullOptions> {
+    vcs_jj_remote_operation(host, window, root, false, |repo| repo.jj_pull_options()).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_fetch(host: &Host, window: &str, root: PathBuf) -> IdeResult<String> {
+    vcs_jj_remote_operation(host, window, root, true, |repo| repo.jj_fetch()).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_pull(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    remote: String,
+    bookmark: String,
+) -> IdeResult<String> {
+    vcs_jj_remote_operation(host, window, root, true, move |repo| repo.jj_pull(&remote, &bookmark)).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_fetch_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjFetchOptions> {
+    vcs_jj_remote_operation(host, window, root, false, |repo| repo.jj_fetch_options()).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_fetch_selected(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    remote: String,
+    tag: Option<String>,
+) -> IdeResult<String> {
+    vcs_jj_remote_operation(host, window, root, true, move |repo| repo.jj_fetch_selected(&remote, tag.as_deref())).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_rebase_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjRebaseOptions> {
+    vcs_jj_remote_operation(host, window, root, false, |repo| repo.jj_rebase_options()).await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_rebase(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    source: Option<String>,
+    destination: String,
+    skip_emptied: bool,
+    ignore_immutable: bool,
+) -> IdeResult<String> {
+    vcs_jj_remote_operation(host, window, root, true, move |repo| {
+        repo.jj_rebase(source.as_deref(), &destination, skip_emptied, ignore_immutable)
+    })
+    .await
+}
+
+async fn vcs_jj_remote_operation<T: Send + 'static>(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    modifies_working_copy: bool,
+    run: impl FnOnce(&ide_vcs::Repo) -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|repo| repo.root() == root && repo.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Update root is not a project Jujutsu repository"))?;
+        if modifies_working_copy {
+            for doc in project.documents.open_documents() {
+                let info = project.documents.snapshot(doc)?;
+                if info.path.starts_with(&root) && project.documents.is_dirty(doc)? {
+                    return Err(ide_core::IdeError::invalid(
+                        "Save unsaved documents before updating the Jujutsu repository",
+                    ));
+                }
+            }
+        }
+        let result = run(repo);
+        if modifies_working_copy {
+            project.documents.sync_from_disk();
+        }
+        result
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_push_options(host: &Host, window: &str, root: PathBuf) -> IdeResult<ide_vcs::JjPushOptions> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push_options()
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_push(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    request: ide_vcs::JjPushRequest,
+) -> IdeResult<ide_vcs::JjPushPreview> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Push root is not a project Jujutsu repository"))?;
+        repo.jj_push(&request)
+    })
+    .await
+}
+
+/// Workspace commands always execute against an exact trusted project root.
+#[command(trust = trusted)]
+pub async fn vcs_jj_workspaces(host: &Host, window: &str, root: PathBuf) -> IdeResult<Vec<JjWorkspace>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_workspaces()
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_add_workspace(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    name: String,
+    path: PathBuf,
+    revision: String,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        repo.jj_add_workspace(&name, &path, &revision)
+    })
+    .await
+}
+
+/// Explicit stale recovery may update files in a secondary workspace outside project roots.
+#[command(trust = trusted)]
+pub async fn vcs_jj_update_workspace(host: &Host, window: &str, root: PathBuf, expected: JjWorkspace) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let projects = host.projects();
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        let target = expected
+            .path
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace path is unavailable"))?
+            .canonicalize()
+            .map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+        for open in &projects {
+            for doc in open.documents.open_documents() {
+                let info = open.documents.snapshot(doc)?;
+                if info.path.starts_with(&target) && open.documents.is_dirty(doc)? {
+                    return Err(ide_core::IdeError::invalid(
+                        "Save unsaved workspace documents before updating the workspace",
+                    ));
+                }
+            }
+        }
+        let result = repo.jj_update_workspace(&expected);
+        // jj can update files before reporting an error; synchronize clean buffers either way.
+        for open in &projects {
+            let paths: Vec<_> = open
+                .documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|doc| open.documents.snapshot(doc).ok().map(|info| info.path.to_path_buf()))
+                .filter(|path| path.starts_with(&target))
+                .collect();
+            open.documents.on_disk_changed(&paths);
+            if !paths.is_empty() || open.repos().all().iter().any(|r| r.root() == root || r.root() == target) {
+                open.sink.emit(ide_core::IdeEvent::VcsChanged { root: target.clone().into() });
+            }
+        }
+        result
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_remove_workspace(host: &Host, window: &str, root: PathBuf, expected: JjWorkspace) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let projects = host.projects();
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root && r.kind() == VcsKind::Jj)
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace root is not a project Jujutsu repository"))?;
+        let target = expected
+            .path
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::invalid("Workspace path is unavailable"))?
+            .canonicalize()
+            .map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+        for open in &projects {
+            if std::iter::once(open.root.clone())
+                .chain(open.content_roots())
+                .any(|root| root.starts_with(&target) || target.starts_with(&root))
+            {
+                return Err(ide_core::IdeError::invalid("Close the open or attached workspace before removing it"));
+            }
+            for doc in open.documents.open_documents() {
+                if open.documents.snapshot(doc)?.path.starts_with(&target) {
+                    return Err(ide_core::IdeError::invalid("Close workspace documents before removing it"));
+                }
+            }
+        }
+        repo.jj_remove_workspace(&expected)
+    })
+    .await
+}
+
+/// History requires an exact discovered root; never fall back to the primary repository.
+#[command(trust = trusted)]
+pub async fn vcs_jj_history(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    cursor: Option<JjHistoryCursor>,
+) -> IdeResult<JjHistoryPage> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history(cursor, 100)
+    })
+    .await
+}
+
+/// Immutable historical reads require the exact owning root, including nested repositories.
+#[command(trust = trusted)]
+pub async fn vcs_jj_history_files(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history_files(&commit)
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_history_line_stats(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    commit: String,
+) -> IdeResult<Vec<FileLineStats>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history_line_stats(&commit)
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_annotate(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+    text: String,
+) -> IdeResult<Vec<BlameLine>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu annotation root is not a project repository"))?;
+        repo.jj_annotate(&path, &commit, &text)
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_history_file_diff(
+    host: &Host,
+    window: &str,
+    root: PathBuf,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<JjFileDiff> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo = repos
+            .all()
+            .iter()
+            .find(|r| r.root() == root)
+            .ok_or_else(|| ide_core::IdeError::invalid("Jujutsu history root is not a project repository"))?;
+        repo.jj_history_file_diff(&path, &commit)
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_file_diff(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<JjFileDiff> {
+    let project = host.project(window)?;
+    blocking(move || {
+        apply_git_executable(&project.settings.effective());
+        let repos = project.repos();
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        repo.set_ignored_names(project.settings.effective().ignored_names());
+        repo.jj_file_diff(&path, &commit)
     })
     .await
 }
@@ -958,8 +1421,23 @@ pub async fn vcs_remote(
 #[command(trust = always)]
 pub async fn vcs_conflict_versions(host: &Host, window: &str, path: PathBuf) -> IdeResult<ide_vcs::MergeVersions> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?)))
-        .await
+    blocking(move || {
+        let repos = project.repos();
+        let repo =
+            repos.for_path(&path).ok_or_else(|| ide_core::IdeError::invalid("path is not in a project repository"))?;
+        if repo.kind() == VcsKind::Jj {
+            project.require_trust()?;
+            let settings = project.settings.effective();
+            apply_git_executable(&settings);
+            repo.set_ignored_names(settings.ignored_names());
+            // jj's conflict reader accepts UTF-8 text only; Git index/encoding reads
+            // would enter the Git-only project guard before reaching that reader.
+            repo.merge_versions(&path, encoding_rs::UTF_8)
+        } else {
+            project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?))
+        }
+    })
+    .await
 }
 
 #[command(trust = always)]
@@ -1047,6 +1525,30 @@ pub async fn vcs_git_version(host: &Host, window: &str, path: String) -> IdeResu
 #[command(trust = always)]
 pub fn vcs_detected_git() -> Option<String> {
     ide_vcs::detected_git_executable().map(|p| p.to_string_lossy().into_owned())
+}
+
+#[command(trust = trusted)]
+pub async fn vcs_jj_version(host: &Host, window: &str, path: String) -> IdeResult<GitExecutableInfo> {
+    host.require_trust(window)?;
+    blocking(move || {
+        let exe = if path.trim().is_empty() {
+            ide_vcs::detected_jj_executable().ok_or_else(|| {
+                ide_core::IdeError::unavailable(
+                    "jj executable not found; install Jujutsu or configure Settings > Version Control > Jujutsu",
+                )
+            })?
+        } else {
+            PathBuf::from(path.trim())
+        };
+        let version = ide_vcs::jj_version(Some(&exe))?;
+        Ok(GitExecutableInfo { version, path: exe.to_string_lossy().into_owned() })
+    })
+    .await
+}
+
+#[command(trust = trusted)]
+pub fn vcs_detected_jj() -> Option<String> {
+    ide_vcs::detected_jj_executable().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// `git config --get <key>` in the project repository; `None` when unset.
@@ -1165,13 +1667,28 @@ pub async fn vcs_rebase_with(
 
 #[command(trust = always)]
 pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Remote>> {
-    let project = LogAccess::new(host, window, repo.as_deref());
+    let access = LogAccess::new(host, window, repo.as_deref());
     blocking(move || {
-        let mut remotes = project.with_log_repo_at(repo.as_deref(), |r| r.remotes())?;
-        for r in &mut remotes {
-            let resolved = ide_ssh::resolve_ssh_remote_url(&r.url);
-            if resolved != r.url {
-                r.resolved_url = Some(resolved);
+        // GitHub checks can read an explicitly selected jj root, without enabling
+        // the Git mutation routes that remain guarded by require_git().
+        let mut selected = None;
+        if let (Some(project), Some(root)) = (&access.project, repo.as_deref()) {
+            let repos = project.repos();
+            if let Some(repo) = repos.at_root(root).filter(|repo| repo.kind() == VcsKind::Jj) {
+                if project.is_trusted() {
+                    apply_git_executable(&project.settings.effective());
+                }
+                selected = Some(repo.remotes()?);
+            }
+        }
+        let mut remotes = match selected {
+            Some(remotes) => remotes,
+            None => access.with_log_repo_at(repo.as_deref(), |r| r.remotes())?,
+        };
+        for remote in &mut remotes {
+            let resolved = ide_ssh::resolve_ssh_remote_url(&remote.url);
+            if resolved != remote.url {
+                remote.resolved_url = Some(resolved);
             }
         }
         Ok(remotes)
@@ -1552,6 +2069,28 @@ pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: St
 
 ide_command::domain!(
     vcs_commands:
+    vcs_jj_log_action,
+    vcs_jj_pull_options,
+    vcs_jj_fetch,
+    vcs_jj_pull,
+    vcs_jj_fetch_options,
+    vcs_jj_fetch_selected,
+    vcs_jj_rebase_options,
+    vcs_jj_rebase,
+    vcs_jj_push_options,
+    vcs_jj_push,
+    vcs_jj_workspaces,
+    vcs_jj_add_workspace,
+    vcs_jj_update_workspace,
+    vcs_jj_remove_workspace,
+    vcs_jj_history,
+    vcs_jj_history_files,
+    vcs_jj_history_line_stats,
+    vcs_jj_annotate,
+    vcs_jj_history_file_diff,
+    vcs_jj_file_diff,
+    vcs_jj_version,
+    vcs_detected_jj,
     vcs_add_to_ignore,
     vcs_add_worktree,
     vcs_apply_patch,
