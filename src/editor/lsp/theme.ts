@@ -445,6 +445,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  ".cm-sem-go-type-reference": semanticStyle("go-type-reference", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
@@ -454,10 +455,15 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-macro": semanticStyle("annotation", "annotation"),
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
+  ".cm-sem-go-package": semanticStyle("go-package", "string"),
   ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
   ".cm-sem-variable": semanticStyle("variable", "variable"),
+  ".cm-sem-go-local-variable": semanticStyle("go-local-variable", "variable"),
   ".cm-sem-property": semanticStyle("property", "property"),
+  ".cm-sem-go-exported-field": semanticStyle("go-exported-field", "property"),
+  ".cm-sem-go-unexported-field": semanticStyle("go-unexported-field", "property"),
   ".cm-sem-parameter": semanticStyle("param", "variable"),
+  ".cm-sem-go-method-receiver": semanticStyle("go-method-receiver", "param"),
   ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
   ".cm-sem-self": semanticStyle("self", "keyword"),
   ".cm-sem-keyword": semanticStyle("keyword", "keyword"),
@@ -465,6 +471,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
   ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
   ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
+  ".cm-sem-go-builtin-function": semanticStyle("go-builtin-function", "builtin"),
+  ".cm-sem-go-builtin-type": semanticStyle("go-builtin-type", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
     color: "var(--syn-static-property, var(--syn-property))",

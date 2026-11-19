@@ -1584,6 +1584,11 @@ html {
   --bg-identifier-under-caret: #d9e6ff;
   --bg-identifier-under-caret-write: #e0e0cc;
 }
+/* Go and Rust use the editor foreground for brackets. */
+.cm-editor[data-language="Go"],
+.cm-editor[data-language="Rust"] {
+  --syn-bracket: var(--fg-editor);
+}
 /* PHP editors and PHP code blocks: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
 .cm-editor[data-language="PHP"],
 .cm-editor [data-language="PHP"] {

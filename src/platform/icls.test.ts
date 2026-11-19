@@ -42,6 +42,99 @@ describe(".icls schemes", () => {
     expect(parseIcls(exportIcls("custom-rust", customs)).scheme.attributes).toMatchObject(scheme.attributes);
   });
 
+  it("uses GoLand's local-variable fallback for Go parameters and honours explicit Go colors", () => {
+    const local =
+      '<option name="DEFAULT_LOCAL_VARIABLE"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>';
+    const common =
+      '<option name="DEFAULT_PARAMETER"><value><option name="FOREGROUND" value="bcbec4"/></value></option>';
+    const receiver =
+      '<option name="GO_METHOD_RECEIVER"><value><option name="FOREGROUND" value="9bb8dc"/></value></option>';
+    const parse = (extra: string) =>
+      parseIcls(`<scheme name="Go"><attributes>${local}${common}${extra}</attributes></scheme>`).scheme;
+    const scheme = parse(receiver);
+    expect(scheme.attributes.parameter?.foreground).toBe("#bcbec4");
+    expect(scheme.attributes["go.parameter"]).toMatchObject({ foreground: "#ada0d3", italic: true });
+    expect(scheme.attributes["go.methodReceiver"]).toMatchObject({ foreground: "#9bb8dc", italic: false });
+    expect(parse("").attributes["go.methodReceiver"]).toEqual(scheme.attributes["go.parameter"]);
+    const explicit = parse(receiver + '<option name="GO_FUNCTION_PARAMETER" baseAttributes="DEFAULT_PARAMETER"/>');
+    expect(explicit.attributes["go.parameter"]?.foreground).toBe("#bcbec4");
+    const customs = { "custom-go": scheme };
+    expect(parseIcls(exportIcls("custom-go", customs)).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
+  it("imports separate Go built-in function and type colors, including inherited attributes", () => {
+    const { scheme } = parseIcls(`<scheme name="Go built-ins"><attributes>
+      <option name="DEFAULT_CLASS_REFERENCE"><value><option name="FOREGROUND" value="c6c8d0"/></value></option>
+      <option name="GO_BUILTIN_TYPE_REFERENCE" baseAttributes="DEFAULT_CLASS_REFERENCE"/>
+      <option name="GO_BUILTIN_FUNCTION_CALL"><value><option name="FOREGROUND" value="cc7832"/></value></option>
+      </attributes></scheme>`);
+    const customs = { "custom-go": scheme };
+    const css = schemeCss("custom-go", undefined, null, customs);
+    const go = css.split('.cm-editor[data-language="Go"] {\n')[1];
+    expect(go).toContain("--syn-go-builtin-function: #cc7832 !important");
+    expect(go).toContain("--syn-go-builtin-type: #c6c8d0 !important");
+    expect(css.split("}")[0]).not.toContain("--syn-go-builtin-");
+    const exported = parseIcls(exportIcls("custom-go", customs)).scheme;
+    expect(exported.attributes).toMatchObject(scheme.attributes);
+  });
+
+  it("imports and exports GO_PACKAGE as a Go-only color", () => {
+    const { scheme } = parseIcls(`<scheme name="Go packages"><attributes>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="b4be82"/></value></option>
+      <option name="OPENIDEA_go.packageReference"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="GO_PACKAGE"><value><option name="FOREGROUND" value="afbf7e"/></value></option>
+      </attributes></scheme>`);
+    const customs = { "custom-go": scheme };
+    expect(scheme.attributes["go.packageReference"]?.foreground).toBe("#afbf7e");
+    expect(scheme.attributes.packageReference).toBeUndefined();
+    expect(scheme.attributes.string?.foreground).toBe("#b4be82");
+    const css = schemeCss("custom-go", undefined, null, customs);
+    expect(css.split('.cm-editor[data-language="Go"] {\n')[1]).toContain("--syn-go-package: #afbf7e !important");
+    expect(exportIcls("custom-go", customs)).toContain('name="GO_PACKAGE"');
+  });
+
+  it("keeps Go fields and JSON keys and keywords scoped without changing common colours", () => {
+    const { scheme } = parseIcls(`<scheme name="Iceberg" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_IDENTIFIER"><value><option name="FOREGROUND" value="84a0c6"/></value></option>
+      <option name="DEFAULT_LOCAL_VARIABLE"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>
+      <option name="DEFAULT_INSTANCE_FIELD"><value><option name="FOREGROUND" value="8e7eba"/></value></option>
+      <option name="DEFAULT_FUNCTION_CALL"><value><option name="FOREGROUND" value="84a0c6"/></value></option>
+      <option name="GO_STRUCT_EXPORTED_MEMBER"><value><option name="FOREGROUND" value="9bb8dc"/><option name="FONT_TYPE" value="2"/></value></option>
+      <option name="GO_STRUCT_LOCAL_MEMBER"><value><option name="FOREGROUND" value="ada0d3"/><option name="FONT_TYPE" value="2"/></value></option>
+      <option name="GO_TYPE_REFERENCE"><value><option name="FOREGROUND" value="6fafbd"/></value></option>
+      <option name="JSON.PROPERTY_KEY"><value><option name="FOREGROUND" value="728eba"/></value></option>
+      <option name="JSON.KEYWORD"><value><option name="FOREGROUND" value="8e7eba"/></value></option>
+      </attributes></scheme>`);
+    const customs = { "custom-iceberg": scheme };
+    const css = schemeCss("custom-iceberg", undefined, null, customs);
+    const scope = (selector: string) => css.split(`${selector} {\n`)[1]?.split("}")[0];
+    expect(scope(":root")).toContain("--syn-property: #8e7eba !important");
+    expect(scope(":root")).toContain("--syn-function-call: #84a0c6 !important");
+    expect(scope(":root")).toContain("--syn-variable: #84a0c6 !important");
+    expect(scope(":root")).not.toContain("--syn-property: #728eba");
+    expect(scope(":root")).not.toContain("--syn-go-type-reference");
+    const go = scope('.cm-editor[data-language="Go"]');
+    expect(go).toContain("--syn-go-exported-field: #9bb8dc !important");
+    expect(go).toContain("--syn-go-unexported-field: #ada0d3 !important");
+    expect(go).toContain("--syn-go-unexported-field-italic: italic !important");
+    expect(go).toContain("--syn-go-local-variable: #ada0d3 !important");
+    expect(go).toContain("--syn-go-local-variable-italic: italic !important");
+    expect(go).toContain("--syn-go-type-reference: #6fafbd !important");
+    const json = scope('.cm-editor[data-language="JSON"]');
+    expect(json).toContain("--syn-property: #728eba !important");
+    expect(json).toContain("--syn-keyword: #8e7eba !important");
+    const exported = parseIcls(exportIcls("custom-iceberg", customs)).scheme;
+    for (const id of [
+      "go.localVariable",
+      "go.typeReference",
+      "go.exportedField",
+      "go.unexportedField",
+      "json.propertyKey",
+      "json.keyword",
+    ])
+      expect(exported.attributes[id]).toEqual(scheme.attributes[id]);
+  });
+
   it("round trips Python docstring tags with the Python attribute key and keywords with an extension key", () => {
     const { scheme } = parseIcls(`<scheme name="Python docs"><attributes>
       <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
