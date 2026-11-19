@@ -179,6 +179,11 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
             className={styles.crumbButton}
             tooltip={s.title}
             aria-haspopup={s.nav ? "listbox" : undefined}
+            onDoubleClick={() => {
+              if (!s.nav || s.nav.kind === "symbol") return;
+              setPopup(null);
+              void executeAction("navigate.selectIn", { path: s.nav.path, expand: s.nav.kind === "dir" });
+            }}
             onClick={(e) => {
               const nav = s.nav;
               const anchor = e.currentTarget;

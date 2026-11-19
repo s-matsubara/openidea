@@ -2184,6 +2184,7 @@
   "Missing blank line between subject and body": "Missing blank line between subject and body",
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
   "Add blank line": "Add blank line",
+  "Selection only": "Selection only",
   "Identifier": "Identifier",
   "Exported struct field": "Exported struct field",
   "Unexported struct field": "Unexported struct field",

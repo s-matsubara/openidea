@@ -122,7 +122,7 @@ interface ProjectTreeState {
   editing: Editing | null;
   clipboard: Clipboard | null;
   /** A path to select (and scroll to) once its row is visible. */
-  revealRequest: { path: string; focus: boolean; seq: number } | null;
+  revealRequest: { path: string; focus: boolean; expand: boolean; seq: number } | null;
   /** Folder key highlighted as drop target. */
   dropTarget: string | null;
   mode: ViewMode;
@@ -635,7 +635,7 @@ export function dropOutlines(paths: readonly string[]) {
 let revealSeq = 0;
 
 /** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false) {
+export function revealPath(requested: string, focus = false, expand = false) {
   const { expanded } = get();
   const project = get().root;
   if (!project) return false;
@@ -668,7 +668,7 @@ export function revealPath(requested: string, focus = false) {
       changed = true;
     }
   if (changed) setExpanded(next);
-  set({ revealRequest: { path, focus, seq: ++revealSeq } });
+  set({ revealRequest: { path, focus, expand, seq: ++revealSeq } });
   for (const a of folders) void loadDir(a);
   return true;
 }

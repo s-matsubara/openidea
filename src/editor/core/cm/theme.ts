@@ -328,7 +328,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-rainbow-bracket-unmatched, .cm-rainbow-bracket-unmatched *": { color: "var(--syn-invalid)" },
 
   // Whitespace rendering
-  ".cm-highlightSpace": {
+  ".cm-highlightSpace, .cm-highlightSpace .cm-openidea-selected": {
     backgroundImage: "radial-gradient(circle at 50% 55%, var(--fg-whitespace, var(--fg-faint)) 11%, transparent 12%)",
     backgroundPosition: "center",
   },

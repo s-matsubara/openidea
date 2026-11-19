@@ -125,9 +125,9 @@ export const useOutline = create<Record<string, OutlineItem[]>>(() => ({}));
 const REFRESH_DELAY = 450;
 /**
  * Languages whose stream mode works from word lists, so the grammar's highlights are drawn
- * over it: Kotlin declaration roles, Shell commands, function names and `local`.
+ * over it: Kotlin declaration roles, Shell commands, function names and `local`, and TOML keys.
  */
-const GRAMMAR_SUPPLEMENTED = new Set(["kotlin", "shellscript"]);
+const GRAMMAR_SUPPLEMENTED = new Set(["kotlin", "shellscript", "toml"]);
 function bannerFor(info: DocumentInfo): Banner {
   // Virtual documents (library classes) get their own notice from the editor area.
   if (info.uri) return null;

@@ -8599,6 +8599,7 @@
   "Associated trait function call": "特征关联函数调用",
   "Built-in type": "内置类型",
   "Identifier": "标识符",
+  "Selection only": "仅选中范围",
   "Annotate with Jujutsu Blame": "使用 Jujutsu Blame 注解",
   "Jujutsu working copy is unavailable": "Jujutsu 工作副本不可用",
   "Some Jujutsu diffs could not be opened": "部分 Jujutsu 差异无法打开",

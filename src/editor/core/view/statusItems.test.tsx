@@ -1,6 +1,7 @@
 import { Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import * as actions from "@/platform/actions";
 import type { OutlineItem, Settings } from "@/platform/ipc";
 import type { EditorStatus } from "../controller";
 
@@ -117,6 +118,17 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs inStatusBar />);
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
+  const select = vi.spyOn(actions, "executeAction").mockResolvedValue(true);
+  try {
+    fireEvent.doubleClick(screen.getByRole("button", { name: "src" }));
+    expect(select).toHaveBeenCalledWith("navigate.selectIn", { path: "/b/src", expand: true });
+    fireEvent.doubleClick(screen.getByRole("button", { name: "b" }));
+    expect(select).toHaveBeenCalledWith("navigate.selectIn", { path: "/b", expand: true });
+    fireEvent.doubleClick(screen.getByRole("button", { name: "file.ts" }));
+    expect(select).toHaveBeenCalledWith("navigate.selectIn", { path: "/b/src/file.ts", expand: false });
+  } finally {
+    select.mockRestore();
+  }
   view.unmount();
   useProject.setState({ project: null });
 });
