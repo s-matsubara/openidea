@@ -554,19 +554,22 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
+  { value: "tab", label: "New Tab" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
 ];
 
 function OpenProjectInRow() {
   const [value, set] = useSetting<OpenProjectIn>("general.openProjectIn");
+  const mac = usePlatform((s) => s.os === "macos");
+  const selected = !mac && value === "tab" ? "ask" : value;
   const name = useId();
   return (
     <Row label="Open project in">
       <div className={styles.radios} role="radiogroup" aria-label={tx("Open project in")}>
-        {OPEN_IN.map((o) => (
+        {OPEN_IN.filter((o) => mac || o.value !== "tab").map((o) => (
           <label key={o.value} className={styles.radio}>
-            <input type="radio" name={name} checked={value === o.value} onChange={() => set(o.value)} />
+            <input type="radio" name={name} checked={selected === o.value} onChange={() => set(o.value)} />
             <SearchLabel text={o.label} />
           </label>
         ))}

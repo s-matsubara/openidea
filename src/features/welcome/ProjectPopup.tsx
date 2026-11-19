@@ -79,7 +79,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     onClose();
     if (e.kind === "action") void executeAction(e.id);
     else if (e.open && !parseRemoteLocation(e.m.project.path))
-      void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+      void call(commands.windowOpenProject(e.m.project.path, "same", [])).catch(() => undefined);
     // Opening a remote location focuses the window already connected to it.
     else void openRecent(e.m.project);
   };

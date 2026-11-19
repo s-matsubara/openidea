@@ -140,7 +140,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void, onRemo
           label: "Open in New Window",
           icon: "folder-open",
           run: () =>
-            void call(commands.windowOpenRemote(remote.target, remote.path, true))
+            void call(commands.windowOpenRemote(remote.target, remote.path, "new"))
               .then(() => onOpened?.())
               .catch(() => undefined),
         }

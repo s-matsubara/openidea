@@ -124,6 +124,8 @@ pub enum DiffSide {
     },
     /// The working file (unsaved editor buffer included).
     Worktree {
+        #[serde(default, rename = "jjBlame", skip_serializing_if = "Option::is_none")]
+        jj_blame: Option<ide_vcs::JjBlameTarget>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
@@ -134,7 +136,14 @@ pub enum DiffSide {
         label: Option<String>,
     },
     /// Literal text: a side that does not exist.
-    Text { text: String, label: String },
+    Text {
+        text: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        absent: Option<bool>,
+        #[serde(default, rename = "jjBlame", skip_serializing_if = "Option::is_none")]
+        jj_blame: Option<ide_vcs::JjBlameTarget>,
+    },
     /// A Local History revision.
     History { id: String, label: String },
 }
@@ -809,7 +818,7 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new(), false)
+    create_window_with(app, project, Vec::new(), WindowPlacement::Automatic)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
@@ -817,27 +826,43 @@ fn create_window_with(
     app: &AppHandle,
     project: Option<PathBuf>,
     files: Vec<PathBuf>,
-    restoring: bool,
+    placement: WindowPlacement<'_>,
 ) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, placement)
 }
 
 /// Restoring a saved group preserves its membership and selected tab.
 pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
-    create_window_with(app, Some(project), Vec::new(), true)
+    create_window_with(app, Some(project), Vec::new(), WindowPlacement::Restored)
+}
+
+enum WindowPlacement<'a> {
+    Automatic,
+    Restored,
+    Tab(&'a str),
 }
 
 fn create_window_for(
     app: &AppHandle,
     title: Option<String>,
     launch: Launch,
-    _restoring: bool,
+    placement: WindowPlacement<'_>,
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
-    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    let tab_target = match placement {
+        WindowPlacement::Automatic => crate::macos::new_project_tab_target(app, &launch)?,
+        WindowPlacement::Restored => None,
+        WindowPlacement::Tab(anchor) => {
+            Some(app.get_webview_window(anchor).ok_or_else(|| IdeError::not_found("Window closed"))?)
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    if let WindowPlacement::Tab(anchor) = placement {
+        return Err(IdeError::unavailable(format!("Cannot open a new tab in window {anchor} on this platform")));
+    }
     // The label is free only until the window exists, so concurrent opens take turns.
     let creating = CREATING.lock();
     let windows = app.webview_windows();
@@ -866,6 +891,9 @@ fn create_window_for(
         config.visible = false;
     }
     let window = build_project_window(app, config);
+    if window.is_err() {
+        app.state::<WindowsState>().take_launch(&label);
+    }
     drop(creating);
     // Plugins hear of the window from the main thread's queue; forget it after them.
     #[cfg(target_os = "macos")]
@@ -876,7 +904,10 @@ fn create_window_for(
     let window = window?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
-        crate::window_groups::join(app, target.label(), window.label())?;
+        if let Err(error) = crate::window_groups::join(app, target.label(), window.label()) {
+            let _ = window.destroy();
+            return Err(error);
+        }
         return Ok(window);
     }
     focus(&window);
@@ -897,11 +928,11 @@ fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathB
 
 fn open_launch_window(app: &AppHandle, title: Option<String>, launch: Launch, wait: bool) -> IdeResult<()> {
     if wait {
-        return create_window_for(app, title, launch, false).map(|_| ());
+        return create_window_for(app, title, launch, WindowPlacement::Automatic).map(|_| ());
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_for(&app, title, launch, false) {
+        if let Err(e) = create_window_for(&app, title, launch, WindowPlacement::Automatic) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -920,20 +951,39 @@ pub enum OpenOutcome {
     Current,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectOpenMode {
+    Same,
+    New,
+    Tab,
+}
+
+impl ProjectOpenMode {
+    fn placement(self, caller: &str) -> Option<WindowPlacement<'_>> {
+        match self {
+            Self::Same => None,
+            Self::New => Some(WindowPlacement::Automatic),
+            Self::Tab => Some(WindowPlacement::Tab(caller)),
+        }
+    }
+}
+
 /// Opens folder `path` as a project and then `files` in its editor; see [`OpenOutcome`]
 /// (`Current`: the caller opens both itself).
 pub fn open_project_window(
     app: &AppHandle,
+    caller: &str,
     path: &Path,
-    new_window: bool,
+    mode: ProjectOpenMode,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
     // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
     if let Some(remote) = wsl_launch(path) {
-        return open_remote_window(app, &remote.target, &remote.path, new_window);
+        return open_remote_window(app, caller, &remote.target, &remote.path, mode);
     }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
-    tracing::info!("open_project_window {} new_window={new_window}", root.display());
+    tracing::info!("open_project_window {} mode={mode:?}", root.display());
     if let Some(w) = find_project_window(app, &root) {
         if files.is_empty() {
             focus(&w);
@@ -942,10 +992,10 @@ pub fn open_project_window(
         }
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    if !new_window {
+    let Some(placement) = mode.placement(caller) else {
         return Ok(OpenOutcome::Current);
-    }
-    let window = create_window_with(app, Some(root), files, false)?;
+    };
+    let window = create_window_with(app, Some(root), files, placement)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -955,7 +1005,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file], false)?;
+    let window = create_window_with(app, project, vec![file], WindowPlacement::Automatic)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -971,23 +1021,24 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
 /// [`open_project_window`] for folder `path` of `target` (Remote Development).
 pub fn open_remote_window(
     app: &AppHandle,
+    caller: &str,
     target: &RemoteTarget,
     path: &str,
-    new_window: bool,
+    mode: ProjectOpenMode,
 ) -> IdeResult<OpenOutcome> {
-    tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
+    tracing::info!("open_remote_window {target:?}:{path} mode={mode:?}");
     let windows = app.webview_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    if !new_window {
+    let Some(placement) = mode.placement(caller) else {
         return Ok(OpenOutcome::Current);
-    }
+    };
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, placement)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -2071,11 +2122,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diff_window_roundtrip_preserves_jj_snapshot_metadata_and_absent_sides() {
+        let json = serde_json::json!({
+            "path": "/jj/added",
+            "left": {"type": "text", "text": "", "label": "Parent", "absent": true},
+            "right": {"type": "worktree", "jjBlame": {"root": "/jj", "path": "/jj/added", "commit": "exact"}}
+        });
+        let diff: DiffLaunch = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&diff).unwrap(), json);
+        let mut changed = diff.clone();
+        if let DiffSide::Worktree { jj_blame: Some(target), .. } = &mut changed.right {
+            target.commit = "new-exact".into();
+        }
+        assert_ne!(diff_window_id(&diff), diff_window_id(&changed));
+    }
+
+    #[test]
     fn diff_window_identity_keeps_revisions_distinct_and_ignores_reveal_line() {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
-            right: DiffSide::Worktree { label: None },
+            right: DiffSide::Worktree { label: None, jj_blame: None },
             line: None,
         };
         let id = diff_window_id(&diff);

@@ -8,6 +8,7 @@
  * editor tabs only. One LightEdit window collects them all.
  */
 import { executeAction, type Action } from "@/platform/actions";
+import type { ProjectOpenMode } from "@/bindings";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
 import {
@@ -137,22 +138,26 @@ export async function openPaths(
  * show its Welcome screen under the question. A WSL folder opens as a remote project, whose
  * window asks about the distribution's folder itself.
  */
-async function openProjectWindow(path: string, newWindow: boolean, files: readonly string[] = []) {
-  if (newWindow && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
-  return call(commands.windowOpenProject(path, newWindow, [...files]));
+async function openProjectWindow(path: string, mode: ProjectOpenMode, files: readonly string[] = []) {
+  if (mode !== "same" && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
+  return call(commands.windowOpenProject(path, mode, [...files]));
 }
 
 /**
- * Opens `path`, focusing the window that already has it. `newWindow`: always a
- * new window; otherwise this window unless it already has a project or LightEdit
- * session. `files` then open in the project's editor.
+ * Opens `path`, focusing the window that already has it. In auto mode, use this
+ * window if empty and open a new window otherwise. `"tab"` joins this window's
+ * project tabs. `files` then open in the project's editor.
  */
-export async function openProjectInWindow(path: string, newWindow: boolean, files: readonly string[] = []) {
+export async function openProjectInWindow(
+  path: string,
+  placement: "auto" | "new" | "tab" = "auto",
+  files: readonly string[] = [],
+) {
   if (desktopOnly()) return;
   const s = useProject.getState();
-  const inNew = newWindow || s.project !== null || s.lightEdit;
+  const mode = placement === "auto" ? (s.project !== null || s.lightEdit ? "new" : "same") : placement;
   try {
-    const outcome = await openProjectWindow(path, inNew, files);
+    const outcome = await openProjectWindow(path, mode, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch (e) {
     openFailed(path, e);
@@ -166,7 +171,7 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
 export async function openProjectWithPolicy(path: string, files: readonly string[] = []): Promise<void> {
   if (desktopOnly()) return;
   const { project: current, lightEdit } = useProject.getState();
-  if (!current && !lightEdit) return openProjectInWindow(path, false, files);
+  if (!current && !lightEdit) return openProjectInWindow(path, "auto", files);
   if (!isRemoteWindow() && current?.root === path) return openInEditor(files);
   if (!isRemoteWindow() && current?.workspace?.projects.includes(path)) {
     await executeAction("project.reveal", path);
@@ -174,14 +179,14 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   }
   const mode = await chooseProjectWindow(basename(path));
   if (!mode) return;
-  if (mode === "new") return openProjectInWindow(path, true, files);
+  if (mode === "new" || mode === "tab") return openProjectInWindow(path, mode, files);
   if (mode === "attach") {
     await attachProject(path, files);
     return;
   }
   try {
     // A window that already has the project is focused instead.
-    const outcome = await call(commands.windowOpenProject(path, false, [...files]));
+    const outcome = await call(commands.windowOpenProject(path, "same", [...files]));
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch {
     if (await openHere(path)) await openInEditor(files);
@@ -483,7 +488,7 @@ export function windowActions(): Action[] {
       run: async (c) => {
         if (desktopOnly()) return;
         const path = typeof c.arg === "string" ? c.arg : await pickFolder(t("app.window.pickTitle"));
-        if (path) await openProjectInWindow(path, true);
+        if (path) await openProjectInWindow(path, "new");
       },
     },
     {
@@ -550,7 +555,7 @@ export function windowActions(): Action[] {
         const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
         if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
         try {
-          const outcome = await openProjectWindow(arg.path, arg.newWindow);
+          const outcome = await openProjectWindow(arg.path, arg.newWindow ? "new" : "same");
           if (outcome.kind === "current") await openHere(arg.path);
         } catch (error) {
           openFailed(arg.path, error);

@@ -239,7 +239,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
         ),
       );
       onClose();
-      await openProjectInWindow(dir, useProject.getState().project !== null);
+      await openProjectInWindow(dir);
     } catch (e) {
       if (isCancelled(e)) setJob(null);
       else setJob((j) => (j ? { ...j, error: errorText(e) } : j));

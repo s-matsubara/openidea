@@ -1658,14 +1658,14 @@ export const commands = {
 	 *  A project already open in some window is focused instead.
 	 *  `files` then open in that project's editor.
 	 */
-	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
+	windowOpenProject: (path: string, mode: ProjectOpenMode, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, mode, files })),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
 	/**
 	 *  [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
 	 *  Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (target: RemoteTarget, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, newWindow })),
+	windowOpenRemote: (target: RemoteTarget, path: string, mode: ProjectOpenMode) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, mode })),
 	/**
 	 *  Opens this window's Settings window on `page` (or focuses it and navigates);
 	 *  `new_projects` edits the global layer only ("Settings for New Projects").
@@ -8704,6 +8704,8 @@ export type ProjectLibrary = {
 	javadocs?: string[],
 	scope?: DependencyScope,
 };
+
+export type ProjectOpenMode = "same" | "new" | "tab";
 
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
