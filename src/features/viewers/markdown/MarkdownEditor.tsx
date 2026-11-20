@@ -120,6 +120,8 @@ export function MarkdownEditor({
       <SplitGroup
         orientation="horizontal"
         className={styles.group}
+        // The hidden editor stays mounted, but its zero-size panel must not create a resize hit region.
+        disabled={mode === "preview"}
         storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
       >
         <SplitPanel id="editor" style={{ overflow: "hidden" }} {...splitBounds}>

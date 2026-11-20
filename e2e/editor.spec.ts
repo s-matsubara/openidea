@@ -1,6 +1,18 @@
 import type { Page } from "@playwright/test";
 import { expect, openFromTree, test } from "./fixtures";
 
+test("Preview Only leaves the Project tree interactive", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await page.getByRole("button", { name: "Preview Only", exact: true }).click();
+  await expect(page.getByRole("document", { name: "Markdown preview" })).toBeVisible();
+
+  const file = page.getByRole("treeitem", { name: "settings.gradle.kts", exact: true });
+  await file.hover();
+  await expect(file).not.toHaveCSS("cursor", /resize$/);
+  const editor = await openFromTree(page, "settings.gradle.kts");
+  await expect(editor.locator(".cm-content")).toBeVisible();
+});
+
 test("opens a file from the project tree and types into it", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "build.gradle.kts");
   await editor.locator(".cm-content").click();
