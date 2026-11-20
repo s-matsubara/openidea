@@ -25,6 +25,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
   compiledDebugPlan,
@@ -157,7 +158,11 @@ async function runSelected() {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
     return;
   }
-  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  // As in IDEA, Run starts another instance of a configuration that allows multiple instances;
+  // otherwise it restarts the running one.
+  const target = config.allowParallel
+    ? null
+    : selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
   if (target) {
     target.rerun?.();
     return;
@@ -573,6 +578,34 @@ export function activate(): () => void {
         icon: "rerun",
         when: "projectOpen && activeToolWindow == 'run'",
         run: () => rerunActive(),
+      },
+      {
+        id: "run.flutterChooseDevice",
+        title: "Select Flutter Device…",
+        category: "Run",
+        when: "flutterProject",
+        run: () => {
+          const chooserOpen = !useFlutterDevices.getState().chooserOpen;
+          useFlutterDevices.setState({ chooserOpen });
+          if (chooserOpen) void call(commands.flutterDevicesRefresh()).catch(() => undefined);
+        },
+      },
+      {
+        id: "run.flutterSelectDevice",
+        title: "Use Flutter Device",
+        category: "Run",
+        hidden: true,
+        when: "flutterProject",
+        run: ({ arg }) => {
+          if (typeof arg === "string") selectFlutterDevice(arg);
+        },
+      },
+      {
+        id: "run.flutterRestartDaemon",
+        title: "Restart Flutter Daemon",
+        category: "Run",
+        when: "flutterProject",
+        run: () => restartFlutterDaemon(),
       },
       {
         id: "run.chooseConfig",

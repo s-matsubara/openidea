@@ -537,6 +537,16 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
+/// Settings › Build Tools › Maven › Automatically download sources → jdtls
+/// `java.maven.downloadSources`.
+pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let download = s.languages.java.maven.download_sources;
+    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"maven": {"downloadSources": download}}}));
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
 /// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -1177,13 +1187,19 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         for (key, value) in module_env {
             build["env"][key] = json!(value);
         }
+        if s.languages.go.gofumpt {
+            build["gofumpt"] = json!(true);
+        }
         let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
         // gopls retains omitted keys on reconfiguration. Explicit empty values
         // restore defaults when the last project constraint is cleared.
+        // Settings › Language Servers options are merged later, so look at them too.
         let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
-        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+        let user_init = s.language_servers.get(&cfg.name).and_then(|ls| ls.initialization_options.as_ref());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({})), ("gofumpt", json!(false))] {
             if settings.get(key).is_none() {
-                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+                let explicit = user_init.and_then(|v| v.get(key)).or_else(|| init.as_ref()?.get(key));
+                settings[key] = explicit.cloned().unwrap_or(default);
             }
         }
         merge(&mut settings, build);
@@ -1228,6 +1244,21 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             if !taken {
                 cfg.args.push(format!("--jvm-arg={arg}"));
             }
+        }
+    }
+
+    if name == "java-analyzer" {
+        // Unset, java-analyzer finds a JDK and the Maven local repository the way Maven does;
+        // the server's own `initializationOptions` in settings are merged later and win.
+        let mut layer = serde_json::Map::new();
+        if let Some(jdk) = project_jdk(root, s) {
+            layer.insert("jdkHome".into(), json!(jdk.home.to_string_lossy()));
+        }
+        if let Some(repo) = maven_local_repository(root, s) {
+            layer.insert("maven".into(), json!({ "localRepository": repo.to_string_lossy() }));
+        }
+        if !layer.is_empty() {
+            merge_init_options(cfg, Value::Object(layer));
         }
     }
 
@@ -1387,6 +1418,23 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
         }
     }
     out
+}
+
+/// Built-in servers given an executable path in Settings › Language Servers, as
+/// (definition's command, path): they run that executable (see [`server_launch_overrides`]).
+pub fn server_command_paths<'a>(
+    servers: impl IntoIterator<Item = &'a LanguageServerConfig>,
+    root: &Path,
+    s: &Settings,
+) -> Vec<(String, PathBuf)> {
+    servers
+        .into_iter()
+        .filter_map(|server| {
+            let command = s.language_servers.get(&server.name)?.command.trim();
+            let path = command.contains(['/', '\\']).then(|| setting_path(root, command))??;
+            Some((server.command.clone(), path))
+        })
+        .collect()
 }
 
 /// Adds the servers defined in settings to the languages they serve (to list
@@ -2348,6 +2396,25 @@ mod maven_linkage_tests {
         assert_eq!(default_maven_repository_in(home), Some(home.join("m2repo")));
         std::fs::write(&settings, "<settings><localRepository>${env.REPO}</localRepository></settings>").unwrap();
         assert_eq!(default_maven_repository_in(home), Some(home.join(".m2/repository")));
+    }
+
+    #[test]
+    fn maven_sources_download_follows_the_setting() {
+        let mut settings = Settings::default();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"maven": {"downloadSources": true, "updateSnapshots": false}}}));
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(
+            cfg.settings,
+            Some(json!({"java": {"maven": {"downloadSources": false, "updateSnapshots": false}}}))
+        );
+        settings.languages.java.maven.download_sources = true;
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(cfg.settings.unwrap()["java"]["maven"]["downloadSources"], json!(true));
+
+        let mut other = custom_server("kotlin", &LanguageServerSettings::default());
+        configure_maven_sources(&mut other, &settings);
+        assert_eq!(other.settings, None);
     }
 
     #[test]

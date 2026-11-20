@@ -188,8 +188,14 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
     ["BACKGROUND", "--bg-search-match-current"],
     ["BACKGROUND", "--bg-text-search-result"],
   ],
-  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
-  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],
+  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret"],
+    ["BACKGROUND", "--bg-identifier-under-caret"],
+  ],
+  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret-write"],
+    ["BACKGROUND", "--bg-identifier-under-caret-write"],
+  ],
   FOLDED_TEXT_ATTRIBUTES: [
     ["FOREGROUND", "--fg-fold-placeholder"],
     ["BACKGROUND", "--bg-fold-placeholder"],

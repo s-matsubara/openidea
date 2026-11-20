@@ -34,7 +34,7 @@ describe(".icls schemes", () => {
     expect(scheme.attributes["rust.lifetime"]).toMatchObject({ foreground: "#b7c685", italic: true });
     const customs = { "custom-rust": scheme };
     const css = schemeCss("custom-rust", undefined, null, customs);
-    const [global, rust] = css.split('.cm-editor[data-language="Rust"] {\n');
+    const [global, rust] = css.split('.cm-editor[data-language="Rust"], .cm-editor [data-language="Rust"] {\n');
     expect(global).toContain("--syn-decorator: #8e7eba");
     expect(global).not.toContain("--syn-rust-");
     expect(rust).toContain("--syn-rust-lifetime-italic: italic");
@@ -70,7 +70,7 @@ describe(".icls schemes", () => {
       </attributes></scheme>`);
     const customs = { "custom-go": scheme };
     const css = schemeCss("custom-go", undefined, null, customs);
-    const go = css.split('.cm-editor[data-language="Go"] {\n')[1];
+    const go = css.split('.cm-editor[data-language="Go"], .cm-editor [data-language="Go"] {\n')[1];
     expect(go).toContain("--syn-go-builtin-function: #cc7832 !important");
     expect(go).toContain("--syn-go-builtin-type: #c6c8d0 !important");
     expect(css.split("}")[0]).not.toContain("--syn-go-builtin-");
@@ -89,7 +89,9 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.packageReference).toBeUndefined();
     expect(scheme.attributes.string?.foreground).toBe("#b4be82");
     const css = schemeCss("custom-go", undefined, null, customs);
-    expect(css.split('.cm-editor[data-language="Go"] {\n')[1]).toContain("--syn-go-package: #afbf7e !important");
+    expect(css.split('.cm-editor[data-language="Go"], .cm-editor [data-language="Go"] {\n')[1]).toContain(
+      "--syn-go-package: #afbf7e !important",
+    );
     expect(exportIcls("custom-go", customs)).toContain('name="GO_PACKAGE"');
   });
 
@@ -113,14 +115,14 @@ describe(".icls schemes", () => {
     expect(scope(":root")).toContain("--syn-variable: #84a0c6 !important");
     expect(scope(":root")).not.toContain("--syn-property: #728eba");
     expect(scope(":root")).not.toContain("--syn-go-type-reference");
-    const go = scope('.cm-editor[data-language="Go"]');
+    const go = scope('.cm-editor[data-language="Go"], .cm-editor [data-language="Go"]');
     expect(go).toContain("--syn-go-exported-field: #9bb8dc !important");
     expect(go).toContain("--syn-go-unexported-field: #ada0d3 !important");
     expect(go).toContain("--syn-go-unexported-field-italic: italic !important");
     expect(go).toContain("--syn-go-local-variable: #ada0d3 !important");
     expect(go).toContain("--syn-go-local-variable-italic: italic !important");
     expect(go).toContain("--syn-go-type-reference: #6fafbd !important");
-    const json = scope('.cm-editor[data-language="JSON"]');
+    const json = scope('.cm-editor[data-language="JSON"], .cm-editor [data-language="JSON"]');
     expect(json).toContain("--syn-property: #728eba !important");
     expect(json).toContain("--syn-keyword: #8e7eba !important");
     const exported = parseIcls(exportIcls("custom-iceberg", customs)).scheme;
@@ -160,6 +162,33 @@ describe(".icls schemes", () => {
     const xml = exportIcls(id, customs);
     expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="ffffff" />');
     expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+  });
+
+  it("round trips both caret identifier attributes with their foregrounds (#4109)", () => {
+    const { scheme } = parseIcls(`<scheme name="Caret" parent_scheme="Darcula"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+      <option name="IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="aa0000"/><option name="BACKGROUND" value="220000"/>
+      </value></option>
+      <option name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="00aa00"/><option name="BACKGROUND" value="002200"/>
+      </value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaret).toEqual({ foreground: "#aa0000", background: "#220000" });
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ foreground: "#00aa00", background: "#002200" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"');
+    expect(parseIcls(xml).scheme.attributes.identifierUnderCaretWrite).toEqual(
+      scheme.attributes.identifierUnderCaretWrite,
+    );
+  });
+
+  it("still reads the write highlight from WRITE_SEARCH_RESULT_ATTRIBUTES alone", () => {
+    const { scheme } = parseIcls(`<scheme name="Old"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ background: "#111111" });
   });
 
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {

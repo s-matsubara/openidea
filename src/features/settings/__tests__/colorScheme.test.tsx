@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
 import { CLEAR_COLOR, _setSchemeSource } from "@/platform/colorScheme";
 import { setLocale } from "@/platform/i18n";
@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(),
@@ -40,6 +41,7 @@ const schemePage = (id: string) => {
   );
 };
 
+beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.open.mockResolvedValue("/schemes/forest.icls");
@@ -59,7 +61,7 @@ describe("scheme actions", () => {
     await run("import");
     const id = value("colorScheme") as string;
     expect(id).toMatch(/^custom-/);
-    expect(screen.getByRole("status")).toHaveTextContent("Applied 16 values; skipped 2");
+    expect(screen.getByRole("status")).toHaveTextContent("Applied 19 values; skipped 2");
     expect(Object.values(useSettingsDialog.getState().staged).every((s) => s.scope === "global")).toBe(true);
     await run("export");
     expect(mocks.write).toHaveBeenCalledWith("/schemes/export.icls", expect.any(Array));
@@ -179,6 +181,19 @@ describe("python scheme attributes", () => {
   });
 });
 
+describe("Julia scheme attributes", () => {
+  it("previews Julia roles and selects their independently scoped attributes", () => {
+    schemePage("editor.colorScheme.julia");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-function-call"]')!));
+    expect(screen.getByRole("treeitem", { name: "Function call", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-type"]')!));
+    expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("@show")));
+    expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
 describe("doc comment scheme attributes", () => {
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],
@@ -250,7 +265,7 @@ describe("Go scheme attributes", () => {
     expect(value("colorOverrides")).toEqual({
       dark: { packageReference: { foreground: "#139839" }, "go.packageReference": { bold: true } },
     });
-    expect(preview.style.getPropertyValue("--syn-namespace-bold")).toBe("var(--fw-code-bold, 700)");
+    expect(preview.style.getPropertyValue("--syn-go-package-bold")).toBe("var(--fw-code-bold, 700)");
 
     act(() => fireEvent.click(screen.getByRole("button", { name: "Restore Defaults" })));
     expect(value("colorOverrides")).toEqual({});

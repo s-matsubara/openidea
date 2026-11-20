@@ -280,6 +280,14 @@ pub struct SessionExceptionFilters {
     pub filters: Vec<ExceptionFilter>,
 }
 
+/// What triggered a hot reload; `flutter debug_adapter` takes it as `reason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HotReloadReason {
+    Manual,
+    Save,
+}
+
 /// A live session, as listed by [`DebugManager::sessions`].
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -402,6 +410,14 @@ fn is_flutter_project(dir: &Path, program: Option<&Path>) -> bool {
         .filter_map(|d| d.ancestors().take(6).find(|a| a.join("pubspec.yaml").is_file()))
         .filter_map(|root| std::fs::read_to_string(root.join("pubspec.yaml")).ok())
         .any(|s| s.contains("sdk: flutter"))
+}
+
+/// `flutter debug_adapter` passes `toolArgs` on to `flutter run` / `flutter attach`.
+fn add_flutter_device(arguments: &mut Value, device: Value) {
+    let args = arguments.as_object_mut().map(|o| o.entry("toolArgs").or_insert_with(|| json!([])));
+    if let Some(args) = args.and_then(Value::as_array_mut) {
+        args.extend([json!("-d"), device]);
+    }
 }
 
 fn no_session(s: DebugSessionId) -> IdeError {
@@ -768,6 +784,8 @@ impl DebugManager {
         // one regardless of what the working directory holds.
         let force_flutter =
             arguments.as_object_mut().and_then(|o| o.remove("__flutter")).and_then(|v| v.as_bool()).unwrap_or(false);
+        // Also IDE-side: the device to run on, should this turn out to be a Flutter session.
+        let flutter_device = arguments.as_object_mut().and_then(|o| o.remove("__flutterDevice"));
         let cwd = config
             .cwd
             .clone()
@@ -812,10 +830,15 @@ impl DebugManager {
         // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
         // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
         // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" && spec.command == "dart" {
+        if config.adapter == "dart" {
             let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
             if force_flutter || is_flutter_project(&cwd, program) {
-                spec.command = "flutter".into();
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
             }
         }
         let id = DebugSessionId::next();
@@ -1646,8 +1669,8 @@ impl DebugManager {
 
     /// Flutter's DAP adapter: injects the changed sources into the running app.
     /// Not part of the DAP standard; adapters that do not know the request reject it.
-    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
-        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+    pub async fn hot_reload(&self, s: DebugSessionId, reason: HotReloadReason) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": reason }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 

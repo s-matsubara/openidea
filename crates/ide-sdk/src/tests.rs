@@ -1,7 +1,8 @@
 use crate::apply::{
     apply_to_run_configs, apply_to_run_configs_in, configure_python_extra_paths, configure_server,
     configure_vue_module_resolution, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived, without_derived_in,
+    ruff_configuration, server_command_paths, server_protocol_overrides, terminal_activation, tool_install_environment,
+    tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -338,6 +339,39 @@ fn jdtls_honors_the_configured_maven_local_repository() {
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert!(cfg.args.iter().all(|a| !a.contains("maven.repo.local")));
+}
+
+#[test]
+fn java_analyzer_gets_the_project_jdk_and_maven_local_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let configured = |s: &Settings| {
+        let mut cfg = server("java-analyzer");
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        server_protocol_overrides(&mut cfg, s);
+        cfg.initialization_options.map(|v| serde_json::to_value(v).unwrap())
+    };
+    // Unset: the server discovers both itself.
+    assert_eq!(configured(&Settings::default()), None);
+    let jdk = tmp.path().join("jdk17");
+    fake_jdk(&jdk);
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], dunce::canonicalize(&jdk).unwrap().to_string_lossy().as_ref());
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
+    // A `jdkHome` in the server's own settings wins.
+    s.language_servers.insert(
+        "java-analyzer".into(),
+        ide_core::settings::LanguageServerSettings {
+            initialization_options: Some(serde_json::json!({ "jdkHome": "/opt/jdk21" })),
+            ..Default::default()
+        },
+    );
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], "/opt/jdk21");
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
 }
 
 #[test]
@@ -2452,7 +2486,10 @@ fn go_constraints_change_only_protocol_settings() {
     original.settings = Some(json!({"analyses":{"unusedparams":true}}));
     let mut defaults = original.clone();
     configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
-    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    assert_eq!(
+        defaults.settings,
+        Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}, "gofumpt":false}))
+    );
     defaults.settings = original.settings.clone();
     assert_eq!(defaults, original);
     settings.languages.go.build_tags.custom = "integration".into();
@@ -2462,7 +2499,8 @@ fn go_constraints_change_only_protocol_settings() {
     assert_eq!(
         configured.settings.take(),
         Some(json!({
-            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"},
+            "gofumpt":false
         }))
     );
     configured.settings = original.settings.clone();
@@ -2477,10 +2515,50 @@ fn go_empty_constraints_preserve_explicit_server_defaults() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = server("gopls");
-    cfg.initialization_options =
-        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    cfg.initialization_options = Some(
+        toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true}))
+            .unwrap(),
+    );
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
-    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true})));
+}
+
+#[test]
+fn go_gofumpt_setting_reaches_gopls_and_turns_off_in_place() {
+    use crate::apply::server_protocol_overrides;
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.gofumpt = true;
+    let mut on = server("gopls");
+    configure_server(&mut on, tmp.path(), tmp.path(), &settings);
+    assert_eq!(on.settings.as_ref().unwrap()["gofumpt"], json!(true));
+    assert_eq!(on.initialization_options, server("gopls").initialization_options);
+    // The setting wins over the language definition's value.
+    let mut explicit = server("gopls");
+    explicit.settings = Some(json!({"gofumpt": false}));
+    configure_server(&mut explicit, tmp.path(), tmp.path(), &settings);
+    assert_eq!(explicit.settings.unwrap()["gofumpt"], json!(true));
+    // Turned off: an explicit false, because gopls keeps omitted keys on reconfiguration.
+    let mut off = server("gopls");
+    configure_server(&mut off, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(off.settings.unwrap()["gofumpt"], json!(false));
+    // Off leaves a server-level value alone.
+    let mut own = server("gopls");
+    own.settings = Some(json!({"gofumpt": true}));
+    configure_server(&mut own, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(own.settings.unwrap()["gofumpt"], json!(true));
+    // Off doesn't shadow gofumpt in Settings › Language Servers initializationOptions.
+    let mut user = Settings::default();
+    user.language_servers
+        .insert("gopls".into(), serde_json::from_value(json!({"initializationOptions": {"gofumpt": true}})).unwrap());
+    let mut from_user = server("gopls");
+    configure_server(&mut from_user, tmp.path(), tmp.path(), &user);
+    server_protocol_overrides(&mut from_user, &user);
+    assert_eq!(from_user.settings.unwrap()["gofumpt"], json!(true));
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
 }
 
 #[test]
@@ -2917,4 +2995,27 @@ fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
     let mut cfg = server("vtsls");
     assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
     assert!(cfg.initialization_options.is_none());
+}
+
+#[test]
+fn server_command_paths_report_executables_set_for_built_in_servers() {
+    let servers = [server("java-analyzer"), server("jdtls"), server("kmp-lsp")];
+    let mut s = Settings::default();
+    let entry = |command: &str| ide_core::settings::LanguageServerSettings {
+        command: command.into(),
+        languages: vec!["java".into()],
+        ..Default::default()
+    };
+    s.language_servers.insert("java-analyzer".into(), entry("/opt/java-analyzer/bin/java-analyzer"));
+    s.language_servers.insert("jdtls".into(), entry("bin/jdtls"));
+    // A bare name is looked up like the definition's command.
+    s.language_servers.insert("kmp-lsp".into(), entry("kmp-lsp-nightly"));
+    let root = Path::new("/work");
+    assert_eq!(
+        server_command_paths(&servers, root, &s),
+        [
+            ("java-analyzer".to_owned(), "/opt/java-analyzer/bin/java-analyzer".into()),
+            ("jdtls".to_owned(), root.join("bin/jdtls")),
+        ]
+    );
 }

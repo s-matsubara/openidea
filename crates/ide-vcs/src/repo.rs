@@ -71,6 +71,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
             git_dir: root.join(".git"),
             inner: std::sync::Mutex::new(None),
             ignored: Default::default(),
+            cli_status: Default::default(),
             log_index: Default::default(),
             log_signatures: Default::default(),
         }));
@@ -103,6 +104,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         git_dir,
         inner: std::sync::Mutex::new(Some(cache)),
         ignored: Default::default(),
+        cli_status: Default::default(),
         log_index: Default::default(),
         log_signatures: Default::default(),
     }))

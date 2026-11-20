@@ -4292,6 +4292,7 @@ dependencies = [
  "futures",
  "ide-core",
  "ide-http",
+ "ide-sdk",
  "ide-ssh",
  "notify",
  "open",
@@ -4313,6 +4314,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -4347,6 +4349,17 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "ide-flutter"
+version = "0.0.0"
+dependencies = [
+ "ide-android",
+ "ide-core",
+ "parking_lot 0.13.0",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4415,6 +4428,7 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-flutter",
  "ide-heap",
  "ide-http",
  "ide-index",
@@ -6698,6 +6712,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "webkit2gtk",
  "webview2-com",
  "windows",
  "windows-sys 0.61.2",

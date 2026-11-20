@@ -4,11 +4,27 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
-import { annotationsShown, blameSlot, toggleAnnotations, toggleJjAnnotations } from "../blame";
+import {
+  annotationsShown,
+  blameSlot,
+  toggleJjAnnotations,
+  readAnnotateColumns,
+  toggleAnnotations,
+  useAnnotateColumns,
+} from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
-const mocks = vi.hoisted(() => ({ blame: vi.fn(), jjBlame: vi.fn(), log: vi.fn(), action: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  blame: vi.fn(),
+  jjBlame: vi.fn(),
+  log: vi.fn(),
+  action: vi.fn(),
+  notify: vi.fn(),
+  commitFiles: vi.fn(),
+  openDiff: vi.fn(),
+  menu: vi.fn(),
+}));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
@@ -21,9 +37,23 @@ vi.mock("@/platform/ipc", async (original) => {
   const actual = await original<typeof import("@/platform/ipc")>();
   return {
     ...actual,
-    commands: { ...actual.commands, vcsBlame: mocks.blame, vcsJjAnnotate: mocks.jjBlame, vcsLog: mocks.log },
+    commands: {
+      ...actual.commands,
+      vcsBlame: mocks.blame,
+      vcsJjAnnotate: mocks.jjBlame,
+      vcsLog: mocks.log,
+      vcsCommitFiles: mocks.commitFiles,
+    },
   };
 });
+vi.mock("../diffInput", async (original) => ({
+  ...(await original<typeof import("../diffInput")>()),
+  openDiff: mocks.openDiff,
+}));
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  showContextMenu: mocks.menu,
+}));
 
 const sha = "f122f5afd61fa24a16a5e1c76c7ed6cbad833c93";
 const otherSha = "12852f79a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
@@ -121,6 +151,156 @@ describe("git blame gutter and commit popup", () => {
     });
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", sha);
   });
+
+  it("shows the line's change from the gutter menu's Show Diff", async () => {
+    mocks.commitFiles.mockResolvedValue({
+      status: "ok",
+      data: [{ path: "src/main.py", kind: "added", oldPath: null }],
+    });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const firstLine = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector(`[data-commit="${sha}"]`),
+    )!;
+    fireEvent.contextMenu(firstLine);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
+    expect(items.map((i) => i.label).slice(0, 2)).toEqual(["Show Commit in Git Log", "Show Diff"]);
+
+    items[1]!.run!();
+    await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
+    expect(mocks.commitFiles).toHaveBeenCalledWith("/repo", sha);
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/repo/src/main.py",
+        left: expect.objectContaining({ label: "(does not exist)" }),
+        right: expect.objectContaining({ type: "rev", rev: sha }),
+      }),
+      { preview: false },
+    );
+  });
+
+  it("offers no Show Diff on a line that is not committed yet", async () => {
+    const zero = "0".repeat(40);
+    mocks.blame.mockResolvedValue({
+      status: "ok",
+      data: [{ commit: zero, author: "Not Committed Yet", timeMs: 0, summary: "" }, lines[0]],
+    });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "edited\nsecond", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const edited = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector('[title="Not committed yet"]'),
+    )!;
+    fireEvent.contextMenu(edited);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
+    expect(items.map((i) => i.label)).toEqual(["Options", "Close Annotations"]);
+  });
+});
+
+describe("annotate Options", () => {
+  type Item = { label?: string; checked?: boolean; disabled?: boolean; run?: () => void; submenu?: Item[] };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useAnnotateColumns.setState(readAnnotateColumns());
+  });
+
+  async function annotated(doc = "first\nsecond\nthird") {
+    const v = new EditorView({ parent: document.body, state: EditorState.create({ doc, extensions: [blameSlot()] }) });
+    await toggleAnnotations(v, "/repo/src/main.py");
+    return v;
+  }
+
+  function options(v: EditorView): Item[] {
+    mocks.menu.mockClear();
+    fireEvent.contextMenu(v.dom.querySelector(".cm-vcs-blame .cm-gutterElement [data-commit]")!);
+    const items = mocks.menu.mock.calls[0]![1] as Item[];
+    return items.find((i) => i.label === "Options")!.submenu!;
+  }
+
+  const hidden = (v: EditorView) =>
+    ["date", "author", "revision"].filter((c) => v.dom.classList.contains(`cm-vcs-blame-hide-${c}`));
+
+  it("shows date and author by default and adds the revision from Options", async () => {
+    view = await annotated();
+    expect(options(view).map((i) => [i.label, i.checked])).toEqual([
+      ["Date", true],
+      ["Author", true],
+      ["Revision", false],
+    ]);
+    expect(hidden(view)).toEqual(["revision"]);
+    expect(view.dom.querySelector(`[data-commit="${sha}"] .cm-vcs-blame-revision`)?.textContent).toBe("f122f5af");
+
+    act(() => options(view!)[2]!.run!());
+    expect(hidden(view)).toEqual([]);
+    expect(options(view).map((i) => i.checked)).toEqual([true, true, true]);
+
+    act(() => options(view!)[1]!.run!());
+    expect(hidden(view)).toEqual(["author"]);
+  });
+
+  it("keeps the last shown column", async () => {
+    view = await annotated();
+    act(() => options(view!)[1]!.run!());
+    const last = options(view);
+    expect(last.map((i) => [i.checked, i.disabled])).toEqual([
+      [true, true],
+      [false, false],
+      [false, false],
+    ]);
+    act(() => last[0]!.run!());
+    expect(hidden(view)).toEqual(["author", "revision"]);
+  });
+
+  it("updates every annotated editor and remembers the choice", async () => {
+    view = await annotated();
+    const other = await annotated("a\nb\nc");
+    try {
+      act(() => options(view!)[0]!.run!());
+      expect(hidden(other)).toEqual(["date", "revision"]);
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.annotateColumns")!)).toEqual({
+        date: false,
+        author: true,
+        revision: false,
+      });
+      expect(readAnnotateColumns()).toEqual({ date: false, author: true, revision: false });
+    } finally {
+      other.destroy();
+    }
+  });
+
+  it("follows a choice made in another window", async () => {
+    view = await annotated();
+    localStorage.setItem("openidea.vcs.annotateColumns", '{"date":true,"author":false,"revision":true}');
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateColumns" }));
+    });
+    expect(hidden(view)).toEqual(["author"]);
+    expect(options(view).map((i) => i.checked)).toEqual([true, false, true]);
+  });
+
+  it("falls back to the defaults for a stored value it cannot use", () => {
+    const defaults = { date: true, author: true, revision: false };
+    for (const raw of ["{", "[]", "null", '"x"', '{"date":false,"author":false,"revision":false}']) {
+      localStorage.setItem("openidea.vcs.annotateColumns", raw);
+      expect(readAnnotateColumns()).toEqual(defaults);
+    }
+    localStorage.setItem("openidea.vcs.annotateColumns", '{"date":"no","revision":true}');
+    expect(readAnnotateColumns()).toEqual({ date: true, author: true, revision: true });
+  });
+
+  it("leaves the editor's classes alone once annotations are closed", async () => {
+    view = await annotated();
+    await toggleAnnotations(view, "/repo/src/main.py");
+    expect(hidden(view)).toEqual([]);
+    act(() => useAnnotateColumns.setState({ date: false, author: true, revision: true }));
+    expect(hidden(view)).toEqual([]);
+  });
 });
 
 it("colors jj commits while retaining metadata and avoiding Git popup requests", async () => {
@@ -141,4 +321,24 @@ it("colors jj commits while retaining metadata and avoiding Git popup requests",
   expect(mocks.log).not.toHaveBeenCalled();
   expect(mocks.blame).not.toHaveBeenCalled();
   expect(mocks.action).not.toHaveBeenCalled();
+});
+
+it("keeps jj annotate column options without offering Git Show Diff", async () => {
+  localStorage.clear();
+  useAnnotateColumns.setState(readAnnotateColumns());
+  mocks.jjBlame.mockResolvedValue({ status: "ok", data: lines });
+  view = new EditorView({
+    parent: document.body,
+    state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+  });
+  await toggleJjAnnotations(view, { root: "/jj", path: "/jj/file.ts", commit: sha });
+  fireEvent.contextMenu(view.dom.querySelector(".cm-vcs-blame [data-commit]")!);
+  const items = mocks.menu.mock.calls.at(-1)![1];
+  expect(items.some((i: { label: string }) => i.label === "Show Diff")).toBe(false);
+  const options = items.find((i: { label: string }) => i.label === "Options").submenu;
+  act(() => options.find((i: { label: string }) => i.label === "Revision").run());
+  expect(useAnnotateColumns.getState().revision).toBe(true);
+  expect(view.dom.classList.contains("cm-vcs-blame-hide-revision")).toBe(false);
+  expect(mocks.blame).not.toHaveBeenCalled();
+  expect(mocks.commitFiles).not.toHaveBeenCalled();
 });

@@ -41,13 +41,14 @@ import {
 import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
-import { modeOf, useMarkdownModes } from "./modes";
+import { renderMath } from "@/editor/lsp/markdownMath";
+import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
+  createMarkdownRenderer,
   previewLineAtOffset,
   previewOffsetForLine,
-  renderMarkdown,
   resolveLink,
   slugify,
 } from "./render";
@@ -89,7 +90,8 @@ export function MarkdownEditor({
   children: ReactNode;
   actionsInTabs?: boolean;
 }) {
-  const mode = useMarkdownModes((s) => modeOf(s, path));
+  const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
 
@@ -160,7 +162,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const editorSelection = useLiveMarkdown((s) => s[path]?.editorSelection ?? "");
   const highlightSelection = useEditorPrefs().codeEditing.highlightSelection;
   const deferred = useDeferredValue(text ?? "");
-  const html = useMemo(() => renderMarkdown(deferred), [deferred]);
+  const [render] = useState(createMarkdownRenderer);
+  const html = useMemo(() => render(deferred), [render, deferred]);
   const ref = useRef<HTMLDivElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
@@ -183,8 +186,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     });
   }, [html]);
 
+  // Math before the preview index: typesetting changes the blocks' heights.
   useLayoutEffect(() => {
-    if (ref.current) invalidatePreviewIndex(ref.current);
+    if (!ref.current) return;
+    renderMath(ref.current);
+    invalidatePreviewIndex(ref.current);
   }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.

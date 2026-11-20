@@ -2,6 +2,7 @@
 //! watchers and the per-project services, opened by [`crate::Host::open_project`].
 
 use crate::Host;
+use ide_core::workflow_settings::VcsMappings;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink};
 use ide_index::ProjectIndex;
 use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
@@ -60,6 +61,8 @@ pub struct Project {
     pub agents: Arc<ide_agent::AgentManager>,
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
+    /// Flutter's devices; its daemon starts when the UI first asks for them.
+    pub(crate) flutter: ide_flutter::FlutterDaemon,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -272,6 +275,7 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
@@ -285,6 +289,8 @@ impl Host {
                         effective.languages.java.gradle.linked_projects.as_deref(),
                         build_files.as_deref(),
                     );
+                    // After the import settings: they extend the workspace folder's name.
+                    ide_sdk::jdtls_workspaces::use_own_temp(cfg, &data_dir);
                 }
             }));
         }
@@ -321,7 +327,7 @@ impl Host {
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
         documents.add_observer(Arc::new(LspObserver(lsp.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         documents.add_observer(Arc::new(DeployObserver {
             remote: self.remote.clone(),
             settings: settings.clone(),
@@ -602,6 +608,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
+            flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
             root,
             sink,
             languages,
@@ -732,6 +739,10 @@ impl Host {
         agents.set_mcp_servers_hook(Box::new(move || {
             crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));
+        {
+            let mcp_executable = self.mcp_executable.clone();
+            agents.set_mcp_executable_hook(Box::new(move || mcp_executable.read().clone()));
+        }
         (db, http_history, agents)
     }
 }
@@ -787,7 +798,7 @@ impl Host {
         lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         let watcher = match watch_dir {
             Some(dir) => light_watcher(dir, &sink, &documents, &history)?,
             // A quiet private folder stands in until the first save brings a
@@ -810,6 +821,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
+            flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
             sink,
             languages,
             settings,
@@ -946,7 +958,21 @@ fn scan_repositories(
     build_cache: &Path,
     trusted: bool,
 ) {
-    let ignored = settings.effective().ignored_names();
+    let snapshot = settings.effective();
+    let roots = repository_roots(&snapshot, root, build_cache, trusted);
+    match detect_repositories(root, &snapshot, build_cache, trusted) {
+        Ok(found) => apply_repository_scan(root, repos, settings, sink, build_cache, trusted, &roots, found),
+        Err(e) => tracing::warn!("looking for repositories: {e}"),
+    }
+}
+
+fn detect_repositories(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    build_cache: &Path,
+    trusted: bool,
+) -> IdeResult<Repos> {
+    let ignored = settings.ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
             let name = n.to_string_lossy();
@@ -955,11 +981,8 @@ fn scan_repositories(
                     && p.parent().is_some_and(ide_workspace::unity::is_project))
         })
     };
-    let roots = repository_roots(&settings.effective(), root, build_cache, trusted);
-    match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => apply_repository_scan(root, repos, settings, sink, build_cache, trusted, &roots, found),
-        Err(e) => tracing::warn!("looking for git repositories: {e}"),
-    }
+    let roots = repository_roots(settings, root, build_cache, trusted);
+    Repos::discover_roots(&roots, &skip)
 }
 
 /// A scan started before detach must not overwrite a newer content-root scan.
@@ -977,6 +1000,9 @@ fn apply_repository_scan(
     if repository_roots(&settings.effective(), root, build_cache, trusted) != scanned_roots {
         return;
     }
+    let mappings = &settings.effective().vcs.mappings;
+    let resolve = |list: &[String]| -> Vec<PathBuf> { list.iter().map(|p| VcsMappings::resolve(root, p)).collect() };
+    let found = found.mapped(&resolve(&mappings.excluded), &resolve(&mappings.added), root);
     if found.roots() != current.roots() {
         *current = found;
         drop(current);
@@ -985,6 +1011,15 @@ fn apply_repository_scan(
 }
 
 impl Project {
+    /// Detected and manually added roots before Directory Mappings exclusions.
+    pub fn detected_repository_roots(&self) -> IdeResult<Repos> {
+        let settings = self.settings.effective();
+        let found = detect_repositories(&self.root, &settings, &self.build_cache_dir(), self.is_trusted())?;
+        let added: Vec<PathBuf> =
+            settings.vcs.mappings.added.iter().map(|p| VcsMappings::resolve(&self.root, p)).collect();
+        Ok(found.mapped(&[], &added, &self.root))
+    }
+
     pub fn refresh_repositories(&self) {
         scan_repositories(
             &self.root,
@@ -1089,6 +1124,7 @@ impl Project {
             apply_git_executable(&settings);
         }
         repo.set_ignored_names(settings.ignored_names());
+        repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
     }
 
@@ -1920,13 +1956,41 @@ impl DocumentObserver for SyntaxObserver {
     }
 }
 
-struct HistoryObserver(Arc<LocalHistory>);
+struct HistoryObserver {
+    history: Arc<LocalHistory>,
+    /// Documents edited since they were opened: only the first edit looks for a missing original.
+    edited: Mutex<HashSet<ide_core::DocId>>,
+}
+
+impl HistoryObserver {
+    fn new(history: Arc<LocalHistory>) -> Self {
+        Self { history, edited: Mutex::default() }
+    }
+}
 
 impl DocumentObserver for HistoryObserver {
-    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
-        if let Err(e) = self.0.record(path, text, "Saved") {
+    fn changed(
+        &self,
+        doc: ide_core::DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        _full_text: &dyn Fn() -> String,
+    ) {
+        // The file on disk still has its content from before the edit.
+        if self.edited.lock().insert(doc)
+            && let Err(e) = self.history.record_original(path)
+        {
             tracing::warn!("local history: {e}");
         }
+    }
+    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
+        if let Err(e) = self.history.record(path, text, "Saved") {
+            tracing::warn!("local history: {e}");
+        }
+    }
+    fn closed(&self, doc: ide_core::DocId, _path: &Path) {
+        self.edited.lock().remove(&doc);
     }
 }
 
@@ -2267,6 +2331,36 @@ mod composer_tests {
 #[cfg(test)]
 mod repository_scan_tests {
     use super::*;
+    #[test]
+    fn repository_scan_applies_jj_mappings_without_scanning_workspace_container() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let member = base.join("member");
+        let added = base.join("added");
+        let container = base.join("workspace");
+        for path in [&member, &added, &container] {
+            std::fs::create_dir_all(path.join(".jj")).unwrap();
+        }
+        ide_workspace::workspace::Workspace::save(&container, "Test", vec![member.clone()], true).unwrap();
+        let settings = SettingsStore::load(&base.join("config"), Some(&container));
+        settings
+            .set(
+                ide_workspace::SettingsScope::Project,
+                "vcs.mappings",
+                serde_json::json!({
+                    "excluded": [member], "added": [added]
+                }),
+            )
+            .unwrap();
+        let current = RwLock::new(Repos::default());
+        let sink: SharedSink = Arc::new(ide_core::NullSink);
+        scan_repositories(&container, &current, &settings, &sink, &base, true);
+        let repos = current.read();
+        assert_eq!(repos.roots(), vec![added.clone()]);
+        assert_eq!(repos.at_root(&added).unwrap().kind(), ide_vcs::VcsKind::Jj);
+        assert!(repos.at_root(&container).is_none());
+    }
+
     #[test]
     fn a_scan_started_before_detach_cannot_restore_removed_members() {
         let temp = tempfile::tempdir().unwrap();

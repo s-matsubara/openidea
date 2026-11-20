@@ -26,6 +26,8 @@ export interface AttributeDef {
   path: string[];
   /** CSS variable of the foreground / background / effect colour, if editable. */
   fg?: string;
+  /** `fg` paints over the syntax colours: without one, they show through. */
+  fgOverlay?: true;
   bg?: string;
   effect?: string;
   /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
@@ -115,12 +117,16 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     id: "identifierUnderCaret",
     name: "Identifier under caret",
     path: ["General", "Code"],
+    fg: "--fg-identifier-under-caret",
+    fgOverlay: true,
     bg: "--bg-identifier-under-caret",
   },
   {
     id: "identifierUnderCaretWrite",
     name: "Identifier under caret (write)",
     path: ["General", "Code"],
+    fg: "--fg-identifier-under-caret-write",
+    fgOverlay: true,
     bg: "--bg-identifier-under-caret-write",
   },
   { id: "inlay", name: "Inlay hints", path: ["General", "Code"], fg: "--fg-inlay", bg: "--bg-inlay" },
@@ -376,7 +382,14 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { csharp: "C#", go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = {
+  csharp: "C#",
+  go: "Go",
+  java: "Java",
+  julia: "Julia",
+  kotlin: "Kotlin",
+  php: "PHP",
+} as const;
 /** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
 const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
 
@@ -666,9 +679,11 @@ export function overrideDeclarations(
         attr.id === "selectionForeground" || attr.id === "searchResult" || attr.id === "searchResultCurrent";
       const fg =
         o.foreground === CLEAR_COLOR && attr.id !== "text"
-          ? keepsTextVisible
-            ? "currentColor"
-            : "var(--fg-editor)"
+          ? attr.fgOverlay
+            ? "inherit"
+            : keepsTextVisible
+              ? "currentColor"
+              : "var(--fg-editor)"
           : o.foreground!;
       out.push([attr.fg, fg]);
       // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.

@@ -223,6 +223,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             vec![
                 act("file.newProject", "Project…"),
                 act("workspace.create", "Workspace…"),
+                act("vcs.cloneProject", "Project from Version Control…"),
                 SEP,
                 act("file.new", "File…"),
                 act("file.newScratchFile", "Scratch File"),
@@ -2029,7 +2030,14 @@ mod tests {
             };
             assert_eq!(
                 action_ids(new),
-                ["file.newProject", "workspace.create", "file.new", "file.newScratchFile", "file.newUntitled"],
+                [
+                    "file.newProject",
+                    "workspace.create",
+                    "vcs.cloneProject",
+                    "file.new",
+                    "file.newScratchFile",
+                    "file.newUntitled"
+                ],
                 "{os:?}"
             );
         }

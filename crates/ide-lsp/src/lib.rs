@@ -20,11 +20,13 @@ mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
+pub mod java_project;
 pub mod jdtls;
 mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
 mod message_requests;
 mod notebook;
 mod phoxite;
@@ -1833,8 +1835,11 @@ impl LspManager {
     /// the same class from its Java model instead, decompiled with method bodies and navigable.
     /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
     async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-        let jar_class = |l: &Location| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"));
-        if !locs.iter().any(jar_class)
+        let lib_class = |u: &str| {
+            (u.starts_with("jar:") && u.ends_with(".class"))
+                || (u.starts_with("jdt://contents/") && u.contains(".class"))
+        };
+        if !locs.iter().any(|l| l.uri.as_deref().is_some_and(lib_class))
             || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
         {
             return locs;
@@ -1842,27 +1847,54 @@ impl LspManager {
         let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
         let mut out = Vec::with_capacity(locs.len());
         for loc in locs {
-            let entry = loc.uri.as_deref().filter(|_| jar_class(&loc)).and_then(library_source::parse);
-            let Some(entry) = entry else {
+            let Some(original) = loc.uri.as_deref().filter(|u| lib_class(u)) else {
                 out.push(loc);
                 continue;
             };
-            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
-            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
-            // of that name.
-            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
-                Ok(uri) => uri,
-                Err(e) => {
-                    tracing::info!("library class stays a stub: {}", e.message);
+            let jdt = original.starts_with("jdt:");
+            let uri = if !jdt {
+                let Some(entry) = library_source::parse(original) else {
                     out.push(loc);
                     continue;
+                };
+                // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+                // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+                // of that name.
+                match self.archive_class(entry.jar, entry.entry, true).await {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::info!("library class stays a stub: {}", e.message);
+                        out.push(loc);
+                        continue;
+                    }
                 }
+            } else {
+                original.to_owned()
             };
-            let range = match (&name, self.virtual_document(&uri).await) {
-                (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
+            let doc = self.virtual_document(&uri).await.ok();
+            let range = match (&name, &doc) {
+                // jdtls' own class: its range is exact (overloads included) unless it maps a
+                // Lombok-generated member onto the annotation or class header, which doesn't
+                // name the member; only then look the declaration up in the source.
+                (Some(name), Some(doc)) if jdt => {
+                    let line = doc.text.lines().nth(loc.range.start.line as usize).unwrap_or_default();
+                    if library_source::identifier_at(line, loc.range.start.col) == Some(name.as_str()) {
+                        loc.range
+                    } else {
+                        Some(library_source::declaration_range(&doc.text, name))
+                            .filter(|r| *r != Range::default())
+                            .unwrap_or(loc.range)
+                    }
+                }
+                (Some(name), Some(doc)) => library_source::declaration_range(&doc.text, name),
+                _ if jdt => loc.range,
                 _ => Range::default(),
             };
-            out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
+            out.push(if jdt {
+                Location { range, ..loc }
+            } else {
+                Location { path: uri.clone().into(), range, uri: Some(uri) }
+            });
         }
         out
     }
@@ -3026,7 +3058,12 @@ impl LspManager {
         for s in servers {
             let Some(run) = s.running() else { continue };
             let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            // jdtls owns its annotation-processor output; javac's copy of those files is not an edit.
+            let jdtls = s.name == "jdtls";
             let send = |p: &PathBuf, change: Change| {
+                if jdtls && jdtls::is_processor_output(p) {
+                    return false;
+                }
                 change == Change::Deleted
                     || !open
                         .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))

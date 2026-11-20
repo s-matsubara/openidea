@@ -16,18 +16,55 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
 ///
 /// - Windows: release builds use the GUI subsystem, so without `CREATE_NO_WINDOW` every
-///   console child flashes a `cmd` window.
+///   console child flashes a `cmd` window. Batch files also need a PATH small enough for cmd.
 /// - Linux AppImage, reloaded and project variables: see [`host_env`].
 ///
-/// Variables the call site has already set are kept; call it before `env_clear` and after
-/// `current_dir`, which picks the project environment.
+/// Explicit variables take precedence over the host environment. Call after setting
+/// `current_dir` and any explicit `PATH`, and before `env_clear`.
 pub fn prepare(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    host_env(cmd)
+    host_env(cmd);
+    #[cfg(windows)]
+    compact_batch_path(cmd);
+    cmd
+}
+
+#[cfg(windows)]
+fn compact_batch_path(cmd: &mut Command) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+
+    // Rust runs these files through cmd.exe, which drops inherited variables over this limit.
+    const CMD_ENV_LIMIT: usize = 8191;
+    let extension = Path::new(cmd.get_program()).extension();
+    if !extension.is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat")) {
+        return;
+    }
+    let path = match cmd.get_envs().find(|(key, _)| key.eq_ignore_ascii_case("PATH")) {
+        Some((_, path)) => path.map(OsStr::to_owned),
+        None => std::env::var_os("PATH"),
+    };
+    let Some(path) = path.filter(|p| p.encode_wide().count() > CMD_ENV_LIMIT) else { return };
+
+    // The IDE includes possible locations of as-yet uninstalled tools. Prune paths that are
+    // missing now, keeping search precedence and leaving UNC and relative paths alone.
+    let dirs = std::env::split_paths(&path).filter(|dir| {
+        let local = dir.is_absolute()
+            && matches!(dir.components().next(), Some(Component::Prefix(p))
+                if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)));
+        !local
+            || !std::fs::symlink_metadata(dir)
+                .is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory))
+    });
+    if let Ok(compact) = std::env::join_paths(dirs)
+        && compact.encode_wide().count() <= CMD_ENV_LIMIT
+    {
+        cmd.env("PATH", compact);
+    }
 }
 
 /// Starts the child as the leader of its own process group on Unix, so [`kill_tree`] and
@@ -885,6 +922,44 @@ mod tests {
         assert!(!process_alive(pid));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn batch_launch_keeps_runtime_paths_when_cmd_would_drop_path() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("server.CMD");
+        std::fs::write(&script, "@echo off\r\nif not defined PATH exit /b 42\r\n").unwrap();
+        let selected = root.path().join("Selected Runtime");
+        let fallback = root.path().join("Fallback Runtime");
+        std::fs::create_dir(&selected).unwrap();
+        std::fs::create_dir(&fallback).unwrap();
+        let relative = Path::new("relative");
+        let unc = Path::new(r"\\openidea-test\share\bin");
+        let missing = root.path().join("uninstalled-".repeat(12));
+        let path = std::env::join_paths(
+            std::iter::once(selected.as_path()).chain(std::iter::repeat_n(missing.as_path(), 60)).chain([
+                unc,
+                relative,
+                fallback.as_path(),
+            ]),
+        )
+        .unwrap();
+        let compact = std::env::join_paths([selected.as_path(), unc, relative, fallback.as_path()]).unwrap();
+
+        let path_in = |cmd: &Command| {
+            cmd.get_envs()
+                .find_map(|(key, value)| key.eq_ignore_ascii_case("PATH").then(|| value.map(OsStr::to_owned)))
+                .flatten()
+        };
+        let mut cmd = Command::new(&script);
+        cmd.current_dir(root.path()).env("PATH", &path);
+        prepare(&mut cmd);
+        assert_eq!(path_in(&cmd), Some(compact));
+        assert!(cmd.status().unwrap().success());
+
+        let mut native = Command::new(root.path().join("server.exe"));
+        assert_eq!(path_in(prepare(native.env("PATH", &path))), Some(path));
+    }
+
     #[cfg(unix)]
     #[test]
     fn process_alive_rejects_ids_that_are_not_a_single_process() {
@@ -1062,11 +1137,13 @@ mod tests {
     #[test]
     fn a_child_inside_a_project_gets_its_environment() {
         let root = std::path::Path::new("/openidea-test-process/project");
+        // Absolute on the platform: the search path drops relative entries.
+        let devshell = if cfg!(windows) { r"C:\nix\store\x-devshell\bin" } else { "/nix/store/x-devshell/bin" };
         crate::project_env::set(
             root,
             vec![
                 ("OPENIDEA_PROJECT_VAR".into(), Some("devshell".into())),
-                ("PATH".into(), Some("/nix/store/x-devshell/bin".into())),
+                ("PATH".into(), Some(devshell.into())),
                 ("OPENIDEA_PROJECT_UNSET".into(), None),
             ],
         );
@@ -1075,7 +1152,7 @@ mod tests {
         let mut inside = Command::new("true");
         inside.current_dir(root.join("src")).env("OPENIDEA_PROJECT_VAR", "call site");
         host_env(&mut inside);
-        assert_eq!(get(&inside, "PATH"), Some(Some("/nix/store/x-devshell/bin".into())));
+        assert_eq!(get(&inside, "PATH"), Some(Some(devshell.into())));
         assert_eq!(get(&inside, "OPENIDEA_PROJECT_UNSET"), Some(None));
         assert_eq!(get(&inside, "OPENIDEA_PROJECT_VAR"), Some(Some("call site".into())), "the call site's value wins");
 
@@ -1093,7 +1170,7 @@ mod tests {
         assert_eq!(host_var_os_in(root, "OPENIDEA_PROJECT_VAR"), Some("devshell".into()));
         assert_eq!(host_var_os("OPENIDEA_PROJECT_VAR"), None);
         let search = crate::tool_path::search_path_in(root);
-        assert_eq!(std::env::split_paths(&search).next(), Some("/nix/store/x-devshell/bin".into()));
+        assert_eq!(std::env::split_paths(&search).next(), Some(devshell.into()));
         crate::project_env::remove(root);
         assert!(host_vars_in(root).all(|(k, _)| k != "OPENIDEA_PROJECT_VAR"));
     }

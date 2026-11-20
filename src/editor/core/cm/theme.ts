@@ -24,6 +24,7 @@ export const findStyles = {
   ".cm-openidea-findMatch": {
     backgroundColor: "var(--editor-search)",
     color: "var(--fg-editor-search-match, var(--fg-search-match, inherit))",
+    WebkitTextFillColor: "currentcolor",
     borderRadius: "2px",
   },
   ".cm-openidea-findExcluded": {
@@ -38,6 +39,11 @@ export const findStyles = {
     color: "var(--fg-editor-search-match-current, var(--fg-search-match, inherit))",
     outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
   },
+};
+
+/** Marks colour text with an inherited text fill; widgets inside them keep their own colours. */
+export const markWidgetStyles = {
+  '.cm-content [contenteditable="false"]': { WebkitTextFillColor: "currentcolor" },
 };
 
 /** The caret and Settings › Editor › General › Appearance caret options (`caretExtension`), also for viewers. */
@@ -219,6 +225,8 @@ export const openideaTheme = EditorView.theme({
   ".cm-selectionMatch": {
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
   },
+  // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
+  ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
@@ -343,6 +351,7 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  ...markWidgetStyles,
   // Find in Files preview matches (search/find/parts.tsx)
   ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
 

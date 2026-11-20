@@ -991,6 +991,33 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.shutdown_all().await;
 }
 
+/// jdtls runs the annotation processors itself and writes their output; a Maven build's
+/// copy of those files must not reach it as an edit, or jdtls recompiles javac's copy and
+/// overwrites its classes with broken ones (#4128).
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_does_not_hear_of_annotation_processor_output() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = h.open("Open.java", "class Open {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let source = h.root.join("m/src/main/java/com/x/FooMapping.java");
+    let generated = h.root.join("m/target/generated-sources/annotations/com/x/FooMappingImpl.java");
+    let test_generated = h.root.join("m/target/generated-test-sources/test-annotations/com/x/T.java");
+    h.mgr.watched_files_changed(
+        &[test_generated],
+        &[generated.clone(), source.clone()],
+        std::slice::from_ref(&generated),
+        &[h.root.join("m/target/generated-sources/annotations")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles"),
+        vec![json!({ "changes": [{ "uri": uri_of(&source), "type": 2 }] })]
+    );
+    h.mgr.shutdown_all().await;
+}
+
 /// An external change to a document open on the server's current instance reaches it only
 /// through the reload's `didChange`: a watched-file change for it too would make a server
 /// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed
@@ -2566,6 +2593,35 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
     let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
     assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eslint_configuration_includes_workspace_folder() {
+    let h = harness_configured("mock", "mk", &[("eslint", incremental_caps()), ("mock", incremental_caps())], |cfg| {
+        if cfg.name == "eslint" {
+            cfg.settings = Some(json!({ "workingDirectory": { "mode": "auto" } }));
+        }
+    });
+    h.open("a.mk", "x");
+    h.wait_status("eslint", ServerStatus::Ready).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let items = json!({ "items": [{ "section": "" }] });
+    let eslint: Value =
+        h.launcher.state("eslint").peer().request("workspace/configuration", items.clone(), None).await.unwrap();
+    assert_eq!(
+        eslint,
+        json!([{
+            "flag": true,
+            "nested": { "deep": 1 },
+            "workingDirectory": { "mode": "auto" },
+            "workspaceFolder": {
+                "uri": uri_of(&h.root),
+                "name": h.root.file_name().unwrap().to_string_lossy(),
+            },
+        }])
+    );
+    let other: Value = h.launcher.state("mock").peer().request("workspace/configuration", items, None).await.unwrap();
+    assert_eq!(other, json!([{ "flag": true, "nested": { "deep": 1 } }]));
 }
 
 #[tokio::test(flavor = "multi_thread")]

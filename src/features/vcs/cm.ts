@@ -37,12 +37,13 @@ import { search, searchKeymap } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
+import { occurrenceSearch } from "@/editor/core/cm/editing";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
-import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
+import { caretStyles, findLocals, findStyles, markWidgetStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { getDiffInsights, hasInnerFragments } from "./diffOptions";
@@ -413,6 +414,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-panels": { backgroundColor: "var(--bg-elev)", color: "var(--fg)" },
     ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)" },
     ...findStyles,
+    ...markWidgetStyles,
   },
   { dark: true },
 );
@@ -517,6 +519,9 @@ export function viewerBase(opts: {
     changedLines,
     EditorState.readOnly.of(opts.readOnly),
     EditorView.editable.of(!opts.readOnly),
+    // Add Selection for Next Occurrence, Clone Caret: several carets, as in the editor.
+    EditorState.allowMultipleSelections.of(true),
+    occurrenceSearch,
     // Non-editable revision panes still need keyboard selection and copy.
     opts.readOnly ? EditorView.contentAttributes.of({ tabindex: "0" }) : [],
   ];
