@@ -342,8 +342,9 @@ def restore():
                     )
                     return
                 forced.add(primary)
-        for name in forced:
+        for name in sorted(forced):
             os.utime(name, ns=(barrier, barrier))
+            print(f"Forced dirty due to unverifiable inputs: {name}")
         print(
             f"Content-verified mtimes: {restored} reused, {dirty} changed, {len(forced)} targets forced dirty"
         )
@@ -367,6 +368,16 @@ def keys(scope, target, namespace="release-target", generation=""):
         manifests[str(path.relative_to(Path.cwd()))] = data
     root = tomllib.loads(Path("Cargo.toml").read_text())
     lock = tomllib.loads(Path("Cargo.lock").read_text())
+    if github_env := os.environ.get("GITHUB_ENV"):
+        tree_sitter_packages = [
+            package
+            for package in lock["package"]
+            if package["name"].startswith("tree-sitter")
+        ]
+        with open(github_env, "a") as env_file:
+            env_file.write(
+                f"OPENIDEA_TREE_SITTER_LOCK_INPUT={digest(tree_sitter_packages)}\n"
+            )
     for package in lock["package"]:
         if package["name"] == "openidea" and "source" not in package:
             package["version"] = "<application-release>"

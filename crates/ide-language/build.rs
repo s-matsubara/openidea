@@ -25,7 +25,12 @@ fn main() {
             h.update(b"\0");
         }
     }
-    println!("cargo:rerun-if-changed={}", lock.display());
+    // Release CI fingerprints the relevant lock entries before invoking Cargo.
+    const LOCK_INPUT: &str = "OPENIDEA_TREE_SITTER_LOCK_INPUT";
+    println!("cargo:rerun-if-env-changed={LOCK_INPUT}");
+    if std::env::var_os(LOCK_INPUT).is_none() {
+        println!("cargo:rerun-if-changed={}", lock.display());
+    }
     match std::fs::read_to_string(&lock) {
         Ok(text) => h.update(tree_sitter_packages(&text).as_bytes()),
         // Built outside the workspace: fall back to the crate version.

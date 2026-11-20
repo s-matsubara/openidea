@@ -643,6 +643,38 @@ serde_json="1"
             )
             self.assertNotEqual(baseline, key())
 
+    def test_tree_sitter_lock_input_ignores_app_version(self):
+        env_file = Path(self.temp.name) / "github-env"
+        output = Path(self.temp.name) / "key-output"
+        self.run_command("cargo", "generate-lockfile", "--offline")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_RUN_ID": "99",
+                "GITHUB_RUN_ATTEMPT": "1",
+            },
+        ):
+
+            def lock_input():
+                env_file.write_text("")
+                cache.keys("desktop", "aarch64-apple-darwin")
+                return env_file.read_text()
+
+            baseline = lock_input()
+            self.assertRegex(
+                baseline, r"^OPENIDEA_TREE_SITTER_LOCK_INPUT=[0-9a-f]{64}\n$"
+            )
+            self.bump()
+            self.assertEqual(baseline, lock_input())
+            lock = Path("Cargo.lock")
+            lock.write_text(
+                lock.read_text()
+                + '\n[[package]]\nname = "tree-sitter-test"\nversion = "0.1.0"\n'
+            )
+            self.assertNotEqual(baseline, lock_input())
+
     def test_omission_starts_a_new_workspace_cache_generation(self):
         output = Path(self.temp.name) / "key-output"
         manifests = [Path("Cargo.toml"), *Path("crates").glob("*/Cargo.toml")]
