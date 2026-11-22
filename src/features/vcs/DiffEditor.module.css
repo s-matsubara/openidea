@@ -47,8 +47,21 @@
   }
 }
 @container diff-editor (max-width: 380px) {
-  .toolbar > .sep {
+  .toolbar {
+    height: auto;
+    min-height: var(--h-header);
+    flex-wrap: wrap;
+    align-content: center;
+    padding-block: var(--space-0-5);
+  }
+  .toolbar > .sep,
+  .toolbar > .inlineOption {
     display: none;
+  }
+  .toolbar > .count {
+    flex: 1 1 auto;
+    order: 1;
+    text-align: end;
   }
 }
 .labels {
@@ -84,6 +97,20 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-family: var(--font-ui);
+}
+.sourceLabels {
+  font-size: var(--fs-ui);
+}
+.sourceLabels .label {
+  font-family: var(--font-ui);
+}
+.sourceLabels .labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sourceLabels .labelFile {
+  font-size: var(--fs-small);
 }
 .badge {
   padding: 0 5px;

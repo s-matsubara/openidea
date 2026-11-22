@@ -34,6 +34,7 @@ import {
   revealInFinder,
   vcsArg,
 } from "./operations";
+import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
@@ -356,6 +357,14 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       { kind: "separator" },
       ...menuGroupItems("openIn", menuGroupContext(nodes)),
     ]),
+    inWorkspace &&
+      canDownload() &&
+      delegated(
+        "project.downloadTo",
+        nodes.map((n) => n.path),
+        "Download to…",
+        { icon: "download" },
+      ),
     { kind: "separator" },
   );
 
@@ -422,6 +431,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           { kind: "separator" },
           act("vcs.stash", undefined, "Stash Changes…"),
           act("vcs.unstash", undefined, "Unstash Changes…"),
+          { kind: "separator" },
+          act("vcs.manageRemotes", undefined, "Manage Remotes…"),
+          act("vcs.clone", undefined, "Clone…"),
         ],
         "branch",
       ),

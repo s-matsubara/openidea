@@ -1,30 +1,35 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { openWorktree } from "./openWorktree";
 import {
+  Button,
   Checkbox,
   Dialog,
   HighlightedText,
   Icon,
   IconButton,
   Input,
+  Menu,
   Select,
   T,
   Tree,
+  listNavigate,
   useSanitizedField,
   type SelectOption,
   type SelectProps,
+  type MenuItem,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
-import { PullFrame } from "./pullFrame";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
+import { baseName } from "./model";
 import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
 import {
   groupWorktrees,
@@ -34,6 +39,9 @@ import {
   type RepoWorktrees,
 } from "./worktrees";
 import styles from "./common.module.css";
+import remoteStyles from "./GitRemotes.module.css";
+import commandStyles from "./GitCommandDialog.module.css";
+import worktreeStyles from "./Worktrees.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
@@ -74,48 +82,61 @@ const FLAG_LABELS: Array<[MergeFlag, string]> = [
   ["noCommit", "--no-commit"],
 ];
 
-function MergeFlags({
-  on,
-  setOn,
+function mergeFlagItems(
+  flags: ReadonlySet<MergeFlag>,
+  setFlags: (flags: Set<MergeFlag>) => void,
   rebase = false,
-}: {
-  on: Set<MergeFlag>;
-  setOn: (next: Set<MergeFlag>) => void;
-  rebase?: boolean;
-}) {
-  const disabled = disabledMergeFlags(on, rebase);
+): MenuItem[] {
+  const disabled = disabledMergeFlags(flags, rebase);
+  return FLAG_LABELS.map(([flag, label]) => ({
+    label,
+    verbatim: true,
+    checked: flags.has(flag),
+    disabled: disabled.has(flag) && !flags.has(flag),
+    run: () => {
+      const next = new Set(flags);
+      if (next.has(flag)) next.delete(flag);
+      else next.add(flag);
+      setFlags(next);
+    },
+  }));
+}
+
+function ModifyOptions({ items }: { items: MenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
   return (
-    <div className={styles.optionGrid} role="group" aria-label={tx("Merge options")}>
-      {FLAG_LABELS.map(([flag, label]) => (
-        <Checkbox
-          key={flag}
-          label={label}
-          checked={on.has(flag)}
-          disabled={disabled.has(flag) && !on.has(flag)}
-          onChange={(v) => {
-            const next = new Set(on);
-            if (v) next.add(flag);
-            else next.delete(flag);
-            setOn(next);
-          }}
-        />
-      ))}
-    </div>
+    <>
+      <Button ref={anchor} variant="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <T>Modify options</T>
+        <Icon name="chevron-down" size={12} />
+      </Button>
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={anchor}
+        placement="top-start"
+        aria-label="Modify options"
+        items={items}
+      />
+    </>
   );
 }
 
+const emptyBranches: Branch[] = [];
+
 function useBranches(repo: string | null): Branch[] {
-  const [branches, setBranches] = useState<Branch[]>([]);
+  const [loaded, setLoaded] = useState<{ repo: string | null; branches: Branch[] } | null>(null);
   useEffect(() => {
     let live = true;
     void call(commands.vcsBranches(repo))
-      .then((b) => live && setBranches(b))
+      .then((branches) => live && setLoaded({ repo, branches }))
       .catch(() => undefined);
     return () => {
       live = false;
     };
   }, [repo]);
-  return branches;
+  return loaded?.repo === repo ? loaded.branches : emptyBranches;
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
@@ -142,12 +163,24 @@ export function showPullDialog(repo?: string | null) {
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
-export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+export function RepoPicker({
+  id,
+  repo,
+  onChange,
+  className,
+}: {
+  id?: string;
+  repo: string | null;
+  onChange: (root: string) => void;
+  className?: string;
+}) {
   const [roots] = useState(() => useVcs.getState().roots.filter((root) => useVcs.getState().kinds[root] !== "jj"));
   if (roots.length < 2) return null;
   return (
     <Select
+      id={id}
       aria-label="Repository"
+      className={className}
       value={repo ?? roots[0] ?? null}
       options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
       onChange={onChange}
@@ -216,6 +249,13 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       : preferred && remoteBranches.includes(preferred)
         ? preferred
         : (remoteBranches[0] ?? null);
+  const selectedFlags = rebase
+    ? ["--rebase"]
+    : FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  const options: MenuItem[] = [
+    { label: "--rebase", verbatim: true, checked: rebase, run: () => setRebase(!rebase) },
+    ...mergeFlagItems(flags, setFlags, rebase),
+  ];
 
   const run = async () => {
     if (!remote) return;
@@ -235,39 +275,57 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
   };
 
   return (
-    <PullFrame title={tx`Pull to ${info?.head ?? "HEAD"}`} onClose={onClose} disabled={!remote} run={() => void run()}>
-      <RepoPicker repo={repo} onChange={chooseRepo} />
-      {remotes && !remotes.length ? (
+    <Dialog
+      open
+      title={tx`Pull to ${info?.head ?? "HEAD"}`}
+      onClose={onClose}
+      width={640}
+      footerStart={<ModifyOptions items={options} />}
+      buttons={[
+        { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={commandStyles.form}>
+        <div className={commandStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={commandStyles.repository} />
+          {remotes && !remotes.length ? (
+            <div className={clsx(styles.hint, commandStyles.noRemotes)}>
+              <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
+            </div>
+          ) : (
+            <div className={commandStyles.command}>
+              <code className={commandStyles.verb}>git pull</code>
+              <Select
+                aria-label="Remote"
+                className={commandStyles.remote}
+                value={remote}
+                options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, verbatim: true, detail: r.url }))}
+                onChange={setRemote}
+              />
+              <BranchSelect
+                aria-label="Remote branch"
+                className={commandStyles.branch}
+                value={branch}
+                renderValue={(option) => (option ? <span title={option.label}>{option.label}</span> : <T>Branch</T>)}
+                options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch", verbatim: true }))}
+                onChange={setBranch}
+              />
+            </div>
+          )}
+        </div>
+        {selectedFlags.length > 0 && (
+          <div className={commandStyles.flags} role="group" aria-label={tx("Options:")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
+          </div>
+        )}
         <div className={styles.hint}>
-          <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
+          <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
         </div>
-      ) : (
-        <div className={styles.fieldRow}>
-          <Select
-            aria-label="Remote"
-            value={remote}
-            options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
-            onChange={setRemote}
-          />
-          <BranchSelect
-            aria-label="Remote branch"
-            className={styles.grow}
-            value={branch}
-            placeholder="Branch"
-            options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
-            onChange={setBranch}
-          />
-        </div>
-      )}
-      <div className={styles.fieldLabel}>
-        <T>Options:</T>
       </div>
-      <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
-      <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
-      <div className={styles.hint}>
-        <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
-      </div>
-    </PullFrame>
+    </Dialog>
   );
 }
 
@@ -279,6 +337,7 @@ export function showMergeDialog(repo?: string | null) {
 }
 
 function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const messageId = useId();
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
@@ -286,10 +345,16 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
   const [withMessage, setWithMessage] = useState(false);
   const [message, setMessage] = useState("");
-  const options = useMemo(
+  const branchChoices = useMemo(
     () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
     [branches],
   );
+  const optionItems: MenuItem[] = [
+    ...mergeFlagItems(flags, setFlags),
+    { label: "-m (commit message)", checked: withMessage, run: () => setWithMessage(!withMessage) },
+  ];
+  const selectedFlags = FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  if (withMessage) selectedFlags.push("-m");
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
@@ -315,36 +380,49 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
       open
       title={tx`Merge into ${head ?? "HEAD"}`}
       onClose={onClose}
-      width={460}
+      width={640}
+      footerStart={<ModifyOptions items={optionItems} />}
       buttons={[
         { label: "Merge", role: "default", disabled: !branch, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <div className={styles.fieldLabel}>
-          <T>Branch to merge:</T>
+      <div className={commandStyles.form}>
+        <div className={commandStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={commandStyles.repository} />
+          <div className={commandStyles.command}>
+            <code className={commandStyles.verb}>git merge</code>
+            <BranchSelect
+              aria-label="Branch to merge"
+              className={commandStyles.branch}
+              value={branch}
+              placeholder="Select branch"
+              options={branchChoices}
+              onChange={setBranch}
+            />
+          </div>
         </div>
-        <BranchSelect
-          aria-label="Branch to merge"
-          value={branch}
-          placeholder="Select branch"
-          options={options}
-          onChange={setBranch}
-        />
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <MergeFlags on={flags} setOn={setFlags} />
-        <Checkbox label="-m (commit message)" checked={withMessage} onChange={setWithMessage} />
+        {selectedFlags.length > 0 && (
+          <div className={commandStyles.flags} role="group" aria-label={tx("Merge options")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
+          </div>
+        )}
         {withMessage && (
-          <Input
-            aria-label="Commit message"
-            value={message}
-            placeholder={branch ? tx`Merge branch '${branch}' into ${head ?? "HEAD"}` : ""}
-            onChange={(e) => setMessage(e.target.value)}
-          />
+          <div className={commandStyles.message}>
+            <label htmlFor={messageId}>
+              <T>Commit message</T>
+            </label>
+            <textarea
+              id={messageId}
+              className={styles.textarea}
+              rows={4}
+              value={message}
+              placeholder={branch ? tx`Merge branch '${branch}' into ${head ?? "HEAD"}` : ""}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+          </div>
         )}
       </div>
     </Dialog>
@@ -359,6 +437,7 @@ export function showRebaseDialog(repo?: string | null) {
 }
 
 function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const upstreamId = useId();
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
@@ -367,11 +446,30 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   const [onto, setOnto] = useState<string | null>(null);
   const [rebaseMerges, setRebaseMerges] = useState(false);
   const [keepEmpty, setKeepEmpty] = useState(false);
-  const options = useMemo(
+  const branchChoices = useMemo(
     () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
     [branches],
   );
+  const optionItems: MenuItem[] = [
+    { label: "--onto", verbatim: true, checked: useOnto, run: () => setUseOnto(!useOnto) },
+    { label: "--rebase-merges", verbatim: true, checked: rebaseMerges, run: () => setRebaseMerges(!rebaseMerges) },
+    { label: "--keep-empty", verbatim: true, checked: keepEmpty, run: () => setKeepEmpty(!keepEmpty) },
+  ];
+  const selectedFlags = [rebaseMerges ? "--rebase-merges" : null, keepEmpty ? "--keep-empty" : null].filter(
+    (label) => label !== null,
+  );
   const ready = !!upstream && (!useOnto || !!onto);
+  const upstreamPicker = (
+    <BranchSelect
+      id={upstreamId}
+      aria-label={useOnto ? "Old base" : "Upstream"}
+      className={commandStyles.branch}
+      value={upstream}
+      placeholder="Select branch"
+      options={branchChoices}
+      onChange={setUpstream}
+    />
+  );
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
@@ -381,7 +479,7 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   };
 
   const run = async () => {
-    if (!upstream) return;
+    if (!ready || !upstream) return;
     onClose();
     await saveAll();
     const target = useOnto && onto ? onto : upstream;
@@ -404,38 +502,52 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   return (
     <Dialog
       open
-      title="Rebase"
+      title={tx`Rebase ${head ?? "HEAD"}`}
       onClose={onClose}
-      width={460}
+      width={640}
+      footerStart={<ModifyOptions items={optionItems} />}
       buttons={[
         { label: "Rebase", role: "default", disabled: !ready, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <div className={styles.fieldLabel}>
-          {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
+      <div className={commandStyles.form}>
+        <div className={commandStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={commandStyles.repository} />
+          <div className={commandStyles.command}>
+            <code className={commandStyles.verb}>git rebase</code>
+            {useOnto ? (
+              <>
+                <code className={commandStyles.verb}>--onto</code>
+                <BranchSelect
+                  aria-label="New base"
+                  className={commandStyles.branch}
+                  value={onto}
+                  placeholder="New base"
+                  options={branchChoices}
+                  onChange={setOnto}
+                />
+              </>
+            ) : (
+              upstreamPicker
+            )}
+          </div>
         </div>
-        <BranchSelect
-          aria-label="Upstream"
-          value={upstream}
-          placeholder="Select branch"
-          options={options}
-          onChange={setUpstream}
-        />
-        <Checkbox label="--onto" checked={useOnto} onChange={setUseOnto} />
         {useOnto && (
-          <BranchSelect
-            aria-label="New base"
-            value={onto}
-            placeholder="New base"
-            options={options}
-            onChange={setOnto}
-          />
+          <div className={commandStyles.rebaseBase}>
+            <label htmlFor={upstreamId} title={tx`Rebase commits of ${head ?? "HEAD"} not on:`}>
+              <T>Old base</T>
+            </label>
+            {upstreamPicker}
+          </div>
         )}
-        <Checkbox label="--rebase-merges" checked={rebaseMerges} onChange={setRebaseMerges} />
-        <Checkbox label="--keep-empty" checked={keepEmpty} onChange={setKeepEmpty} />
+        {selectedFlags.length > 0 && (
+          <div className={commandStyles.flags} role="group" aria-label={tx("Rebase options")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
+          </div>
+        )}
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the rebase and restored afterwards.</T>
         </div>
@@ -466,10 +578,14 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
       open
       title="Git Remotes"
       onClose={onClose}
-      width={560}
+      width={600}
+      minWidth={360}
+      minHeight={280}
+      resizable="both"
+      className={remoteStyles.dialog}
       buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
     >
-      <div className={styles.form}>
+      <div className={remoteStyles.content}>
         <RepoPicker repo={repo} onChange={setRepo} />
         {/* Keyed: picking another repository starts a fresh list, so answers for the previous one are dropped. */}
         <RemotesList key={repo} repo={repo} />
@@ -531,35 +647,82 @@ function RemotesList({ repo }: { repo: string | null }) {
   };
   const current = remotes.find((r) => r.name === selected);
 
+  const onRowKey = (event: KeyboardEvent<HTMLTableRowElement>, remote: Remote) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      edit(remote);
+      return;
+    }
+    const row = event.currentTarget;
+    const index = listNavigate(event.key, { items: remotes, active: row.sectionRowIndex });
+    if (index === null) return;
+    event.preventDefault();
+    const target = row.closest("tbody")?.rows.item(index);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
   return (
     <>
-      <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
-        <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
-        <IconButton icon="minus" title="Remove Remote" size="small" disabled={!current} onClick={() => void remove()} />
-        <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+      <div className={remoteStyles.panel}>
+        <div className={remoteStyles.toolbar} role="toolbar" aria-label={tx("Remotes")}>
+          <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
+          <IconButton
+            icon="minus"
+            title="Remove Remote"
+            size="small"
+            disabled={!current}
+            onClick={() => void remove()}
+          />
+          <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+        </div>
+        <div className={remoteStyles.scroller}>
+          <table className={remoteStyles.table} role="grid" aria-label={tx("Remotes")}>
+            <colgroup>
+              <col className={remoteStyles.nameColumn} />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">
+                  <T>Name</T>
+                </th>
+                <th scope="col">
+                  <T>URL</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {!remotes.length && (
+                <tr>
+                  <td colSpan={2} className={styles.empty}>
+                    <T>No remotes</T>
+                  </td>
+                </tr>
+              )}
+              {remotes.map((r) => (
+                <tr
+                  key={r.name}
+                  aria-selected={r.name === selected}
+                  tabIndex={r.name === selected ? 0 : -1}
+                  onFocus={() => setSelected(r.name)}
+                  onClick={(e) => e.currentTarget.focus({ preventScroll: true })}
+                  onDoubleClick={() => edit(r)}
+                  onKeyDown={(e) => onRowKey(e, r)}
+                >
+                  <td title={r.name}>{r.name}</td>
+                  <td title={r.url}>{r.url}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
-        {!remotes.length && (
-          <div className={styles.empty}>
-            <T>No remotes</T>
-          </div>
-        )}
-        {remotes.map((r) => (
-          <button
-            key={r.name}
-            type="button"
-            role="option"
-            aria-selected={r.name === selected}
-            className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
-            onClick={() => setSelected(r.name)}
-            onDoubleClick={() => edit(r)}
-          >
-            <span className={styles.fileName}>{r.name}</span>
-            <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
-          </button>
-        ))}
-      </div>
-      {error && <div className={styles.error}>{error}</div>}
+      {error && (
+        <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+          {error}
+        </div>
+      )}
     </>
   );
 }
@@ -575,6 +738,8 @@ function RemoteEditDialog({
 }) {
   const [name, setName] = useState(remote?.name ?? (existing.includes("origin") ? "" : "origin"));
   const [url, setUrl] = useState(remote?.url ?? "");
+  const nameId = useId();
+  const urlId = useId();
   const error = validateRemoteName(name, existing) ?? (url.trim() ? null : "Enter the remote URL");
   const submit = () => {
     if (!error) onDone({ name: name.trim(), url: url.trim() });
@@ -591,21 +756,25 @@ function RemoteEditDialog({
       ]}
     >
       <form
-        className={styles.form}
+        className={remoteStyles.editor}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <label className={styles.fieldLabel}>
+        <label htmlFor={nameId}>
           <T>Name:</T>
         </label>
-        <Input data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <label className={styles.fieldLabel}>
+        <Input id={nameId} data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <label htmlFor={urlId}>
           <T>URL:</T>
         </label>
-        <Input aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
-        {error && (name || url) && <div className={styles.error}>{error}</div>}
+        <Input id={urlId} aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
+        {error && (name || url) && (
+          <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+            {error}
+          </div>
+        )}
       </form>
     </Dialog>
   );
@@ -658,16 +827,15 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
 interface WorktreeNode {
   key: string;
   label: string;
-  worktree?: Worktree;
+  worktree?: { entry: Worktree; branch: string };
   children?: WorktreeNode[];
 }
 
 /**
- * The worktrees of every repository of the project as one tree, styled like the Log's
- * Branches pane, with New / Remove / Open: the Worktrees dialog's content and the Git
- * tool window's Worktrees tab. `listClassName` replaces the dialog's default height.
+ * The worktrees of every project repository, shown in the dialog and in the Git tool window.
  */
 export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+  const rowHeight = useRowHeight(40);
   const projectRoot = useProject((s) => s.project?.root);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
@@ -703,8 +871,8 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         label: repoName(group.root),
         children: group.worktrees.map((w): WorktreeNode => ({
           key: `w:${w.path}`,
-          label: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")),
-          worktree: w,
+          label: baseName(w.path.replaceAll("\\", "/")) || w.path,
+          worktree: { entry: w, branch: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")) },
         })),
       })),
     [groups],
@@ -716,18 +884,6 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   const containsProject = !!current && worktreeContainsProject(current.path, projectRoot);
   const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
   const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
-  const icon = (node: WorktreeNode) =>
-    node.worktree ? (isCurrent(node.worktree.path) ? "current-branch" : "branch") : "folder";
-  const detail = (node: WorktreeNode) => {
-    const w = node.worktree;
-    if (!w) return "";
-    const current = isCurrent(w.path);
-    // "main" only when the main worktree is not the one this window works in.
-    const flags = [
-      current ? tx("current") : w.main ? "main" : w.locked ? tx("locked") : w.prunable ? tx("prunable") : "",
-    ].filter(Boolean);
-    return [...flags, w.path].join("  ");
-  };
 
   const mutate = async (task: () => Promise<unknown>, selection: string | null) => {
     if (projectRoot !== useProject.getState().project?.root) return;
@@ -796,62 +952,110 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   };
 
   return (
-    <div className={className}>
-      <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
-        <IconButton
-          icon="plus"
-          title="New Worktree…"
-          size="small"
-          onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
-        />
-        <IconButton
-          icon="minus"
-          title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
-          aria-label="Remove Worktree"
-          size="small"
-          disabled={!current || current.main || containsProject}
-          onClick={() => void remove()}
-        />
-        <IconButton
-          icon="export"
-          title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
-          aria-label="Move Worktree…"
-          size="small"
-          disabled={!current || current.main || containsProject}
-          onClick={() => void move()}
-        />
-        <IconButton
-          icon="folder"
-          title="Open in New Window"
-          size="small"
-          disabled={!current}
-          onClick={() => current && void executeAction("file.openProjectPath", current.path)}
+    <div className={clsx(worktreeStyles.panel, className)}>
+      <div className={worktreeStyles.body}>
+        <div className={worktreeStyles.toolbar} role="toolbar" aria-label={tx("Worktrees")} aria-orientation="vertical">
+          <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
+          <IconButton
+            icon="plus"
+            title="New Worktree…"
+            size="small"
+            onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
+          />
+          <IconButton
+            icon="minus"
+            title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
+            aria-label="Remove Worktree"
+            size="small"
+            disabled={!current || current.main || containsProject}
+            onClick={() => void remove()}
+          />
+          <IconButton
+            icon="export"
+            title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
+            aria-label="Move Worktree…"
+            size="small"
+            disabled={!current || current.main || containsProject}
+            onClick={() => void move()}
+          />
+          <IconButton
+            icon="folder"
+            title="Open in New Window"
+            size="small"
+            disabled={!current}
+            onClick={() => current && void openWorktree(current.path)}
+          />
+        </div>
+        <Tree<WorktreeNode>
+          // A new set of repositories starts with every section expanded.
+          key={tree.map((n) => n.key).join("|")}
+          roots={tree}
+          getKey={(n) => n.key}
+          getLabel={(n) => (n.worktree ? `${n.label} ${n.worktree.branch}` : n.label)}
+          getChildren={(n) => n.children}
+          isExpandable={(n) => !!n.children}
+          renderNode={(node, { matches }) => {
+            if (!node.worktree) {
+              return (
+                <>
+                  <Icon name="folder" size={16} className={worktreeStyles.icon} />
+                  <HighlightedText
+                    className={worktreeStyles.truncated}
+                    text={node.label}
+                    indices={matches}
+                    tone="accent"
+                  />
+                </>
+              );
+            }
+            const { entry, branch } = node.worktree;
+            const current = isCurrent(entry.path);
+            const branchStart = node.label.length + 1;
+            return (
+              <>
+                <Icon
+                  name={current ? "check" : "folder"}
+                  size={16}
+                  label={current ? tx("current") : undefined}
+                  className={clsx(worktreeStyles.icon, worktreeStyles.leading)}
+                />
+                <div className={worktreeStyles.details}>
+                  <span className={worktreeStyles.line}>
+                    <HighlightedText
+                      className={clsx(worktreeStyles.truncated, entry.main && worktreeStyles.main)}
+                      text={node.label}
+                      indices={matches?.filter((i) => i < node.label.length)}
+                      tone="accent"
+                    />
+                    {entry.locked && <Icon name="lock" size={12} label={tx("locked")} />}
+                    {entry.prunable && <Icon name="warning" size={12} label={tx("prunable")} />}
+                  </span>
+                  <span className={worktreeStyles.secondary}>
+                    <Icon name="branch" size={12} />
+                    <HighlightedText
+                      className={worktreeStyles.truncated}
+                      text={branch}
+                      indices={matches?.filter((i) => i >= branchStart).map((i) => i - branchStart)}
+                      tone="accent"
+                    />
+                    <span className={clsx(worktreeStyles.path, worktreeStyles.truncated)} title={entry.path}>
+                      {entry.path}
+                    </span>
+                  </span>
+                </div>
+              </>
+            );
+          }}
+          defaultExpanded={tree.map((n) => n.key)}
+          selected={selectedKeys}
+          multiSelect={false}
+          onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
+          onActivate={(n) => n.worktree && void openWorktree(n.worktree.entry.path)}
+          className={clsx(worktreeStyles.tree, listClassName ?? worktreeStyles.dialogTree)}
+          rowHeight={rowHeight}
+          aria-label="Worktrees"
         />
       </div>
-      <Tree<WorktreeNode>
-        // A new set of repositories starts with every section expanded.
-        key={tree.map((n) => n.key).join("|")}
-        roots={tree}
-        getKey={(n) => n.key}
-        getLabel={(n) => n.label}
-        getChildren={(n) => n.children}
-        isExpandable={(n) => !!n.children}
-        renderNode={(node, state) => (
-          <>
-            <Icon name={icon(node)} size={16} className={styles.worktreeIcon} />
-            <HighlightedText className={styles.worktreeLabel} text={node.label} indices={state.matches} tone="accent" />
-            {node.worktree && <span className={styles.worktreeDetail}>{detail(node)}</span>}
-          </>
-        )}
-        defaultExpanded={tree.map((n) => n.key)}
-        selected={selectedKeys}
-        multiSelect={false}
-        onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-        onActivate={(n) => n.worktree && void executeAction("file.openProjectPath", n.worktree.path)}
-        className={listClassName ?? styles.worktreeListDialog}
-        aria-label="Worktrees"
-      />
       {groups.map(
         (group) =>
           group.error && (

@@ -234,6 +234,15 @@ function leadingColumns(text: string, tabSize: number): number {
   return col;
 }
 
+/** Indentation of the nearest non-empty line above `line` (1-based), for pastes onto a blank line in languages without an indent engine. */
+function previousLineIndent(state: EditorState, line: number): number | null {
+  for (let n = line - 1; n >= 1; n--) {
+    const prev = state.doc.line(n);
+    if (/\S/.test(prev.text)) return leadingColumns(prev.text, state.tabSize);
+  }
+  return null;
+}
+
 /** Reformat on paste › Indent Block: re-indents a pasted block to the caret's indentation. */
 export function indentPastedText(
   text: string,
@@ -289,7 +298,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     let targetCol = leadingColumns(atIndent ? before : line.text, tabSize);
     let prefix = "";
     if (atIndent) {
-      const proper = getIndentation(start, line.from);
+      let proper = getIndentation(start, line.from);
+      if (!targetCol && !proper) {
+        const above = previousLineIndent(start, line.number);
+        if (above) proper = above;
+      }
       if (proper !== null && proper !== targetCol) {
         targetCol = proper;
         prefix = indentString(start, proper);
@@ -517,12 +530,20 @@ export const GUTTER_ICON_GROUPS = [
 ] as const;
 
 /**
- * Languages whose outer parser is `@lezer/html`, where simultaneous
- * `<tag></tag>` editing works from the syntax tree. Angular templates carry
- * the `html` backend id (the Angular mode is picked per project), `erb` is a
- * token-based mode without a syntax tree and stays out.
+ * Languages whose outer parser is `@lezer/html`, plus JSX / TSX, where
+ * simultaneous `<tag></tag>` editing works from the syntax tree. Angular
+ * templates carry the `html` backend id (the Angular mode is picked per
+ * project), `erb` is a token-based mode without a syntax tree and stays out.
  */
-const LINKED_TAG_LANGUAGES = new Set(["html", "vue", "jsp", "django-html", "astro"]);
+const LINKED_TAG_LANGUAGES = new Set([
+  "html",
+  "vue",
+  "jsp",
+  "django-html",
+  "astro",
+  "typescriptreact",
+  "javascriptreact",
+]);
 
 export interface PrefsOptions {
   prefs: EditorExtras;
@@ -656,8 +677,8 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (k.tabOutOfPair) out.push(tabOut);
   // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
   // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
-  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id).
-  // ERB is token-based (no syntax tree), so it stays out.
+  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id),
+  // and JSX / TSX. ERB is token-based (no syntax tree), so it stays out.
   if (!o.readOnly && k.simultaneousTagEditing && LINKED_TAG_LANGUAGES.has(o.language ?? "")) out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 

@@ -10,6 +10,7 @@ import {
   schemeCss,
 } from "./colorScheme";
 import { deleteScheme, exportIcls, importScheme, parseIcls, SchemeParseError } from "./icls";
+import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 import { validateSettings } from "@/features/settings/model/schema";
 import { colorSchemeItems } from "@/workbench/quickSwitch";
 import { useProject } from "./project";
@@ -296,7 +297,7 @@ describe(".icls schemes", () => {
     expect(fg("docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
-    expect(scheme.attributes.operator).toBeUndefined();
+    expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
     expect([applied, skipped]).toEqual([10, 6]);
   });
 
@@ -515,12 +516,68 @@ describe(".icls schemes", () => {
     for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
   });
 
+  it("imports PyCharm's function call, class, parameter and f-string keys and exports them by those keys", () => {
+    const keys = [
+      ["PY.FUNCTION_CALL", "pyFunctionCall", "d56075"],
+      ["PY.CLASS_DEFINITION", "pyClassDefinition", "7bcbff"],
+      ["PY.PARAMETER", "pyParameter", "101010"],
+      ["PY.LOCAL_VARIABLE", "pyLocalVariable", "202020"],
+      ["PY.TYPE_PARAMETER", "pyTypeParameter", "303030"],
+      ["PY.INVALID_STRING_ESCAPE", "pyInvalidEscape", "404040"],
+      ["PY.FSTRING_FRAGMENT_BRACES", "pyFString", "e89c45"],
+      ["PY.FSTRING_FORMAT_SPEC_NUMBER", "pyFormat", "505050"],
+    ] as const;
+    const xml = `<scheme name="PyCharm" parent_scheme="Darcula"><attributes>${keys
+      .map(
+        ([key, , value]) =>
+          `<option name="${key}"><value><option name="FOREGROUND" value="${value}"/></value></option>`,
+      )
+      .join("")}<option name="JS.GLOBAL_FUNCTION"><value><option name="FOREGROUND" value="6dacff"/></value></option>
+    </attributes></scheme>`;
+    const { scheme, skipped } = parseIcls(xml);
+    expect(skipped).toBe(0);
+    for (const [, id, value] of keys) expect(scheme.attributes[id]?.foreground).toBe(`#${value}`);
+    // A WebStorm function colour still sets the shared call colour; Python calls keep PyCharm's.
+    expect(scheme.attributes.functionCall?.foreground).toBe("#6dacff");
+    const { id, customs } = importScheme({}, scheme);
+    const exported = exportIcls(id, customs);
+    for (const [key] of keys) expect(exported).toContain(`name="${key}"`);
+    expect(exported).not.toContain('name="PY.STRING.F"');
+  });
+
+  it("still reads Python attributes that earlier versions exported under OPENIDEA_ names", () => {
+    const xml =
+      '<scheme name="Old"><attributes><option name="OPENIDEA_pyFunctionCall"><value>' +
+      '<option name="FOREGROUND" value="d56075"/></value></option></attributes></scheme>';
+    expect(parseIcls(xml).scheme.attributes.pyFunctionCall?.foreground).toBe("#d56075");
+  });
+
   it("imports the Python f-string colour", () => {
     const xml =
       '<scheme name="F"><attributes><option name="PY.STRING.F"><value>' +
       '<option name="FOREGROUND" value="808080"/></value></option></attributes></scheme>';
     const { id, customs } = importScheme({}, parseIcls(xml).scheme);
     expect(parseIcls(exportIcls(id, customs)).scheme.attributes.pyFString?.foreground).toBe("#808080");
+  });
+
+  it("takes what a Darcula-based scheme leaves out from Darcula, as IntelliJ does", () => {
+    const { scheme, applied } = parseIcls(`<scheme name="Mine" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff8800"/></value></option>
+      <option name="ERRORS_ATTRIBUTES"><value/></option>
+      <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER"/>
+    </attributes></scheme>`);
+    expect(applied).toBe(1);
+    expect(scheme.parent).toBe("dark");
+    expect(scheme.attributes.text).toEqual({ foreground: "#a9b7c6", background: "#2b2b2b" });
+    expect(scheme.attributes.string?.foreground).toBe("#6a8759");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#ff8800", bold: false, italic: false });
+    // An entry of its own, even an empty one, replaces Darcula's.
+    expect(scheme.attributes.error).toBeUndefined();
+    expect(scheme.attributes.constant).toBeUndefined();
+    // The gutter keeps the editor's background, as in IntelliJ's new UI.
+    expect(scheme.attributes.gutter).toBeUndefined();
+    // Other parents keep the IDE's own base.
+    expect(parseIcls('<scheme name="I" parent_scheme="Islands Dark"></scheme>').scheme.attributes).toEqual({});
   });
 
   it("imports the global variable colour", () => {

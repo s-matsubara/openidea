@@ -5,8 +5,20 @@ import { SCHEME_SUBPAGES, languagePageId } from "./colorSchemeMeta";
  * italic / effects editor, and a live preview. Edits are staged in
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Button, Checkbox, Icon, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Button,
+  Checkbox,
+  Icon,
+  Input,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Tree,
+  type SelectOption,
+  type TreeHandle,
+  T,
+} from "@/ui";
 import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
@@ -114,7 +126,7 @@ function previewVars(
   redGreen = false,
 ): CSSProperties {
   const vars: Record<string, string> = {};
-  const tokens = resolvedSchemeTokens(id, customs, redGreen);
+  const tokens = resolvedSchemeTokens(id, customs, redGreen, o);
   for (const [k, v] of tokens)
     if (
       k.startsWith("--syn-") ||
@@ -1323,7 +1335,6 @@ interface GitPreviewSuffixSeg {
   attr: string;
   icon?: "vcs-outgoing" | "vcs-incoming";
   label?: string;
-  strike?: boolean;
 }
 
 /** The Git page shows the two real surfaces instead of a code sample: the editor
@@ -1344,29 +1355,35 @@ function GitPreview({
       {text}
     </span>
   );
-  // Mirrors rootSyncSuffix: branch, "/" separator, then ahead/behind counts or a struck zero.
+  // Mirrors rootSyncSuffix for clean repositories
   const suffixOf = (root: GitPreviewRoot): GitPreviewSuffixSeg[] => {
     const { branch, branchAttr, upstream, ahead, behind } = root;
     const head: GitPreviewSuffixSeg = { text: branch, attr: branchAttr };
-    if (!upstream) return [head];
     const counts: GitPreviewSuffixSeg[] = [];
-    if (ahead)
+    if (upstream && ahead)
       counts.push({
         text: String(ahead),
         attr: "gitBranchChanged",
         icon: "vcs-outgoing",
         label: tx`${ahead} outgoing commits`,
       });
-    if (behind)
+    if (upstream && behind)
       counts.push({
         text: String(behind),
         attr: "gitBranchChanged",
         icon: "vcs-incoming",
         label: tx`${behind} incoming commits`,
       });
-    if (!counts.length)
-      counts.push({ text: "0", attr: "gitHeadTags", strike: true, label: tx`Up to date with ${upstream}` });
-    return [head, { text: "/", attr: "gitHeadTags" }, ...counts];
+    return [
+      head,
+      ...counts,
+      {
+        text: "/",
+        attr: "gitHeadTags",
+        label: upstream && !counts.length ? tx`Up to date with ${upstream}` : undefined,
+      },
+      { text: "∅", attr: "gitHeadTags", label: tx("No local changes") },
+    ];
   };
   return (
     <div className={styles.gitPreview} style={vars} aria-label={tx("Color scheme preview")}>
@@ -1424,7 +1441,7 @@ function GitPreview({
                       title={s.label}
                       onClick={() => click(s.attr)}
                     >
-                      {s.strike ? <s>{s.text}</s> : s.text}
+                      {s.text}
                       {s.icon && <Icon name={s.icon} size={12} />}
                     </span>
                   ))}
@@ -1438,7 +1455,15 @@ function GitPreview({
   );
 }
 
-export function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landing?: boolean }) {
+export function ColorSchemePage({
+  scopes,
+  landing,
+  children,
+}: {
+  scopes: readonly string[];
+  landing?: boolean;
+  children?: ReactNode;
+}) {
   const translate = useTx();
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme", "global");
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
@@ -1650,7 +1675,7 @@ export function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]
     [],
   );
   return (
-    <div className={styles.page}>
+    <div className={landing ? styles.page : styles.schemePage}>
       <div className={styles.schemeRow}>
         <Row label="Scheme">
           <Select value={scheme} options={options} onChange={setScheme} aria-label="Scheme" />
@@ -1701,84 +1726,88 @@ export function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]
           ))}
         </nav>
       ) : (
-        <>
-          <div className={styles.schemeBody} style={baseVars}>
-            <div className={styles.attrTree}>
-              <Tree<Node>
-                aria-label="Color scheme attributes"
-                roots={roots}
-                getKey={(n) => n.key}
-                getLabel={(n) => translate(n.label)}
-                getChildren={(n) => n.children}
-                isExpandable={(n) => !!n.children?.length}
-                expanded={expanded}
-                onExpandedChange={setExpanded}
-                handleRef={treeRef}
-                multiSelect={false}
-                selected={new Set([selected])}
-                onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
-                renderNode={(n) => (
-                  <span
-                    className={`${styles.treeLabel} ${(n.attr ? mine?.[n.attr.id] : modifiedKeys.has(n.key)) ? styles.attrModified : ""}`}
-                  >
-                    {translate(n.label)}
-                  </span>
-                )}
-                speedSearch
-              />
-            </div>
-            {attr ? (
-              <div className={styles.attrPanel}>
-                <AttributeEditor
-                  key={`${id}/${attr.id}`}
-                  attr={attr}
-                  inherited={inherited}
-                  value={mine?.[attr.id]}
-                  onChange={(v) => update(attr.id, v)}
+        <SplitGroup orientation="vertical" className={styles.schemeSplit}>
+          <SplitPanel defaultSize="62%" minSize="154px">
+            <div className={styles.schemeBody} style={baseVars}>
+              <div className={styles.attrTree}>
+                <Tree<Node>
+                  aria-label="Color scheme attributes"
+                  roots={roots}
+                  getKey={(n) => n.key}
+                  getLabel={(n) => translate(n.label)}
+                  getChildren={(n) => n.children}
+                  isExpandable={(n) => !!n.children?.length}
+                  expanded={expanded}
+                  onExpandedChange={setExpanded}
+                  handleRef={treeRef}
+                  multiSelect={false}
+                  selected={new Set([selected])}
+                  onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
+                  renderNode={(n) => (
+                    <span
+                      className={`${styles.treeLabel} ${(n.attr ? mine?.[n.attr.id] : modifiedKeys.has(n.key)) ? styles.attrModified : ""}`}
+                    >
+                      {translate(n.label)}
+                    </span>
+                  )}
+                  speedSearch
                 />
               </div>
+              <section className={styles.attrPanel} aria-label={tx("Color scheme options")}>
+                {attr && (
+                  <AttributeEditor
+                    key={`${id}/${attr.id}`}
+                    attr={attr}
+                    inherited={inherited}
+                    value={mine?.[attr.id]}
+                    onChange={(v) => update(attr.id, v)}
+                  />
+                )}
+                {children && <div className={styles.schemeExtraOptions}>{children}</div>}
+              </section>
+            </div>
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Resize color scheme preview")} />
+          <SplitPanel defaultSize="38%" minSize="88px">
+            {scopes[0] === "Git" ? (
+              <GitPreview vars={vars} ids={ids} reveal={reveal} />
             ) : (
-              <div />
-            )}
-          </div>
-          {scopes[0] === "Git" ? (
-            <GitPreview vars={vars} ids={ids} reveal={reveal} />
-          ) : (
-            <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-              {sample.code.map((line, i) => (
-                <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
-                  <span className={styles.previewGutter}>{i + 1}</span>
-                  <code>
-                    {line.map(([text, attrId], j) => {
-                      const attr = attrId !== undefined ? A(attrId) : undefined;
-                      const inPage = attr !== undefined && ids.has(attrId!);
-                      return (
-                        <span
-                          key={j}
-                          style={tokenStyle(attr)}
-                          className={attr ? styles.clickable : undefined}
-                          onClick={
-                            attr
-                              ? () => {
-                                  if (inPage) reveal(attrId!);
-                                  else {
-                                    crossPageReveal = attrId!;
-                                    selectPage(attrPageId(attr));
+              <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
+                {sample.code.map((line, i) => (
+                  <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                    <span className={styles.previewGutter}>{i + 1}</span>
+                    <code>
+                      {line.map(([text, attrId], j) => {
+                        const attr = attrId !== undefined ? A(attrId) : undefined;
+                        const inPage = attr !== undefined && ids.has(attrId!);
+                        return (
+                          <span
+                            key={j}
+                            style={tokenStyle(attr)}
+                            className={attr ? styles.clickable : undefined}
+                            onClick={
+                              attr
+                                ? () => {
+                                    if (inPage) reveal(attrId!);
+                                    else {
+                                      crossPageReveal = attrId!;
+                                      selectPage(attrPageId(attr));
+                                    }
                                   }
-                                }
-                              : undefined
-                          }
-                        >
-                          {text}
-                        </span>
-                      );
-                    })}
-                  </code>
-                </div>
-              ))}
-            </pre>
-          )}
-        </>
+                                : undefined
+                            }
+                          >
+                            {text}
+                          </span>
+                        );
+                      })}
+                    </code>
+                  </div>
+                ))}
+              </pre>
+            )}
+          </SplitPanel>
+        </SplitGroup>
       )}
     </div>
   );

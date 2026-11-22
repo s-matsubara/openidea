@@ -125,6 +125,9 @@ pub struct Commit {
     pub log_position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_total: Option<u32>,
+    /// Newest committer time at or after this row if newer than the row's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_merge_time_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph_boundary_parents: Vec<String>,
     /// Reachability from HEAD, computed independently of the visible filters.
@@ -257,6 +260,27 @@ pub struct Branch {
     /// Tip commit id.
     #[serde(default)]
     pub commit: String,
+}
+
+/// What Update Selected did to one local branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchUpdateStatus {
+    Updated,
+    UpToDate,
+    /// Diverged from its upstream: left as it is.
+    NotFastForward,
+    NoUpstream,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchUpdate {
+    pub branch: String,
+    pub status: BranchUpdateStatus,
+    /// Why it failed.
+    pub message: Option<String>,
 }
 
 /// Commit Options (IDEA's commit options popup).
@@ -1627,11 +1651,16 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::reset_to_upstream(self, cancel, on_output)
     }
-    /// Fast-forwards a local branch that is not checked out to its upstream (Branches ›
-    /// Update). Fails when the branch has diverged.
-    pub fn update_branch(&self, branch: &str, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+    /// Branches › Update Selected: fetches each remote once and fast-forwards every
+    /// branch to its upstream, reporting the branches it could not update.
+    pub fn update_branches(
+        &self,
+        branches: &[String],
+        cancel: &CancellationToken,
+        on_output: &dyn Fn(String),
+    ) -> IdeResult<Vec<BranchUpdate>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::update_branch(self, branch, cancel, on_output)
+        write::update_branches(self, branches, cancel, on_output)
     }
     // ---- in-progress operations, history rewriting, tags ----
 

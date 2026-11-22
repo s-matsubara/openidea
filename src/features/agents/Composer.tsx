@@ -14,6 +14,7 @@ import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } f
 import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, SymbolMatch, WhileRunning } from "@/bindings";
 import { useEditorRegistry, openEditorPaths } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isDraggingOut } from "@/platform/dragOut";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
@@ -48,6 +49,7 @@ import {
   atEdgeLine,
   isMentioned,
   isPathQuery,
+  shellHistoryMatches,
   mergeMatches,
   referenceOf,
   resolveTyped,
@@ -91,6 +93,8 @@ type Item =
   | { kind: "command"; command: AgentCommand }
   | { kind: "context"; source: AgentContextSource }
   | { kind: "symbol"; symbol: SymbolMatch; path: string; rel: string }
+  /** A `!` command line's completion: an earlier command, or a path for the word at the caret. */
+  | { kind: "shell"; text: string; dir?: boolean; history?: boolean }
   | { kind: "section"; source: Section };
 
 const isSection = (item: Item) => item.kind === "section";
@@ -126,6 +130,8 @@ export interface ComposerProps {
   onSubmit: (now: boolean) => void;
   /** Opens the per-session MCP servers picker when `/mcp` is run. */
   onOpenMcp?: () => void;
+  /** Opens the per-session skills picker when `/skills` is run. */
+  onOpenSkills?: () => void;
   disabled?: boolean;
   autoFocus?: boolean;
   /** A request from this host to focus its input without changing the selection. */
@@ -453,8 +459,49 @@ export function Composer(props: ComposerProps) {
     };
   }, [completion?.kind, completion?.query, root, refOf]);
 
+  // `!` completion: paths under the task's folder for the word being typed.
+  // Every task's `!` commands, for a conversation that hasn't run one yet.
+  const recentCommands = useAgents((s) => s.history);
+  const [shellFound, setShellFound] = useState<{ query: string; items: Item[] } | null>(null);
+  const shellQuery = completion?.kind === "shell" && completion.query ? completion.query : null;
+  useEffect(() => {
+    if (shellQuery === null) return;
+    let alive = true;
+    const typed = /(^|\/)\.\.?$/.test(shellQuery) ? `${shellQuery}/` : shellQuery;
+    const dirPart = typed.slice(0, typed.lastIndexOf("/") + 1);
+    const last = typed.slice(dirPart.length);
+    const timer = setTimeout(() => {
+      call(commands.pathCompletions(`${typed.startsWith("/") ? "" : root}/_`, typed))
+        .then((found) => {
+          if (!alive) return;
+          setShellFound({
+            query: shellQuery,
+            items: found
+              .filter((f) => f.name.startsWith(last) && `${dirPart}${f.name}` !== shellQuery)
+              .slice(0, MAX_ITEMS)
+              .map((f) => ({ kind: "shell", text: `${dirPart}${f.name}`, dir: f.dir })),
+          });
+        })
+        .catch(() => alive && setShellFound({ query: shellQuery, items: [] }));
+    }, 60);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [shellQuery, root]);
+
   const items: Item[] = useMemo(() => {
     if (!completion) return [];
+    if (completion.kind === "shell") {
+      const earlier: Item[] = completion.command
+        ? shellHistoryMatches([...props.history, ...recentCommands], completion.query, MAX_ITEMS).map((text) => ({
+            kind: "shell",
+            text,
+            history: true,
+          }))
+        : [];
+      return shellFound?.query === shellQuery ? [...earlier, ...shellFound.items] : earlier;
+    }
     if (completion.kind === "file") {
       const q = completion.query.toLowerCase();
       if (q.startsWith("#") || isPathQuery(q)) return files;
@@ -469,17 +516,26 @@ export function Composer(props: ComposerProps) {
         ...rest,
       ];
     }
+    const openPickerCommands: AgentCommand[] = [];
+    if (props.onOpenMcp && !props.commands.some((c) => c.name === "mcp")) {
+      openPickerCommands.push({
+        name: "mcp",
+        description: tx("Configure MCP servers for this session"),
+        hint: null,
+        source: "command" as const,
+      });
+    }
+    if (props.onOpenSkills && !props.commands.some((c) => c.name === "skills")) {
+      openPickerCommands.push({
+        name: "skills",
+        description: tx("Configure skills for this session"),
+        hint: null,
+        source: "command" as const,
+      });
+    }
     const availableCommands =
-      props.onOpenMcp && completion.query.length > 0 && !props.commands.some((c) => c.name === "mcp")
-        ? [
-            {
-              name: "mcp",
-              description: tx("Configure MCP servers for this session"),
-              hint: null,
-              source: "command" as const,
-            },
-            ...props.commands,
-          ]
+      completion.query.length > 0 && openPickerCommands.length > 0
+        ? [...openPickerCommands, ...props.commands]
         : props.commands;
     const out: Item[] = [];
     let source: "command" | "skill" | undefined;
@@ -492,7 +548,18 @@ export function Composer(props: ComposerProps) {
       out.push({ kind: "command", command });
     }
     return out;
-  }, [completion, files, props.commands, props.onOpenMcp, tx]);
+  }, [
+    completion,
+    files,
+    shellFound,
+    shellQuery,
+    recentCommands,
+    props.history,
+    props.commands,
+    props.onOpenMcp,
+    props.onOpenSkills,
+    tx,
+  ]);
   const activeIndex = items[active] && !isSection(items[active]!) ? active : firstSelectable(items, isSection);
   const open = !!completion && items.some((item) => !isSection(item));
   const anchorAt = open ? completion.to : null;
@@ -544,6 +611,20 @@ export function Composer(props: ComposerProps) {
       );
       return;
     }
+    if (item.kind === "shell") {
+      if (item.history) {
+        setText(`!${item.text}`, item.text.length + 1);
+      } else if (item.dir) {
+        // A folder keeps completing inside it, as a shell's Tab does.
+        replace(completion.from, completion.to, `${item.text}/`);
+        return;
+      } else {
+        const next = applyCompletion(current, completion, item.text);
+        setText(next.text, next.caret);
+      }
+      setCompletion(null);
+      return;
+    }
     if (item.kind === "symbol") {
       const rel = item.rel;
       const line = item.symbol.range.start.line + 1;
@@ -569,6 +650,11 @@ export function Composer(props: ComposerProps) {
       replace(completion.from, completion.to, "");
       setCompletion(null);
       props.onOpenMcp();
+      return;
+    } else if (item.command.name === "skills" && props.onOpenSkills) {
+      replace(completion.from, completion.to, "");
+      setCompletion(null);
+      props.onOpenSkills();
       return;
     } else {
       const next = applyCompletion(current, completion, `/${item.command.name}`);
@@ -817,6 +903,8 @@ export function Composer(props: ComposerProps) {
     void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview()
         .onDragDropEvent((event) => {
+          // Project files dragged out of the window come back as an OS drop: not attachments.
+          if (isDraggingOut()) return;
           const p = event.payload;
           if (p.type === "enter" || p.type === "over") {
             setFileOver(inBox(p.position));
@@ -900,7 +988,8 @@ export function Composer(props: ComposerProps) {
         if (next !== null) setActive(next);
         return handled();
       }
-      if (e.key === "Enter" || e.key === "Tab") {
+      // In a `!` command line Enter runs the command; Tab completes, as in a shell.
+      if (e.key === "Tab" || (e.key === "Enter" && completion?.kind !== "shell")) {
         accept(items[activeIndex], e.key === "Tab");
         return handled();
       }
@@ -916,6 +1005,12 @@ export function Composer(props: ComposerProps) {
         setText("");
         setCompletion(null);
         props.onOpenMcp();
+        return handled();
+      }
+      if (props.onOpenSkills && view.state.doc.toString().trim() === "/skills") {
+        setText("");
+        setCompletion(null);
+        props.onOpenSkills();
         return handled();
       }
       if (!props.disabled) props.onSubmit(send === "now");
@@ -1034,11 +1129,13 @@ export function Composer(props: ComposerProps) {
                 ? `section:${item.source}`
                 : item.kind === "file"
                   ? item.path
-                  : item.kind === "context"
-                    ? `context:${item.source.id}`
-                    : item.kind === "symbol"
-                      ? `symbol:${item.path}:${item.symbol.range.start.line}:${item.symbol.name}`
-                      : `${item.command.source ?? "command"}:${item.command.name}`
+                  : item.kind === "shell"
+                    ? `shell:${item.history ? "history" : "path"}:${item.text}`
+                    : item.kind === "context"
+                      ? `context:${item.source.id}`
+                      : item.kind === "symbol"
+                        ? `symbol:${item.path}:${item.symbol.range.start.line}:${item.symbol.name}`
+                        : `${item.command.source ?? "command"}:${item.command.name}`
             }
             isSection={isSection}
             renderSection={(item) => item.kind === "section" && tx(SECTION_TITLES[item.source])}
@@ -1072,6 +1169,28 @@ export function Composer(props: ComposerProps) {
                     </span>
                   </>
                 );
+              if (item.kind === "shell") {
+                if (item.history)
+                  return (
+                    <>
+                      <Icon name="history" size={16} />
+                      <span className={styles.itemName}>{item.text}</span>
+                    </>
+                  );
+                const name = basename(item.text);
+                return (
+                  <>
+                    <Icon name={item.dir ? "folder" : fileIconName(name, item.text)} size={16} />
+                    <span className={styles.itemName}>
+                      {name}
+                      {item.dir && "/"}
+                    </span>
+                    <span className={styles.itemDetail}>
+                      {item.text.slice(0, item.text.length - name.length).replace(/\/$/, "")}
+                    </span>
+                  </>
+                );
+              }
               if (item.kind === "command")
                 return (
                   <>
@@ -1099,9 +1218,15 @@ export function Composer(props: ComposerProps) {
               <kbd>↑</kbd>
               <kbd>↓</kbd> {tx("Navigate")}
             </span>
-            <span>
-              <kbd>↵</kbd> {tx(completion.kind === "file" ? "Reference" : "Insert")}
-            </span>
+            {completion.kind === "shell" ? (
+              <span>
+                <kbd>⇥</kbd> {tx("Insert")}
+              </span>
+            ) : (
+              <span>
+                <kbd>↵</kbd> {tx(completion.kind === "file" ? "Reference" : "Insert")}
+              </span>
+            )}
             {completion.kind === "file" && items.some((i) => i.kind === "file" && i.dir) && (
               <span>
                 <kbd>⇥</kbd> {tx("Enter Folder")}

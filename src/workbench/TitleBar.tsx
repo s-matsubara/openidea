@@ -5,6 +5,7 @@ import { useActions } from "@/platform/actions";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
+import { useChromeIconSize } from "@/ui/density";
 import { useContributions, useWorkbenchSlots, type TitleItemContribution } from "./contributions";
 import { ErrorBoundary, Slot } from "./ErrorBoundary";
 import { MainMenu } from "./MainMenu";
@@ -23,7 +24,6 @@ import {
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
-import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -213,6 +213,7 @@ function useToolbar() {
 }
 
 function GearButton({ customize }: { customize: MenuItem[] }) {
+  const iconSize = useChromeIconSize();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const settings = useProject((s) => s.settings);
@@ -241,7 +242,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
         ref={ref}
         icon="settings"
         title="IDE and Project Settings"
-        iconSize={20}
+        iconSize={iconSize}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -255,6 +256,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
 /** One main toolbar entry: a built-in widget, a contributed one or an added action. */
 function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, TitleItemContribution> }) {
   const actions = useActions((s) => s.actions);
+  const iconSize = useChromeIconSize();
   if (id === PROJECT_WIDGET) return <ProjectButton />;
   const item = items.get(id);
   if (item) return <TitleItem item={item} />;
@@ -269,7 +271,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
         action={action.id}
         title={action.title}
         shortcut={shortcutLabel(action.id) ?? (action.id === "navigate.searchEverywhere" ? "⇧⇧" : undefined)}
-        iconSize={20}
+        iconSize={iconSize}
         className={styles.tool}
       />
     </div>
@@ -310,7 +312,6 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
@@ -321,7 +322,6 @@ export function TitleBar({
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
-    overlay && fullscreen && styles.overlayFullscreen,
     frameless && styles.frameless,
     frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
     frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,

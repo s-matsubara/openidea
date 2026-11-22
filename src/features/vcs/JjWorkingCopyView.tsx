@@ -23,14 +23,14 @@ import {
   type MenuItem,
 } from "@/ui";
 import clsx from "clsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CheckMark } from "./ChangeTreeCheck";
 import { buildChangeTree, type ChangeNode } from "./changes";
 import styles from "./CommitView.module.css";
 import { CommitCheckProblems, runJjCommitChecks, type CommitCheckRun } from "./commitChecks";
 import { CommitMessageHistory } from "./CommitMessageHistory";
 import { CommitOptionsButton } from "./CommitOptions";
-import { messageHistory, rememberMessage, useCommit } from "./commitStore";
+import { messageHistory, rememberMessage, savedDraft, writeDraft, useCommit } from "./commitStore";
 import { openMergeEditor } from "./conflictsUi";
 import { DiffEditor } from "./DiffEditor";
 import { diffInput } from "./diffInput";
@@ -61,11 +61,30 @@ function ready(root: VcsRoot): root is ReadyRoot {
 /** Working-copy changes without Git action menus or staging semantics. */
 export function JjWorkingCopyView() {
   const roots = useVcs((s) => s.jjRoots);
+  const agentButton = useWorkflowSettings((s) => s.vcs.commit.agentButton);
   const gitRootCount = useVcs((s) => s.roots.length);
   const error = useVcs((s) => s.error);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const project = useVcs((s) => s.root);
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(() => (project ? savedDraft(project, "jj") : ""));
+  const draft = useRef(description);
+  useLayoutEffect(() => {
+    draft.current = description;
+  }, [description]);
+  useEffect(() => {
+    if (!project) return;
+    const timer = setTimeout(() => writeDraft(project, description, "jj"), 500);
+    return () => clearTimeout(timer);
+  }, [project, description]);
+  useEffect(() => {
+    if (!project) return;
+    const flush = () => writeDraft(project, draft.current, "jj");
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [project]);
   const descriptionField = useRef<HTMLTextAreaElement>(null);
   const historyScope = { vcs: "jj", project } as const;
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -521,14 +540,16 @@ export function JjWorkingCopyView() {
                   descriptionField.current?.focus();
                 }}
               />
-              <IconButton
-                icon="toolwindow-agents"
-                action="agents.generateCommitMessage"
-                actionArg="jj"
-                title="Generate Commit Message with Agent"
-                size="small"
-                disabled={busy || !trusted || !byRoot.length}
-              />
+              {agentButton && (
+                <IconButton
+                  icon="toolwindow-agents"
+                  action="agents.generateCommitMessage"
+                  actionArg="jj"
+                  title="Generate Commit Message with Agent"
+                  size="small"
+                  disabled={busy || !trusted || !byRoot.length}
+                />
+              )}
               {changeCounts.length > 0 && (
                 <span
                   className={jjStyles.jjChangeCounts}

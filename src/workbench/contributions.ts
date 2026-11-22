@@ -154,6 +154,13 @@ export interface EditorKindContribution {
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
+  /**
+   * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
+   * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
+   */
+  openInWindow?(input: EditorInput): Promise<boolean>;
+  /** Loads and validates a lightweight window's input before it reports a successful handoff. */
+  prepareWindowInput?(input: EditorInput): Promise<EditorInput>;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -281,6 +288,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
@@ -564,13 +573,30 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Default custom editors that should open in the IDE instead of an associated app. */
+const externalOpenSuppressions = new Map<string, (path: string) => boolean>();
+
+/** Skip associated-application open for paths a default custom editor claims. */
+export function registerExternalOpenSuppression(id: string, matches: (path: string) => boolean): () => void {
+  externalOpenSuppressions.set(id, matches);
+  return () => {
+    if (externalOpenSuppressions.get(id) === matches) externalOpenSuppressions.delete(id);
+  };
+}
+
+function externalOpenSuppressed(path: string): boolean {
+  return [...externalOpenSuppressions.values()].some((matches) => matches(path));
+}
+
 /** Whether opening `path` would hand it to another application. */
 export function opensExternally(path: string): boolean {
+  if (externalOpenSuppressed(path)) return false;
   return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
 }
 
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
+  if (externalOpenSuppressed(path)) return false;
   const handlers = [...externalFileOpenHandlers.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
@@ -690,6 +716,11 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /**
+   * Shows `input` in a lightweight window of this project instead (its kind must be registered
+   * there, see `editorWindowBoot`); resolves to the window's label once it is shown.
+   */
+  openInWindow?(input: EditorInput): Promise<string>;
   /** File › New File: an editable untitled buffer; Save asks for a path. */
   openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
@@ -1075,6 +1106,9 @@ export interface FileDecoration {
   suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
+  /** Display name and icon for a specialized file tab. The path still identifies the document. */
+  tabTitle?: string;
+  tabIcon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1473,6 +1507,20 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+// Commit / Local Changes selection while that tool window has focus. Provided by
+// features/vcs so Deployment (and similar) shortcuts see multi-file picks there.
+let changesSelection: (() => string[]) | undefined;
+
+export function provideChangesViewSelection(get: () => string[]): () => void {
+  changesSelection = get;
+  return () => {
+    if (changesSelection === get) changesSelection = undefined;
+  };
+}
+
+/** Selected change-tree paths (absolute) while Commit/Local Changes is focused. */
+export const changesViewSelection = (): string[] => changesSelection?.() ?? [];
+
 /** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
 export interface ProjectViewLead {
   path: string;
@@ -1829,6 +1877,11 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
   execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Whether `execute` runs `line` as a command this provider recognizes (cheap,
+   * synchronous): Markdown offers run icons for such lines in code blocks.
+   */
+  accepts?(line: string): boolean;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
@@ -1895,9 +1948,15 @@ export function registerEndpointProvider(p: EndpointProvider): () => void {
   };
 }
 
-export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+/** Endpoints of every provider, or of those `provider` accepts (by provider id). */
+export async function searchEndpoints(
+  root: string | null,
+  provider: (id: string) => boolean = () => true,
+): Promise<EndpointEntry[]> {
   if (!root) return [];
-  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  const results = await Promise.allSettled(
+    [...endpointProviders.values()].filter((p) => provider(p.id)).map(async (p) => p.endpoints(root)),
+  );
   return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
@@ -1952,7 +2011,9 @@ export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+  /** The whole debugger of a session (Services shows it in place); `console` replaces its Console tab. */
+  View: ComponentType<{ sessionId: number; console?: ReactNode }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null, View: null }));
 
 /**
  * The Services tool window's badge: how many of its listed services are running.

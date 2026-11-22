@@ -21,11 +21,17 @@ export const commands = {
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  The task's changed files as `view` compares them (without: since it started). */
 	agentChanges: (task: string, view: AgentChangesView | null) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task, view })),
+	/**  Installs the exact version offered if the selected installation still matches. */
+	agentCliUpdate: (provider: string, offer: AgentCliOffer, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update", { provider, offer, request })),
+	/**  Checks the selected installation without modifying it. */
+	agentCliUpdateCheck: (provider: string, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update_check", { provider, request })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
+	/**  Reads the running session's context categories without sending a prompt. */
+	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -45,6 +51,8 @@ export const commands = {
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
+	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
+	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
@@ -113,18 +121,35 @@ export const commands = {
 	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
 	/**  Updates per-session MCP server enable/disable overrides on `task`. */
 	agentSetMcpOverrides: (task: string, overrides: { [key in string]: boolean }) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_set_mcp_overrides", { task, overrides })),
+	/**  Updates per-session skill modes on `task`. */
+	agentSetSkillOverrides: (task: string, overrides: { [key in string]: AgentSkillMode }) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_set_skill_overrides", { task, overrides })),
 	/**
 	 *  Runs a `!` line of the composer in the task's folder with the user's shell, without
 	 *  starting a turn; its output goes to the agent with the next message.
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**
+	 *  Every skill discovered in the project and the user's folders, with the mode a session
+	 *  of this project runs it with (without any session's own overrides).
+	 */
+	agentSkillsList: () => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**
+	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
+	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
+	 */
+	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
-	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	/**
+	 *  Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+	 *  host sees them all as one `window`); returns every task.
+	 */
+	agentSubscribe: (onEvent: Channel<AgentEvent>, subscriber: string) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent, subscriber })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
 	/**  Drops a queued message and returns it (to edit it). */
 	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	/**  Stops the events of a window that closed. */
+	agentUnsubscribe: (subscriber: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unsubscribe", { subscriber })),
 	/**  Locate Duplicates over the files of `scope`. */
 	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
 	/**  Devices `adb` knows about, online ones first. */
@@ -273,6 +298,7 @@ export const commands = {
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -381,6 +407,7 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	debugResolveVariable: (session: DebugSessionId, variable: Variable) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
@@ -394,6 +421,8 @@ export const commands = {
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
+	/**  Exception breakpoints on chosen classes (all sessions that take them, and later ones). */
+	debugSetExceptionClassBreakpoints: (breakpoints: ExceptionClassBreakpoint[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_class_breakpoints", { breakpoints })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -444,6 +473,11 @@ export const commands = {
 	 *  `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
+	/**
+	 *  Structure view of a Flutter file: its declarations with the widgets they build. `None`
+	 *  when the Dart server published no widgets for it; `doc_outline` then applies.
+	 */
+	docFlutterOutline: (doc: DocId) => typedError<OutlineItem[] | null, IdeError>(__TAURI_INVOKE("doc_flutter_outline", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -473,13 +507,15 @@ export const commands = {
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
-	 *  visibility), tree-sitter otherwise.
+	 *  visibility and type-alias kinds), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
+	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	/**
@@ -505,6 +541,11 @@ export const commands = {
 	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Processes running inside a container (`docker top`). */
 	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**
+	 *  Closes the connection's SSH tunnel and, when nothing else uses it, its SSH connection
+	 *  (Services › Disconnect); other endpoints keep nothing open.
+	 */
+	dockerDisconnect: (endpoint: DockerEndpoint) => typedError<null, IdeError>(__TAURI_INVOKE("docker_disconnect", { endpoint })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
 	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
 	/**  Layers of an image (`docker image history`). */
@@ -565,6 +606,11 @@ export const commands = {
 	flutterDevices: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_devices")),
 	/**  Looks at adb again, for Android devices Flutter doesn't report (awaiting authorization, offline). */
 	flutterDevicesRefresh: () => typedError<null, IdeError>(__TAURI_INVOKE("flutter_devices_refresh")),
+	/**
+	 *  The address of the project's DevTools server, started on first use. A server that failed or
+	 *  exited is only started again by the next request.
+	 */
+	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
 	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -837,12 +883,24 @@ export const commands = {
 	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
 	 *  The go-to-declaration target at `pos` of a Maven POM: the definition of the
-	 *  `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-	 *  entry providing the dependency's / plugin's version, along the parent chain.
+	 *  `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+	 *  (a project module first, then the local repository). A dependency without a
+	 *  resolvable artifact POM falls back to its management entry.
 	 */
 	mavenGotoDeclaration: (pom: string, pos: Pos) => typedError<PomGoto | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
+	/**
+	 *  Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+	 *  the management declarations that actually supply their versions, including
+	 *  parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+	 */
+	mavenManagedDeclarations: (pom: string, request: RequestId) => typedError<PomManagedDeclaration[], IdeError>(__TAURI_INVOKE("maven_managed_declarations", { pom, request })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
+	/**
+	 *  Settings › Agents › IDE MCP Server › Background projects: the projects this host's server
+	 *  keeps loaded without a window.
+	 */
+	mcpBackgroundProjects: () => typedError<McpBackgroundProject[], IdeError>(__TAURI_INVOKE("mcp_background_projects")),
 	/**
 	 *  Settings › Agents › IDE MCP Server › Regenerate Token: forgets the kept token, and restarts the
 	 *  server with a new one. Clients configured with the old token stop working.
@@ -854,6 +912,8 @@ export const commands = {
 	mcpSetFocusedEditor: (editor: FocusedEditor | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	/**  Unloads one background project; a root that is not loaded is already unloaded. */
+	mcpUnloadBackgroundProject: (root: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_unload_background_project", { root })),
 	/**
 	 *  Sets the menu's labels / accelerators and updates the menu when the visible
 	 *  items changed. Accelerators of actions that are not on the menu must not call
@@ -1147,6 +1207,12 @@ export const commands = {
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
 	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
+	/**
+	 *  The project view's Download to…: remote files and folders of this window's project into the
+	 *  local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+	 *  written outside `target`, even through a local symlink inside it.
+	 */
+	remoteDownloadLocal: (paths: string[], target: string, request: RequestId, onProgress: Channel<DownloadProgress>) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_local", { paths, target, request, onProgress })),
 	/**
 	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
@@ -1633,6 +1699,11 @@ export const commands = {
 	 */
 	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
+	/**
+	 *  Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+	 *  fetch per remote; the result says what happened to each. Cancellable.
+	 */
+	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>) => typedError<BranchUpdate[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
@@ -1657,6 +1728,12 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	/**
+	 *  Drags `paths` (local files and folders) out of `window` while the primary mouse button is
+	 *  still down, so the app they are dropped on copies them (#2867). Resolves when the drag ends,
+	 *  with whether a target took the files.
+	 */
+	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 	 *  Linux sets the urgency hint). A focused window is never flashed: the user is already
@@ -1670,6 +1747,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -1712,18 +1794,18 @@ export const commands = {
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
 	/**
-	 *  Opens `path` in a new window or tab, or tells the caller to open it itself.
-	 *  A project already open in some window is focused instead.
+	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
+	 *  itself (`current`). A project already open in some window is focused instead.
 	 *  `files` then open in that project's editor.
 	 */
-	windowOpenProject: (path: string, mode: ProjectOpenMode, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, mode, files })),
+	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
 	/**
 	 *  [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
 	 *  Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (target: RemoteTarget, path: string, mode: ProjectOpenMode) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, mode })),
+	windowOpenRemote: (target: RemoteTarget, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { target, path, newWindow })),
 	/**
 	 *  Opens this window's Settings window on `page` (or focuses it and navigates);
 	 *  `new_projects` edits the global layer only ("Settings for New Projects").
@@ -1851,6 +1933,8 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**  The connected agent can report a breakdown of its context window. */
+	contextUsage?: boolean,
 };
 
 /**
@@ -1865,6 +1949,8 @@ export type AgentChange = {
 	removed: number,
 	/**  Path before a rename; the left side of its diff reads this path. */
 	oldPath: string | null,
+	/**  The repository the file is in, when the task's project holds nested repositories. */
+	repo: IpcPath | null,
 };
 
 /**  A task's uncommitted files and the commits made since it started. */
@@ -1886,6 +1972,18 @@ export type AgentChangesView =
 "group" | 
 /**  What the last turn changed, against the checkout as that turn started. */
 "lastTurn";
+
+export type AgentCliOffer = {
+	current: string,
+	latest: string,
+	prefix: string,
+};
+
+export type AgentCliUpdateResult = {
+	status: "available",
+} & AgentCliOffer | {
+	status: "permission",
+} & AgentCliOffer | ({ status: "current"; current: string }) & { code?: never } | ({ status: "channel"; current: string }) & { code?: never } | ({ status: "updated"; current: string }) & { code?: never } | ({ status: "unmanaged" }) & { code?: never; current?: never } | ({ status: "error"; code: string }) & { current?: never };
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */
@@ -1955,6 +2053,21 @@ export type AgentConfigVia =
 /**  `session/set_model` (agents that report `models` instead of a model config option). */
 "model";
 
+export type AgentContextCategory = {
+	name: string,
+	tokens: number,
+	kind: string | null,
+};
+
+export type AgentContextUsage = {
+	categories: AgentContextCategory[],
+	totalTokens: number,
+	maxTokens: number,
+	model: string,
+	isAutoCompactEnabled: boolean | null,
+	autoCompactThreshold: number | null,
+};
+
 export type AgentCost = {
 	amount: number | null,
 	/**  ISO 4217 code, e.g. `USD`. */
@@ -1976,11 +2089,15 @@ steered?: boolean } | { type: "agent"; text: string } |
 /**  A question that can be answered while the agent keeps working, or after the turn ends. */
 { type: "question"; id: string; title: string; questions: AgentQuestion[]; 
 /**  The submitted answers, or `Skipped`; `None` while unanswered. */
-chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+chosen: string | null } | { type: "thought"; text: string; 
+/**  When the reasoning started (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */
-output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | 
+output: string | null; diffs: AgentToolDiff[]; 
+/**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */
@@ -2180,6 +2297,8 @@ export type AgentProvider = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate?: boolean,
 	/**  Environment variables it starts with (from its agent file). */
 	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -2235,6 +2354,13 @@ export type AgentSecuritySettings = {
 	blockedCommands?: string[],
 };
 
+export type AgentSessionStats = {
+	/**  The last turn's tokens (`session/prompt` result `usage`). */
+	tokens?: AgentTokens | null,
+	/**  How many times the agent compressed the conversation (Hermes `compressionDepth`). */
+	compressions?: number,
+};
+
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = {
 	/**  Context window use. */
@@ -2251,18 +2377,6 @@ export type AgentSettings = {
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth?: boolean,
-	/**  While the agent works, playful words fill the pauses in what it reports. */
-	playfulStatus?: boolean,
-	/**
-	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
-	 *  from the start.
-	 */
-	playfulAfterSeconds?: number,
-	/**
-	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-	 *  the built-in ones of that activity; an empty list keeps its status factual.
-	 */
-	playfulWords?: { [key in string]: string[] },
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2285,6 +2399,81 @@ export type AgentSettings = {
 	 *  keyed by server name (`[agents.mcpServers.<name>]`).
 	 */
 	mcpServers?: { [key in string]: AgentMcpServer },
+	/**
+	 *  How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+	 *  files on disk are never modified.
+	 */
+	skills?: { [key in string]: AgentSkillPolicy },
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
+};
+
+/**  How an agent skill may run (`[agents.skills.<name>] mode = …`). */
+export type AgentSkillMode = 
+/**  The model decides when to use it. */
+"auto" | 
+/**  Only when the user invokes it with `/name`. */
+"slashOnly" | 
+/**  Never. */
+"off";
+
+/**  Which layer decided a skill's [`AgentSkillState::mode`]. */
+export type AgentSkillOrigin = "none" | "session" | "workspace" | "user" | 
+/**  An untrusted workspace's skills and policies may only turn skills off. */
+"trust";
+
+/**  A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`. */
+export type AgentSkillPolicy = {
+	mode?: AgentSkillMode,
+};
+
+/**  Which CLI's own folders a skill was discovered in (Settings › Agents › Skills groups by it). */
+export type AgentSkillSource = 
+/**  The project's `.agents/skills` and `.openidea/skills`. */
+"workspace" | 
+/**  The user's `~/.agents/skills` (what `npx skills add` fills). */
+"user" | 
+/**  The project's `.claude/skills`. */
+"claudeWorkspace" | 
+/**  `~/.claude/skills`. */
+"claudeUser" | 
+/**  The project's `.github/skills` (Copilot's repository skills). */
+"githubWorkspace" | 
+/**  `~/.copilot/skills` and `~/.copilot/installed-plugins/*`. */
+"copilotUser" | 
+/**  The project's `.codex/skills`. */
+"codexWorkspace" | 
+/**  `~/.codex/skills`. */
+"codexUser" | 
+/**  The project's `.cursor/skills`. */
+"cursorWorkspace" | 
+/**  `~/.cursor/skills`. */
+"cursorUser";
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState = {
+	skill: AgentSkill,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
 };
 
 /**  Where an agent comes from. */
@@ -2357,6 +2546,10 @@ export type AgentTask = {
 	background?: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Per-session skill modes (`skill name` -> mode), on top of the settings' policies. */
+	skillOverrides?: { [key in string]: AgentSkillMode },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats?: AgentSessionStats,
 };
 
 /**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
@@ -2366,6 +2559,12 @@ export type AgentTokenPricing = {
 	cacheRead?: number | null,
 	cacheWrite?: number | null,
 	contextTokens?: number | null,
+};
+
+export type AgentTokens = {
+	input: number,
+	cached: number,
+	output: number,
 };
 
 export type AgentToolDiff = {
@@ -2672,6 +2871,18 @@ export type BranchInfo = {
 	operation: string | null,
 };
 
+export type BranchUpdate = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+};
+
+/**  What Update Selected did to one local branch. */
+export type BranchUpdateStatus = "updated" | "upToDate" | 
+/**  Diverged from its upstream: left as it is. */
+"notFastForward" | "noUpstream" | "failed";
+
 /**  Editor › General › Breadcrumbs. */
 export type BreadcrumbsSettings = {
 	show?: boolean,
@@ -2775,6 +2986,14 @@ export type BuildResult = {
 	warnings: number,
 	durationMs: number | null,
 	messages: BuildMessage[],
+};
+
+/**  Build, Execution, Deployment › Compiler (Build tool window behaviour). */
+export type BuildSettings = {
+	/**  When to open the Build tool window: `always` | `onError` | `never`. */
+	openToolWindow?: string,
+	/**  When to focus the Build tool window: `always` | `onError` | `never`. */
+	focusToolWindow?: string,
 };
 
 export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
@@ -3108,6 +3327,8 @@ export type Commit = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3197,6 +3418,7 @@ export type CommitSettings = {
 	 *  window and a Commit dialog.
 	 */
 	nonModal?: boolean,
+	includeChangesByDefault?: boolean,
 	/**  Start with an empty message instead of the last one / the changelist's. */
 	clearInitialMessage?: boolean,
 	analyzeCode?: boolean,
@@ -3223,6 +3445,14 @@ export type CommitSettings = {
 	doubleClickOpensDiff?: boolean | null,
 	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
 	agentInstructions?: string,
+	/**  The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+	agent?: string,
+	/**  That agent's model for commit messages; empty keeps the model the agent would use. */
+	agentModel?: string,
+	/**  That model's thinking level for commit messages; empty keeps the agent's. */
+	agentEffort?: string,
+	/**  Show the Generate Commit Message with Agent button above the commit message. */
+	agentButton?: boolean,
 };
 
 export type CompareResult = {
@@ -4150,6 +4380,12 @@ export type DebugEvent =
  *  a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
  */
 { kind: "flutterAppStarted" } | 
+/**  The VM Service of a Flutter session's app, which DevTools connects to. */
+{ kind: "flutterVmService"; uri: string; 
+/**  The Flutter device the app runs on. */
+device: string | null } | 
+/**  Flutter's inspector selected a widget: its source, 0-based. */
+{ kind: "flutterNavigate"; path: IpcPath; line: number; column: number } | 
 /**  The session's capabilities changed after it started: fetch them again. */
 { kind: "capabilities" } | 
 /**
@@ -4422,11 +4658,11 @@ export type DiffSide =
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
 { type: "rev"; rev: string; path?: string | null; label?: string | null } | 
 /**  The working file (unsaved editor buffer included). */
-{ type: "worktree"; jjBlame?: JjBlameTarget | null; label?: string | null } | 
+{ type: "worktree"; jjBlame?: JjBlameTarget | null; label?: string | null; labelDetail?: string | null } | 
 /**  Another file (Compare With…, Compare Files). */
 { type: "file"; path: string; label?: string | null } | 
-/**  Literal text: a side that does not exist. */
-{ type: "text"; text: string; label: string; absent?: boolean | null; jjBlame?: JjBlameTarget | null } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+{ type: "text"; text: string; label: string; absent?: boolean | null; jjBlame?: JjBlameTarget | null; labelDetail?: string | null } | 
 /**  A Local History revision. */
 { type: "history"; id: string; label: string };
 
@@ -4740,6 +4976,13 @@ export type DocumentTextChange = {
 	insert: string,
 };
 
+/**  One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished. */
+export type DownloadProgress = {
+	path: string,
+	done: number,
+	total: number,
+};
+
 export type DuplicateGroup = {
 	tokens: number,
 	/**  Lines of the first fragment. */
@@ -4858,9 +5101,14 @@ export type EditorGeneralSettings = {
 	richTextCopy?: boolean,
 };
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch = {
-	path: IpcPath,
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
 	line?: number | null,
 	column?: number | null,
 	endLine?: number | null,
@@ -4993,6 +5241,28 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
+export type ExceptionClassBreakpoint = {
+	id: string,
+	/**  Fully qualified binary name (`com.acme.Outer$Inner`); its subclasses stop too. */
+	className: string,
+	caught: boolean,
+	uncaught: boolean,
+	enabled: boolean,
+	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
+	classFilters: string[],
+	classExclusionFilters: string[],
+};
+
+/**  What a session's exception class breakpoints can do. */
+export type ExceptionClassSupport = {
+	/**  Whose class names the session takes: `java`. */
+	family: string,
+	condition: boolean,
+	classFilters: boolean,
+	/**  Filters on the class whose code catches the exception. */
+	catchFilters: boolean,
+};
+
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
 	filter: string,
@@ -5002,6 +5272,8 @@ export type ExceptionFilter = {
 	default: boolean,
 	supportsCondition: boolean,
 };
+
+export type ExecutionEvent = { type: "started"; index: number } | { type: "completed"; index: number; outcome: DbStatementOutcome } | { type: "done"; error: IdeError | null };
 
 /**  Result of `expression_at` (Extract Variable / Introduce … fallback). */
 export type ExpressionAt = {
@@ -5438,9 +5710,12 @@ export type FoldRange = {
 	kind: FoldKind,
 };
 
+export type FoldingOutlineVisibility = "hover" | "always";
+
 /**  Editor › General › Code Folding. */
 export type FoldingSettings = {
 	showOutline?: boolean,
+	outlineVisibility?: FoldingOutlineVisibility,
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
@@ -5665,6 +5940,8 @@ export type GitSettings = {
 	 */
 	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
+	/**  Branch operations from the branches popup act on every repository of the project. */
+	syncBranchOperations?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -5976,6 +6253,14 @@ export type HeapSummary = {
 	analysisMs: number,
 };
 
+/**  A profile and the name Hermes shows for it (`hermes profile list`). */
+export type HermesProfile = {
+	/**  What `hermes -p` takes; `default` is the Hermes home itself. */
+	name: string,
+	/**  `display_name` from the profile's `profile.yaml`, else the name. */
+	label: string,
+};
+
 export type HierarchyChoice = {
 	id: string,
 	makeAbstract: boolean,
@@ -6088,6 +6373,21 @@ export type Hover = {
 	range: Range | null,
 };
 
+/**  An action rendered at the left edge of a line and revealed by hover. */
+export type HoverAction = {
+	/**  The line the button is drawn on; normally the declaration line. */
+	line: number,
+	/**  First line whose leftmost strip reveals this action, inclusive. */
+	startLine: number,
+	/**  Last line whose leftmost strip reveals this action, inclusive. */
+	endLine: number,
+	icon: string | null,
+	label: string,
+	tooltip: string | null,
+	command: string,
+	argument: string | null,
+};
+
 /**  One request with its outcome. */
 export type HttpExchange = {
 	entry: HttpHistoryEntry,
@@ -6131,6 +6431,8 @@ export type HttpResponse = {
 	version: string,
 	headers: ([string, string])[],
 	contentType: string | null,
+	/**  Followed redirects, first hop first; empty when not redirected. */
+	redirects?: RedirectHop[],
 	/**  Body as text (lossy UTF-8); `None` for binary bodies. */
 	body: string | null,
 	/**  Size in bytes as received (after decompression). */
@@ -6170,6 +6472,8 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
+/**  A project was loaded or unloaded for the MCP server without a window of its own. */
+{ type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
 /**
@@ -6198,9 +6502,18 @@ ignoreRules?: IpcPath[] } |
 /**  Part of a grouped transaction; the editor must not record a file-local undo. */
 workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
-{ type: "docDirty"; doc: DocId; dirty: boolean } | 
+{ type: "docDirty"; doc: DocId; dirty: boolean; 
+/**  Text version when this transition occurred, including when it was saved. */
+version: number } | 
+/**
+ *  An open document's file changed on disk while the buffer had unsaved changes. The buffer
+ *  keeps them (autosave leaves the file alone); the UI offers to load the disk version.
+ */
+{ type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**  Files the edit renamed, as the edit named them: editors open on them follow. */
+moves: FileMove[]; 
 /**
  *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
  *  not announced as one.
@@ -7241,7 +7554,10 @@ export type LineMarkerInfo = {
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
-	/**  Line text, truncated around the match for very long lines. */
+	/**
+	 *  Line text, truncated around the matches for very long lines: such a line comes as one
+	 *  `LineMatch` per window, so the same `line` can repeat.
+	 */
 	text: string,
 	/**  UTF-16 column ranges within `text`. */
 	ranges: ([number, number])[],
@@ -7441,7 +7757,9 @@ export type LogcatLine = {
 	message: string,
 };
 
-export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
+export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  The Dart server published a document's Flutter outline. */
+"flutterOutline";
 
 export type MainToolbarSettings = {
 	left?: string[],
@@ -7458,10 +7776,23 @@ export type ManifestDependency = {
 	to: number,
 };
 
+export type MarkdownCommandDirectory = 
+/**  The project's root folder. */
+"project" | 
+/**  The Markdown file's parent folder. */
+"file";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
+	/**
+	 *  "Detect commands that can be run right from Markdown files": gutter run icons on
+	 *  shell code blocks and on command lines in code blocks.
+	 */
+	runCommands?: boolean,
+	/**  Where those commands run; unset asks when the project and the file's folder differ. */
+	commandDirectory?: MarkdownCommandDirectory | null,
 };
 
 /**  A marketplace entry with what is installed. */
@@ -7610,7 +7941,44 @@ export type MavenSettings = {
 	 *  from a library class's Download Sources banner.
 	 */
 	downloadSources?: boolean,
+	/**
+	 *  Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+	 */
+	updateSnapshots?: boolean,
 };
+
+/**  What keeps an idle background project loaded. */
+export type McpBackgroundHold = 
+/**  A tool call is in flight. */
+{ kind: "request" } | 
+/**  A run it started is alive; `name` is the first one's. */
+{ kind: "run"; name: string };
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  Which folders without an open window the MCP server still serves tools for. */
+export type McpBackgroundProjects = 
+/**  Only projects open in a window. */
+"off" | 
+/**
+ *  Also folders the user trusts: trusted projects, recent projects and the repositories inside
+ *  trusted locations.
+ */
+"trusted" | 
+/**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
+"listed";
 
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
@@ -7732,6 +8100,23 @@ export type McpServerSettings = {
 	 *  make a new one each run.
 	 */
 	fixedToken?: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects?: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths?: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes?: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit?: number,
 };
 
 /**  What Settings › Agents › IDE MCP Server shows. */
@@ -7799,7 +8184,9 @@ export type MenuConfig = {
  *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
-export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
+export type MenuNode = { kind: "submenu"; id: string; label: string; 
+/**  Saved layout selection, unset for ordinary submenus. */
+current?: boolean | null; children: MenuNode[] } | 
 /**
  *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
  *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
@@ -7957,6 +8344,13 @@ export type NewAgentTask = {
 	base: string | null,
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Per-session skill modes (`skill name` -> mode). */
+	skillOverrides?: { [key in string]: AgentSkillMode },
+	/**
+	 *  Creates the task without sending `prompt` (it only names the task): the composer's
+	 *  `!` command runs in it first.
+	 */
+	idle?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -8456,6 +8850,10 @@ export type PluginJavaAgent = {
 	fileName: string,
 	/**  The optional argument passed after `=`. */
 	args: string | null,
+	/**  Extra JVM flags from `vmOptions` (API 1.14). */
+	vmOptions: string[],
+	/**  When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime. */
+	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
 };
@@ -8469,6 +8867,7 @@ export type PluginLanguageVisuals = {
 	injections: Injection[],
 	colors: ([string, ColorInfo])[],
 	gutterActions: ([string, GutterAction])[],
+	hoverActions: ([string, HoverAction])[],
 };
 
 export type PluginLocation = {
@@ -8658,6 +9057,16 @@ export type PomGotoKind =
 "managedPlugin" | 
 /**  The POM of the artifact itself: a project module's, else the local repository's. */
 "artifactPom";
+
+/**  A dependency or plugin whose version comes from a management declaration. */
+export type PomManagedDeclaration = {
+	/**  0-based line of the `<dependency>` or `<plugin>` declaration. */
+	line: number,
+	/**  The interpolated version the management entry provides, when it has one. */
+	version: string | null,
+	/**  The management entry, possibly in a parent POM or an imported BOM. */
+	target: PomGoto,
+};
 
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {
@@ -8915,8 +9324,6 @@ export type ProjectLibrary = {
 	javadocs?: string[],
 	scope?: DependencyScope,
 };
-
-export type ProjectOpenMode = "same" | "new" | "tab";
 
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
@@ -9188,6 +9595,13 @@ export type RecentProjectGroup = {
 	expanded?: boolean,
 };
 
+/**  One followed redirect: the response and the `Location` it pointed to. */
+export type RedirectHop = {
+	status: number,
+	statusText: string,
+	location: string,
+};
+
 export type RefactoringProblem = {
 	severity: ProblemSeverity,
 	message: string,
@@ -9319,8 +9733,6 @@ set_upstream?: boolean; no_verify?: boolean } |
 { op: "pushTag"; tag: string; remote: string } | 
 /**  Deletes tag `tag` on `remote` (Delete on Remote). */
 { op: "deleteRemoteTag"; tag: string; remote: string } | 
-/**  Fast-forwards local `branch` (not checked out) to its upstream. */
-{ op: "updateBranch"; branch: string } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
 { op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
 
@@ -9858,6 +10270,8 @@ export type SessionExceptionFilters = {
 	session: DebugSessionId,
 	adapter: string,
 	filters: ExceptionFilter[],
+	/**  Set when the session takes exception breakpoints on a chosen class. */
+	classes: ExceptionClassSupport | null,
 };
 
 /**  A live session, as listed by [`DebugManager::sessions`]. */
@@ -9894,6 +10308,8 @@ export type Settings = {
 	projectStructure?: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs?: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build?: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console?: ConsoleSettings,
 	debugger?: DebuggerSettings,
@@ -10040,6 +10456,8 @@ export type SizeSource =
 export type SkipReason = 
 /**  A configuration with this name already exists. */
 { kind: "nameTaken" } | 
+/**  An existing configuration (a detected one, say) runs the same command. */
+{ kind: "sameAs"; existing: string } | 
 /**  The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`). */
 { kind: "unsupportedType"; type: string } | 
 /**  A `request` other than `launch` and `attach`. */
@@ -10208,7 +10626,14 @@ export type StatusItem = {
 	tooltip: string | null,
 	/**  One of the plugin's commands, run on click. */
 	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
 };
+
+/**  An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`). */
+export type StatusMenuEntry = 
+/**  Runs one of the plugin's commands with `argument`. */
+{ kind: "action"; label: string; description: string | null; command: string; argument: string | null } | { kind: "separator" } | { kind: "header"; label: string };
 
 /**  A call on the current line that Smart Step Into can enter (`stepInTargets`). */
 export type StepInTarget = {
@@ -10330,7 +10755,9 @@ export type SymbolFilter = "all" |
 "types";
 
 /**  Symbol kinds, a stable subset of LSP `SymbolKind`. */
-export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | "unknown";
+export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | 
+/**  A Flutter widget built in the code (Flutter outline only). */
+"widget" | "unknown";
 
 export type SymbolMatch = {
 	name: string,
@@ -10486,6 +10913,11 @@ export type TerminalSettings = {
 	/**  Shell command line; empty = the login shell. */
 	shellPath?: string,
 	tabName?: string,
+	/**
+	 *  Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+	 *  `always`, or `off`.
+	 */
+	appTitleAsTabName?: string,
 	audibleBell?: boolean,
 	closeOnExit?: boolean,
 	mouseReporting?: boolean,
@@ -10875,6 +11307,11 @@ export type Variable = {
 	/**  > 0 when expandable. */
 	variablesReference: number,
 	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
 };
 
 /**  Version Control › Confirmation. */
@@ -10922,6 +11359,8 @@ export type VcsRoot = {
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
+	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
 	limitHistory?: boolean,
 	historyLimit?: number,

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEntry, AgentTask, PullRequestSummary } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { openWithSystemApp } from "@/platform/fileManager";
 import { useTx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
@@ -148,15 +149,7 @@ function issueIcon(state: IssueAssetState | undefined): IconName {
 }
 
 async function openFileArtifact(artifact: Extract<SessionArtifact, { kind: "file" }>) {
-  if (artifact.externalBinary && isTauri()) {
-    try {
-      const { openPath } = await import("@tauri-apps/plugin-opener");
-      await openPath(artifact.path);
-      return;
-    } catch {
-      /* fall back to editor */
-    }
-  }
+  if (artifact.externalBinary && (await openWithSystemApp(artifact.path))) return;
   await editorService().openFile(artifact.path, { focus: true });
 }
 
@@ -204,13 +197,15 @@ export function SessionAssets({ task, entries, head, onFocusComposer }: SessionA
   const refsAnchor = useRef<HTMLButtonElement>(null);
   const artifactsAnchor = useRef<HTMLButtonElement>(null);
 
-  // Read `remote.origin.url` so `gh pr checks 123` / `gh issue view 456` resolve to `<owner>/<repo>`.
+  // Read `origin` (with any `~/.ssh/config` host alias resolved) so `gh pr checks 123` /
+  // `gh issue view 456` resolve to `<owner>/<repo>`.
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
-    call(commands.vcsConfigGet(repoRoot, "remote.origin.url"))
-      .then((url) => {
-        if (alive) setRemoteUrl(url || null);
+    call(commands.vcsRemotes(repoRoot))
+      .then((remotes) => {
+        const origin = remotes.find((r) => r.name === "origin");
+        if (alive) setRemoteUrl(origin ? (origin.resolvedUrl ?? origin.url) : null);
       })
       .catch(() => {
         if (alive) setRemoteUrl(null);

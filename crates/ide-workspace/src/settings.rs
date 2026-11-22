@@ -846,7 +846,12 @@ mod tests {
                 "wrapAtMargin": false,
                 "disabledPluginChecks": [],
                 "doubleClickOpensDiff": null,
+                "includeChangesByDefault": true,
                 "agentInstructions": "",
+                "agent": "",
+                "agentModel": "",
+                "agentEffort": "",
+                "agentButton": true,
             })
         );
     }
@@ -892,6 +897,16 @@ mod tests {
             store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!("yes")).unwrap_err().kind,
             ide_core::error::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn commit_default_inclusion_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::load(tmp.path(), None);
+        assert!(store.effective().vcs.commit.include_changes_by_default);
+        let settings = store.set(SettingsScope::Global, "vcs.commit.includeChangesByDefault", json!(false)).unwrap();
+        assert!(!settings.vcs.commit.include_changes_by_default);
+        assert!(!SettingsStore::load(tmp.path(), None).effective().vcs.commit.include_changes_by_default);
     }
 
     #[test]
@@ -1185,10 +1200,24 @@ mod tests {
         let config = tmp.path().join("config");
         let project = tmp.path().join("project");
         std::fs::create_dir_all(project.join(".openidea")).unwrap();
-        std::fs::write(project.join(".openidea/settings.toml"), "[mcpServer]\nenabled = true\n").unwrap();
+        std::fs::write(
+            project.join(".openidea/settings.toml"),
+            "[mcpServer]\nenabled = true\nbackgroundProjects = \"trusted\"\n\
+             backgroundProjectPaths = [\"/projects/inventory\"]\nbackgroundIdleMinutes = 0\nbackgroundProjectLimit = 32\n",
+        )
+        .unwrap();
         let settings = SettingsStore::load(&config, Some(&project));
         assert!(!settings.effective().mcp_server.enabled);
+        assert_eq!(settings.effective().mcp_server, ide_core::settings::McpServerSettings::default());
         assert!(settings.set(SettingsScope::Project, "mcpServer.enabled", serde_json::json!(true)).is_err());
+        for (key, value) in [
+            ("backgroundProjects", serde_json::json!("trusted")),
+            ("backgroundProjectPaths", serde_json::json!(["/projects/inventory"])),
+            ("backgroundIdleMinutes", serde_json::json!(0)),
+            ("backgroundProjectLimit", serde_json::json!(32)),
+        ] {
+            assert!(settings.set(SettingsScope::Project, &format!("mcpServer.{key}"), value).is_err(), "{key}");
+        }
         assert!(
             settings
                 .set(SettingsScope::Global, "mcpServer.enabled", serde_json::json!(true))

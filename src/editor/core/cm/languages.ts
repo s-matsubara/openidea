@@ -15,8 +15,10 @@ import {
   indentNodeProp,
   indentService,
   language as languageFacet,
+  syntaxTree,
   type StreamParser,
 } from "@codemirror/language";
+import { NodeProp, type SyntaxNode } from "@lezer/common";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
@@ -420,6 +422,9 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   this: t.keyword,
 };
 
+// @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
+const GO_TAGS: Parameters<typeof styleTags>[0] = { default: t.controlKeyword };
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
@@ -437,6 +442,7 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
     "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
     "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
   },
+  Go: GO_TAGS,
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
@@ -446,8 +452,19 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 const bracedIndent = delimitedIndent({ closing: "}" });
 
-/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+/**
+ * JSX tags pair up as HTML's do: Enter between `<div>` and `</div>` puts the caret on an
+ * indented line of its own with the closing tag below, and the tags match each other.
+ */
+const JSX_TAG_PAIRS = [
+  NodeProp.closedBy.add({ JSXOpenTag: ["JSXCloseTag"] }),
+  NodeProp.openedBy.add({ JSXCloseTag: ["JSXOpenTag"] }),
+];
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style, JSX tag pairs. */
 const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  JSX: JSX_TAG_PAIRS,
+  TSX: JSX_TAG_PAIRS,
   // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
   // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
   "C++": [
@@ -461,6 +478,33 @@ const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]
   ],
 };
 
+/** An annotation usage (`@Ann`, `@a.b.Ann(…)`, with an optional trailing comment), not `@interface`. */
+const JAVA_ANNOTATION = /^@(?!interface\b)[\w$.]+(?:\s*\([\s\S]*\))?\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)?$/;
+
+/**
+ * An annotation line ends the declaration it annotates, so Enter after it keeps the line's
+ * indentation. The stock grammar gets this wrong: an annotation, or an unfinished annotation
+ * type declaration, is a `Statement`, which indents one level deeper.
+ */
+const annotationIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null) return undefined;
+  const state = cx.state;
+  const tree = syntaxTree(state);
+  if (tree.length < pos) return undefined;
+  for (let node: SyntaxNode | null = tree.resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name !== "Annotation" && node.name !== "MarkerAnnotation") continue;
+    // The break must follow the whole annotation, with at most whitespace or a comment between.
+    if (node.to > pos || !/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$/.test(state.sliceDoc(node.to, pos))) return undefined;
+    if (!JAVA_ANNOTATION.test(state.sliceDoc(node.from, node.to))) return undefined;
+    const line = state.doc.lineAt(node.from);
+    return cx.countColumn(line.text, line.text.search(/\S|$/));
+  }
+  return undefined;
+});
+
+/** Extensions the stock modes lack, by CodeMirror language name. */
+const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent] };
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
   const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
@@ -468,6 +512,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
     props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
+    ...(EXTRA_SUPPORT[desc.name] ?? []),
     docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);

@@ -36,6 +36,8 @@ pub enum IdeEvent {
     },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A project was loaded or unloaded for the MCP server without a window of its own.
+    McpBackgroundProjectsChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
     WindowFullscreenChanged,
     /// This remote window's connection to its host ended on its own (network loss, the host or
@@ -87,11 +89,21 @@ pub enum IdeEvent {
     DocDirty {
         doc: DocId,
         dirty: bool,
+        /// Text version when this transition occurred, including when it was saved.
+        version: u32,
+    },
+    /// An open document's file changed on disk while the buffer had unsaved changes. The buffer
+    /// keeps them (autosave leaves the file alone); the UI offers to load the disk version.
+    DocDiskConflict {
+        doc: DocId,
+        path: String,
     },
     /// A complete workspace edit can be undone as one operation.
     WorkspaceEditApplied {
         id: u32,
         paths: Vec<crate::IpcPath>,
+        /// Files the edit renamed, as the edit named them: editors open on them follow.
+        moves: Vec<crate::FileMove>,
         /// Made by an agent through the MCP server's tools: undoable like a refactoring, but
         /// not announced as one.
         by_agent: bool,
@@ -312,6 +324,8 @@ pub enum LspRefreshKind {
     InlayHints,
     SemanticTokens,
     CodeLens,
+    /// The Dart server published a document's Flutter outline.
+    FlutterOutline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -370,6 +384,18 @@ pub enum DebugEvent {
     /// `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
     /// a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
     FlutterAppStarted,
+    /// The VM Service of a Flutter session's app, which DevTools connects to.
+    FlutterVmService {
+        uri: String,
+        /// The Flutter device the app runs on.
+        device: Option<String>,
+    },
+    /// Flutter's inspector selected a widget: its source, 0-based.
+    FlutterNavigate {
+        path: crate::IpcPath,
+        line: u32,
+        column: u32,
+    },
     /// The session's capabilities changed after it started: fetch them again.
     Capabilities,
     /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,

@@ -1,8 +1,8 @@
 import { lazyComponent } from "@/ui";
 import { registerSettingsPages } from "@/workbench/contributions";
-import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE, WORKING_STATUS_PAGE } from "./model";
+import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE, SKILLS_PAGE } from "./model";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
+/** Settings › Agents › Coding Agents, External MCP Servers, Skills, and Command Permissions (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPages([
     {
@@ -15,21 +15,20 @@ export function activateSettingsPages(): () => void {
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
     },
     {
-      id: WORKING_STATUS_PAGE,
-      title: "Working Status",
-      group: AGENTS_GROUP,
-      // After Chat.
-      order: 465,
-      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
-      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
-    },
-    {
       id: MCP_PAGE,
       title: "External MCP Servers",
       group: AGENTS_GROUP,
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
+    },
+    {
+      id: SKILLS_PAGE,
+      title: "Skills",
+      group: AGENTS_GROUP,
+      order: 480,
+      keywords: ["skills", "skill", "skill.md", "agents", "slash commands", "auto", "slash only"],
+      component: lazyComponent(() => import("./SkillsPage").then((m) => m.SkillsPage)),
     },
     {
       id: POLICY_PAGE,

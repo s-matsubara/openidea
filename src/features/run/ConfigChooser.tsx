@@ -16,6 +16,7 @@ import {
   T,
   type MenuItem,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useDebugRunSessions } from "@/workbench/contributions";
@@ -50,6 +51,10 @@ type Row =
 const ROW = 24;
 const SEPARATOR = 9;
 const CURRENT_FILE_LABEL = "Current File";
+const MIN_WIDTH = 310;
+const MAX_WIDTH = 500;
+// Space beside a name for the icon, metadata, inline actions and list insets.
+const ROW_CHROME_WIDTH = 160;
 
 export function buildRows(
   configs: readonly RunConfig[],
@@ -99,7 +104,7 @@ export function buildRows(
   return rows;
 }
 
-const rowHeight = (r: Row) => (r.type === "section" && !r.label ? SEPARATOR : ROW);
+const heightOf = (r: Row, rowHeight: number) => (r.type === "section" && !r.label ? SEPARATOR : rowHeight);
 
 let closedAt = 0;
 /** The chooser closed within the last moment (a click on its own anchor shouldn't reopen it). */
@@ -109,6 +114,21 @@ export function chooserJustClosed(): boolean {
 
 function anchorElement(): Element | { x: number; y: number } {
   return document.querySelector("[data-run-chooser]") ?? { x: Math.round(window.innerWidth / 2) - 150, y: 40 };
+}
+
+function chooserWidth(configs: readonly RunConfig[], anchor: ReturnType<typeof anchorElement>): number {
+  const ownerWidth = anchor instanceof Element ? Math.ceil(anchor.getBoundingClientRect().width) : 0;
+  const context = document.createElement("canvas").getContext("2d");
+  let nameWidth = 0;
+  if (context) {
+    const { fontSize, fontFamily } = getComputedStyle(document.body);
+    context.font = `500 ${fontSize} ${fontFamily}`;
+    nameWidth = configs.reduce((widest, config) => Math.max(widest, context.measureText(config.name).width), 0);
+  }
+  return Math.min(
+    Math.max(MAX_WIDTH, ownerWidth),
+    Math.max(MIN_WIDTH, ownerWidth, Math.ceil(nameWidth) + ROW_CHROME_WIDTH),
+  );
 }
 
 /** Run/Debug configuration chooser popup (⌃⌥R), anchored to the title bar widget. */
@@ -145,6 +165,7 @@ export function mnemonics(rows: readonly Row[]): Map<string, number> {
 
 function ConfigChooser() {
   const mode = useRun((s) => s.chooserMode);
+  const rowHeight = useRowHeight(ROW);
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
@@ -178,6 +199,7 @@ function ConfigChooser() {
   // The configuration whose actions menu (⋮) is open.
   const [menu, setMenu] = useState<{ name: string; anchor: Element; items: MenuItem[] } | null>(null);
   const [anchor] = useState(anchorElement);
+  const width = useMemo(() => chooserWidth(configs, anchor), [configs, anchor]);
   const close = () => {
     closedAt = Date.now();
     useRun.setState({ chooserOpen: false });
@@ -285,8 +307,8 @@ function ConfigChooser() {
   };
 
   const height = Math.min(
-    rows.reduce((sum, r) => sum + rowHeight(r), 0),
-    14 * ROW,
+    rows.reduce((sum, r) => sum + heightOf(r, rowHeight), 0),
+    14 * rowHeight,
   );
 
   // IDEA: a configuration's submenu lists its executors, then Edit and Pin.
@@ -326,6 +348,7 @@ function ConfigChooser() {
       placement="bottom-start"
       aria-label="Run/Debug Configurations"
       className={styles.chooser}
+      style={{ width }}
       trapFocus
     >
       {mode !== "select" && (
@@ -347,7 +370,7 @@ function ConfigChooser() {
           variant="bare"
         />
       </div>
-      <div style={{ height }}>
+      <div className={styles.chooserViewport} style={{ height }}>
         <List<Row>
           aria-label="Configurations"
           className={styles.chooserList}
@@ -366,7 +389,7 @@ function ConfigChooser() {
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
-          rowHeight={ROW}
+          rowHeight={rowHeight}
           onActivate={(r) => activate(r)}
           renderItem={(r, { active: isActive }) => {
             if (r.type === "save") {
@@ -415,6 +438,7 @@ function ConfigChooser() {
             }
             if (r.type !== "config") return null;
             const c = r.config;
+            const target = c.target ? targetName(c, runTargets) : null;
             const running = selectedTarget(c.id, sessions, debugSessions);
             return (
               <span className={styles.chooserRow} title={commandLine(c)}>
@@ -426,10 +450,17 @@ function ConfigChooser() {
                   />
                 </span>
                 {numbers.size > 0 && <span className={styles.chooserMnemonic}>{numbers.get(r.key) ?? ""}</span>}
-                <span className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}>
+                <span
+                  className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}
+                  title={c.name}
+                >
                   {r.indices ? <HighlightedText text={c.name} indices={r.indices} /> : c.name}
                 </span>
-                {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
+                {target && (
+                  <span className={styles.chooserMuted} title={target}>
+                    @ {target}
+                  </span>
+                )}
                 {c.isTest && (
                   <span className={styles.badge}>
                     <T>test</T>

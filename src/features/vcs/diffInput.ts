@@ -15,14 +15,22 @@ export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
   | { type: "rev"; rev: string; path?: string; label?: string }
   /** The working file (unsaved editor buffer included). */
-  | { type: "worktree"; label?: string; jjBlame?: JjBlameTarget | null }
+  | { type: "worktree"; label?: string; labelDetail?: string; jjBlame?: JjBlameTarget | null }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
   /**
    * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
    * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
    */
-  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean; jjBlame?: JjBlameTarget | null }
+  | {
+      type: "text";
+      text: string;
+      label: string;
+      labelDetail?: string;
+      absent?: boolean;
+      editable?: boolean;
+      jjBlame?: JjBlameTarget | null;
+    }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -212,7 +220,12 @@ export const opensDiffOnActivate = () => {
  * (`vcs.openDiff`, with review comments) call openDiff directly.
  */
 export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  if (!vcsDiffInFront()) return openDiff(data, opts);
+  if (!vcsDiffInFront()) {
+    // Settings › Version Control › Confirmation: "Open diff as editor tab" off.
+    if (workflowSettings().vcs.diffAsEditorTab || combinedOf(data)) return openDiff(data, opts);
+    const { showDiffWindow } = await import("./DiffWindow");
+    return showDiffWindow(data, () => void openDiff(data, opts));
+  }
   const { openDiffDialog } = await import("./diffDialog");
   openDiffDialog(data);
 }

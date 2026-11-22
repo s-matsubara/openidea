@@ -5,10 +5,11 @@ use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
 use crate::text_encoding::{decode, encode, has_bom, is_binary};
 use crate::{
-    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal,
-    PushBranchOptions, Repo,
+    BlameLine, BranchUpdate, BranchUpdateStatus, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions,
+    DeletedBranch, DivergedLocal, PushBranchOptions, Repo,
 };
 use gix::bstr::{BStr, ByteSlice};
+use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::path::{Path, PathBuf};
 
@@ -1154,16 +1155,31 @@ fn check_rev(rev: &str) -> IdeResult<&str> {
     Ok(rev)
 }
 
+/// The short name of a full branch ref (`refs/heads/x`, `refs/remotes/origin/x`) when it
+/// names that same branch: git writes the name it is given into the merge message and the
+/// reflog. A name a tag shares stays a full ref, the case IDEA also passes in full.
+fn unambiguous_branch_name<'a>(r: &Repo, rev: &'a str) -> &'a str {
+    let Some(short) = rev.strip_prefix("refs/heads/").or_else(|| rev.strip_prefix("refs/remotes/")) else {
+        return rev;
+    };
+    // An ambiguous name prints nothing (git reports it on stderr).
+    let full = cli::run_raw(r.root(), &["rev-parse", "--verify", "-q", "--symbolic-full-name", short], None);
+    match full {
+        Ok(out) if out.code == Some(0) && out.stdout_str().trim() == rev => short,
+        _ => rev,
+    }
+}
+
 /// Local changes are stashed and restored around the merge (IDEA's "save local changes").
 pub(crate) fn merge(r: &Repo, branch: &str) -> IdeResult<()> {
-    let branch = check_rev(branch)?;
+    let branch = unambiguous_branch_name(r, check_rev(branch)?);
     crate::preserve::around(r, "Local changes saved before merge", || {
         run(r.root(), &["merge", "--no-edit", branch], None).map(|_| ())
     })
 }
 
 pub(crate) fn rebase(r: &Repo, onto: &str) -> IdeResult<()> {
-    let onto = check_rev(onto)?;
+    let onto = unambiguous_branch_name(r, check_rev(onto)?);
     crate::preserve::around(r, "Local changes saved before rebase", || {
         run(r.root(), &["rebase", onto], None).map(|_| ())
     })
@@ -1392,18 +1408,79 @@ pub(crate) fn push_branch(
     cli::run_streaming(r.root(), &argv, cancel, on_output)
 }
 
-/// Fast-forwards local `branch` (not checked out) to its upstream, fetching it first.
-pub(crate) fn update_branch(
+/// Update Selected (IDEA's Git.Update.Selected): fetches the remote of each branch once,
+/// then fast-forwards the branch to its tracked branch: the checked-out one with
+/// `merge --ff-only`, the others with a local fetch, which refuses branches checked out
+/// in another worktree. Diverged branches are left alone.
+pub(crate) fn update_branches(
     r: &Repo,
-    branch: &str,
+    branches: &[String],
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
-) -> IdeResult<()> {
-    check_local_branch(r, branch)?;
-    let (remote, name) =
-        branch_upstream(r, branch).ok_or_else(|| IdeError::invalid(format!("'{branch}' has no tracked branch")))?;
-    let refspec = format!("refs/heads/{name}:refs/heads/{branch}");
-    cli::run_streaming(r.root(), &["fetch", "--progress", &remote, &refspec], cancel, on_output)
+) -> IdeResult<Vec<BranchUpdate>> {
+    let head =
+        run(r.root(), &["symbolic-ref", "-q", "--short", "HEAD"], None).ok().map(|o| o.stdout_str().trim().to_string());
+    let mut fetched: Vec<(String, Result<(), String>)> = Vec::new();
+    let mut out = Vec::with_capacity(branches.len());
+    for branch in branches {
+        check_local_branch(r, branch)?;
+        let result = |status, message| BranchUpdate { branch: branch.clone(), status, message };
+        let Some((remote, _)) = branch_upstream(r, branch) else {
+            out.push(result(BranchUpdateStatus::NoUpstream, None));
+            continue;
+        };
+        let fetch = match fetched.iter().find(|(name, _)| *name == remote) {
+            Some((_, done)) => done.clone(),
+            None => {
+                let done = match cli::run_streaming(r.root(), &["fetch", "--progress", &remote], cancel, on_output) {
+                    Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                    done => done.map_err(|e| e.message),
+                };
+                fetched.push((remote, done.clone()));
+                done
+            }
+        };
+        let (status, message) = match fetch {
+            Err(message) => (BranchUpdateStatus::Failed, Some(message)),
+            Ok(()) => fast_forward(r, branch, head.as_deref() == Some(branch.as_str()), cancel, on_output)?,
+        };
+        out.push(result(status, message));
+    }
+    Ok(out)
+}
+
+fn fast_forward(
+    r: &Repo,
+    branch: &str,
+    current: bool,
+    cancel: &CancellationToken,
+    on_output: &dyn Fn(String),
+) -> IdeResult<(BranchUpdateStatus, Option<String>)> {
+    let rev = |args: &[&str]| run(r.root(), args, None).ok().map(|o| o.stdout_str().trim().to_string());
+    let ancestor = |a: &str, b: &str| {
+        cli::run_raw(r.root(), &["merge-base", "--is-ancestor", a, b], None).is_ok_and(|o| o.code == Some(0))
+    };
+    let local = format!("refs/heads/{branch}");
+    let tracked =
+        rev(&["rev-parse", "--symbolic-full-name", &format!("{branch}@{{upstream}}")]).filter(|t| !t.is_empty());
+    let target = tracked.as_deref().and_then(|t| rev(&["rev-parse", "-q", "--verify", &format!("{t}^{{commit}}")]));
+    let (Some(tracked), Some(target), Some(tip)) = (tracked, target, rev(&["rev-parse", "-q", "--verify", &local]))
+    else {
+        return Ok((BranchUpdateStatus::Failed, Some(format!("the tracked branch of '{branch}' was not found"))));
+    };
+    if tip == target || ancestor(&target, &tip) {
+        return Ok((BranchUpdateStatus::UpToDate, None));
+    }
+    if !ancestor(&tip, &target) {
+        return Ok((BranchUpdateStatus::NotFastForward, None));
+    }
+    let refspec = format!("{tracked}:{local}");
+    let args: &[&str] = if current { &["merge", "--ff-only", &tracked] } else { &["fetch", ".", &refspec] };
+    match cli::run_streaming(r.root(), args, cancel, on_output) {
+        Ok(()) => Ok((BranchUpdateStatus::Updated, None)),
+        Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+        Err(e) => Ok((BranchUpdateStatus::Failed, Some(e.message))),
+    }
 }
 
 /// Update Project › Reset to the Remote Branch: fetches the current branch's tracked

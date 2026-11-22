@@ -45,6 +45,8 @@ import {
 } from "./theme";
 import { wheelZoomStep } from "@/platform/wheelZoom";
 
+export const ACTIVE_SEARCH_DECORATION_CLASS = "xterm-find-active-result-decoration";
+
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
   regex: boolean;
@@ -252,6 +254,8 @@ export class TerminalSession {
   private opened = false;
   /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
   private pendingFocus = false;
+  /** What had focus when `pendingFocus` was set: a later move elsewhere cancels it. */
+  private pendingFocusFrom: Element | null = null;
   /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
   private fitAttempts = 0;
   private disposed = false;
@@ -337,7 +341,7 @@ export class TerminalSession {
       minimumContrastRatio: MIN_CONTRAST_RATIO,
       smoothScrollDuration: 0,
       // Same width as the IDE's scrollbars (global.css); the slider is styled there too (Terminal.module.css).
-      overviewRuler: { width: 10 },
+      scrollbar: { width: 10 },
       theme: readTerminalTheme(),
       linkHandler: LINK_HANDLER,
     });
@@ -350,7 +354,7 @@ export class TerminalSession {
       const active = this.searchDecorations?.activeMatchBackground;
       const isActive = !!active && options.backgroundColor?.toLowerCase() === active.toLowerCase();
       const d = registerDecoration(isActive ? { ...options, layer: "top" } : options);
-      if (d && isActive) d.onRender((el) => el.classList.add("xterm-find-active-result-decoration"));
+      if (d && isActive) d.onRender((el) => el.classList.add(ACTIVE_SEARCH_DECORATION_CLASS));
       return d;
     };
     const runSearch =
@@ -677,7 +681,17 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    if (this.pendingFocus) this.focus();
+    if (this.pendingFocus) {
+      this.pendingFocus = false;
+      if (this.focusStayedHere()) this.focus();
+    }
+  }
+
+  /** Whether focus is still where the deferred `focus()` left it, or in this terminal's own window. */
+  private focusStayedHere(): boolean {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === this.pendingFocusFrom) return true;
+    return this.host.contains(active) || !!this.host.closest("[data-toolwindow]")?.contains(active);
   }
 
   detach(container: HTMLElement) {
@@ -988,6 +1002,7 @@ export class TerminalSession {
     this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
+      this.pendingFocusFrom = document.activeElement;
       this.scheduleFit();
       return;
     }

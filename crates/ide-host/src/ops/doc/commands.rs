@@ -85,7 +85,7 @@ pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_end
 }
 
 /// Structure view: LSP document symbols when available (with tree-sitter
-/// visibility), tree-sitter otherwise.
+/// visibility and type-alias kinds), tree-sitter otherwise.
 /// Tree-sitter answers come from the per-document tree cache (incremental
 /// re-parse); large documents get no syntax structure.
 #[command(trust = always)]
@@ -113,10 +113,13 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         };
         let syntax = || project.syntax.outline(doc, &snap.language, snap.version, &snap.text);
         Ok(match lsp {
-            // Server symbols carry no visibility; borrow it from the syntax tree.
+            // Server symbols carry no visibility, nor a kind for type aliases; borrow them from
+            // the syntax tree.
             Some(mut items) => {
                 if !snap.large {
-                    ide_language::merge_visibility(&mut items, &syntax());
+                    let syntax = syntax();
+                    ide_language::merge_visibility(&mut items, &syntax);
+                    ide_language::merge_kinds(&mut items, &syntax);
                 }
                 items
             }
@@ -125,6 +128,13 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         })
     })
     .await
+}
+
+/// Structure view of a Flutter file: its declarations with the widgets they build. `None`
+/// when the Dart server published no widgets for it; `doc_outline` then applies.
+#[command(trust = always)]
+pub async fn doc_flutter_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<Vec<OutlineItem>>> {
+    Ok(host.project(window)?.lsp.flutter_outline(doc))
 }
 
 #[command(trust = always)]
@@ -227,6 +237,7 @@ pub async fn history_content(host: &Host, window: &str, id: String) -> IdeResult
 
 ide_command::domain!(
     doc_commands:
+    doc_flutter_outline,
     doc_folding,
     doc_highlights,
     doc_language,

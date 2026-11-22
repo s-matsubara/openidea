@@ -406,15 +406,16 @@ impl Proc {
         }
     }
 
-    /// What it printed since the last call, each stream at most `max` bytes.
+    /// What it printed since the last call, each stream at most `max` bytes. The status
+    /// comes with the last chunk only: once it ended, its pipes reached the end and
+    /// nothing is left to read, so a caller can stop at the first chunk that has one.
     fn chunk(&self, max: usize) -> ProcessChunk {
         let mut state = self.state.lock();
         let eof = state.readers == 0;
-        ProcessChunk {
-            stdout: take_text(&mut state.stdout, max, eof),
-            stderr: take_text(&mut state.stderr, max, eof),
-            status: state.status,
-        }
+        let stdout = take_text(&mut state.stdout, max, eof);
+        let stderr = take_text(&mut state.stderr, max, eof);
+        let drained = eof && state.stdout.is_empty() && state.stderr.is_empty();
+        ProcessChunk { stdout, stderr, status: state.status.filter(|_| drained) }
     }
 }
 
@@ -2116,6 +2117,23 @@ impl HostApi for PluginApi {
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
     }
 
+    fn check_status_menu(&self, menu: &[ide_plugin::StatusMenuEntry]) -> Result<(), HostError> {
+        let actions: Vec<ide_plugin::NotificationAction> = menu
+            .iter()
+            .filter_map(|entry| match entry {
+                ide_plugin::StatusMenuEntry::Action { label, command, argument, .. } => {
+                    Some(ide_plugin::NotificationAction {
+                        label: label.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        check_actions(self, &actions)
+    }
+
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let closed = self.shared.closed_clients.lock();
         let blocked = self.shared.prompts_blocked.lock();
@@ -3041,6 +3059,10 @@ impl HostApi for PluginApi {
         dunce::canonicalize(files).map_err(failed)
     }
 
+    fn install_dir(&self) -> Result<PathBuf, HostError> {
+        dunce::canonicalize(&self.pkg.dir).map_err(failed)
+    }
+
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
         // Unsaved editor contents win, as they do for project files.
         if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
@@ -3732,6 +3754,19 @@ mod tests {
     }
 
     #[test]
+    fn install_dir_is_the_canonical_package_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("acme.lint");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("readme.pdf"), b"%PDF").unwrap();
+        let api = api(&pkg, Arc::default());
+        let install = api.install_dir().unwrap();
+        assert_eq!(install, dunce::canonicalize(&pkg).unwrap());
+        assert!(install.join("readme.pdf").is_file());
+        assert_ne!(install, api.plugin_dir().unwrap());
+    }
+
+    #[test]
     fn storage_moves_an_older_storage_json_to_one_file_per_key() {
         let tmp = tempfile::tempdir().unwrap();
         let legacy = tmp.path().join(".data/acme.lint/storage.json");
@@ -4106,6 +4141,27 @@ mod tests {
         let state = state.state.lock();
         assert!(state.stdout.is_empty() && state.stderr.is_empty());
         drop(state);
+        api.release_process(id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_status_comes_with_the_last_of_the_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let token = CancellationToken::new();
+        let id = api.start_process(shell("printf 'abcdefghij'; printf 'xyz' >&2"), None, None).unwrap();
+        let first = api.wait_process(id, 4, Duration::from_secs(5), &token).unwrap();
+        assert_eq!((first.stdout.as_str(), first.stderr.as_str(), first.status), ("abcd", "xyz", None));
+        let mut stdout = first.stdout;
+        let status = loop {
+            let chunk = api.poll_process(id, 4).unwrap();
+            stdout.push_str(&chunk.stdout);
+            if let Some(status) = chunk.status {
+                break status;
+            }
+        };
+        assert_eq!((stdout.as_str(), status), ("abcdefghij", 0));
         api.release_process(id);
     }
 

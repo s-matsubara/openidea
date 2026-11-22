@@ -6,7 +6,7 @@ import { setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
 import { CommitTabs, CommitToolWindow } from "../CommitView";
 import { useVcs } from "../store";
-import { rememberMessage, useCommit } from "../commitStore";
+import { rememberMessage, savedDraft, writeDraft, useCommit } from "../commitStore";
 import { useProject } from "@/platform/project";
 import { maybeJjCommitMessageTarget } from "@/workbench/contributions";
 import { ContextMenuHost } from "@/ui";
@@ -709,7 +709,7 @@ it("copies the selected files when opening a selected row's menu", async () => {
     </>,
   );
   fireEvent.mouseDown(screen.getByText("a"), { button: 0 });
-  fireEvent.mouseDown(screen.getByText("b"), { button: 0, metaKey: true, ctrlKey: true });
+  fireEvent.mouseDown(screen.getByText("b"), { button: 0, metaKey: true });
   fireEvent.contextMenu(screen.getByText("a"));
   fireEvent.click(await screen.findByText("Copy Path"));
   expect(writeText).toHaveBeenCalledWith("/jj/a\n/jj/b");
@@ -814,4 +814,34 @@ it("opens the explicit jj diff from the new-window action in a jj-only project",
     dispose();
     setContext("vcsJjAvailable", false);
   }
+});
+
+it("keeps the jj draft across remounts without sharing the Git draft", () => {
+  writeDraft("/jj", "Git draft");
+  const first = render(<CommitToolWindow />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "jj draft" } });
+  first.unmount();
+  expect(savedDraft("/jj", "jj")).toBe("jj draft");
+  expect(savedDraft("/jj")).toBe("Git draft");
+  render(<CommitToolWindow />);
+  expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("jj draft");
+});
+it("keeps jj drafts isolated when projects switch", () => {
+  render(<CommitToolWindow />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "first" } });
+  act(() => useVcs.setState({ root: "/other", jjRoots: [root({ root: "/other" })] }));
+  expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("");
+  fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "second" } });
+  act(() => useVcs.setState({ root: "/jj", jjRoots: [root()] }));
+  expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("first");
+  expect(savedDraft("/other", "jj")).toBe("second");
+});
+
+it("honors the shared option hiding the agent message button", () => {
+  const settings = useProject.getState().settings;
+  useProject.setState({ settings: { ...settings, vcs: { commit: { agentButton: false } } } } as never);
+  const view = render(<CommitToolWindow />);
+  expect(screen.queryByRole("button", { name: "Generate Commit Message with Agent" })).toBeNull();
+  view.unmount();
+  useProject.setState({ settings });
 });

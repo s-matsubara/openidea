@@ -80,7 +80,7 @@
   "app.window.pickFileTitle": "Otwórz plik",
   "app.window.pickTitle": "Otwórz w nowym oknie",
   "app.window.askTitle": "Otwórz projekt",
-  "app.window.askBody": "Jak chcesz otworzyć „{name}”?",
+  "app.window.askBody": "Projekty mogą zostać otwarte w nowym oknie, zastąpić obecny projekt lub zostać dołączone do już otwartych projektów.\nJak chcesz otworzyć „{name}”?",
   "app.window.askThis": "To okno",
   "app.window.askAttach": "Dołącz",
   "app.window.askNew": "Nowe okno",

@@ -3,10 +3,13 @@ import { commitRepo } from "./multiRoot";
  * Git Log history rewriting: Undo Commit, Edit Commit Message, Drop Commit and
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
-import { useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { resolveMonoFont } from "@/platform/fonts";
 import { call, commands } from "@/platform/ipc";
-import { Dialog, IconButton, Select, T } from "@/ui";
+import { useProject } from "@/platform/project";
+import { Dialog, IconButton, Select, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, showError } from "@/workbench/messages";
 import { chooseTargetChangelist, moveToChangelist } from "./changelistsUi";
@@ -37,6 +40,7 @@ import { currentRepo, refreshNow, useVcs } from "./store";
 import { isProtectedBranch } from "./remoteUi";
 import { notifications } from "@/workbench/contributions";
 import styles from "./common.module.css";
+import messageStyles from "./CommitMessageDialog.module.css";
 import { tx } from "@/platform/i18n";
 
 const short = (id: string) => id.slice(0, 8);
@@ -226,7 +230,10 @@ export async function editCommitMessage(commit: Commit) {
   // A paged log only carries the summary line: load the full message so the
   // dialog edits subject and body, not the subject alone (#2238).
   const initial = commit.messageTruncated ? (await loadLogDetails(commit)).message : commit.message;
-  const message = await promptMessage(`Edit Commit Message (${short(commit.id)})`, initial);
+  const hash = short(commit.id);
+  const author = commit.author || commit.email;
+  const label = author ? tx`Edit message for commit ${hash} by ${author}` : tx`Edit message for commit ${hash}`;
+  const message = await promptMessage("Edit Commit Message", label, initial);
   if (message === null || message.trim() === initial.trim()) return;
   // Written without a rebase: the index and the working tree (local changes) stay as they are.
   const change = await runOp(tx`Edit commit message of ${short(commit.id)}`, () =>
@@ -322,7 +329,8 @@ export async function squashCommits(commits: Commit[]) {
   const ids = new Set(commits.map((c) => c.id));
   const oldestFirst = range.commits.filter((c) => ids.has(c.id));
   const message = await promptMessage(
-    `Squash ${commits.length} Commits`,
+    "Squashed Commit Message",
+    tx("Edit message for squashed commit"),
     oldestFirst.map((c) => c.message.trim()).join("\n\n"),
   );
   if (message === null || !message.trim()) return;
@@ -359,11 +367,12 @@ export async function interactivelyRebaseFrom(target: Commit) {
   openDialog((close) => <InteractiveRebaseDialog range={range} onClose={close} />);
 }
 
-function promptMessage(title: string, initial: string): Promise<string | null> {
+function promptMessage(title: string, label: string, initial: string): Promise<string | null> {
   return new Promise((resolve) => {
     const close = openDialog(() => (
       <MessageDialog
         title={title}
+        label={label}
         initial={initial}
         onDone={(m) => {
           close();
@@ -376,30 +385,51 @@ function promptMessage(title: string, initial: string): Promise<string | null> {
 
 function MessageDialog({
   title,
+  label,
   initial,
   onDone,
 }: {
   title: string;
+  label: string;
   initial: string;
   onDone: (message: string | null) => void;
 }) {
+  const id = useId();
+  const field = useRef<HTMLTextAreaElement>(null);
   const [message, setMessage] = useState(initial);
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
+  useLayoutEffect(() => field.current?.setSelectionRange(0, 0), []);
+
   return (
     <Dialog
       open
       title={title}
       onClose={() => onDone(null)}
-      width={520}
+      width={620}
+      minWidth={340}
+      resizable="both"
+      className={messageStyles.dialog}
       buttons={[
         { label: "OK", role: "default", disabled: !message.trim(), onClick: () => onDone(message) },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
+      <div className={messageStyles.form}>
+        <label className={messageStyles.label} htmlFor={id}>
+          {label}
+        </label>
         <textarea
+          id={id}
+          ref={field}
           data-autofocus
-          aria-label={tx("Commit message")}
-          className={styles.textarea}
+          className={`${styles.textarea} ${messageStyles.editor}`}
+          style={{
+            fontFamily: family,
+            fontSize: size,
+            fontWeight: fontWeightOf(editor?.fontWeight, 400),
+            lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+          }}
           rows={8}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -426,6 +456,22 @@ function InteractiveRebaseDialog({
   onClose: () => void;
 }) {
   const [rows, setRows] = useState<RebaseRow[]>(() => initialRows(range.commits));
+  const [selectedId, setSelectedId] = useState(() => rows[0]?.commit.id);
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const measure = () => setStacked(page.clientWidth < 640);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(page);
+    return () => observer.disconnect();
+  }, []);
+
+  const selectedIndex = rows.findIndex((r) => r.commit.id === selectedId);
+  const selected = rows[selectedIndex];
   const problem = planProblem(rows);
   const noop = planIsNoop(rows, range.commits);
   const update = (i: number, patch: Partial<RebaseRow>) =>
@@ -440,62 +486,104 @@ function InteractiveRebaseDialog({
       open
       title={rebaseTitle(range.commits.length, range.base && short(range.base))}
       onClose={onClose}
-      width={720}
-      footerStart={problem ? <span className={styles.error}>{problem}</span> : undefined}
+      width={960}
+      minWidth={360}
+      minHeight={360}
+      resizable="both"
+      className={styles.rebaseDialog}
       buttons={[
         { label: "Start Rebasing", role: "default", disabled: !!problem || noop, onClick: start },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        <T>Commits are applied from top to bottom.</T>
-      </div>
-      <div className={styles.rebaseList} role="list" aria-label={tx("Commits to rebase")}>
-        {rows.map((r, i) => (
-          <div key={r.commit.id} className={styles.rebaseRow} role="listitem">
-            <Select<RebaseAction>
-              value={r.action}
-              options={ACTIONS}
-              aria-label={tx`Action for ${short(r.commit.id)}`}
-              className={styles.rebaseAction}
-              onChange={(action) => update(i, { action })}
-            />
-            <span className={styles.commitHash}>{r.commit.shortId}</span>
-            {r.action === "reword" ? (
-              <textarea
-                className={`${styles.textarea} ${styles.rebaseMessage}`}
-                aria-label={`New message for ${short(r.commit.id)}`}
-                rows={2}
-                value={r.message}
-                onChange={(e) => update(i, { message: e.target.value })}
+      <div className={styles.rebasePage} ref={pageRef}>
+        <SplitGroup id="rebase-panes" className={styles.rebaseSplit} orientation={stacked ? "vertical" : "horizontal"}>
+          <SplitPanel id="rebase-plan" defaultSize="50%" minSize="30%">
+            <div className={styles.rebaseToolbar}>
+              <IconButton
+                icon="arrow-up"
+                size="small"
+                title="Move Up"
+                disabled={selectedIndex <= 0}
+                onClick={() => setRows((rs) => moveRow(rs, selectedIndex, -1))}
               />
-            ) : (
-              <span
-                className={styles.commitSubject}
-                style={r.action === "drop" ? { textDecoration: "line-through" } : undefined}
-                title={r.commit.message}
-              >
-                {r.commit.summary}
+              <IconButton
+                icon="arrow-down"
+                size="small"
+                title="Move Down"
+                disabled={selectedIndex < 0 || selectedIndex === rows.length - 1}
+                onClick={() => setRows((rs) => moveRow(rs, selectedIndex, 1))}
+              />
+              <span className={styles.hint}>
+                <T>Commits are applied from top to bottom.</T>
               </span>
+            </div>
+            <div className={styles.rebaseList} role="list" aria-label={tx("Commits to rebase")}>
+              {rows.map((r, i) => (
+                <div
+                  key={r.commit.id}
+                  className={styles.rebaseRow}
+                  role="listitem"
+                  data-selected={r.commit.id === selectedId || undefined}
+                >
+                  <button
+                    type="button"
+                    className={styles.rebaseCommit}
+                    aria-current={r.commit.id === selectedId || undefined}
+                    onClick={() => setSelectedId(r.commit.id)}
+                    title={r.commit.summary}
+                  >
+                    <span className={styles.rebaseSubject} data-dropped={r.action === "drop" || undefined}>
+                      {r.commit.summary}
+                    </span>
+                    <span className={styles.commitHash}>{r.commit.shortId}</span>
+                  </button>
+                  <Select<RebaseAction>
+                    value={r.action}
+                    options={ACTIONS}
+                    aria-label={tx`Action for ${short(r.commit.id)}`}
+                    className={styles.rebaseAction}
+                    onChange={(action) => {
+                      setSelectedId(r.commit.id);
+                      update(i, { action });
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Resize rebase panes")} />
+          <SplitPanel id="rebase-details" defaultSize="50%" minSize="30%">
+            {selected && (
+              <section className={styles.rebaseDetails} aria-label={tx("Commit details")}>
+                <div className={styles.rebaseMetadata}>
+                  <span className={styles.commitHash}>{selected.commit.shortId}</span>
+                  <span>{selected.commit.author}</span>
+                </div>
+                {selected.action === "reword" ? (
+                  <textarea
+                    key={selected.commit.id}
+                    className={`${styles.textarea} ${styles.rebaseMessage}`}
+                    aria-label={tx`New message for ${short(selected.commit.id)}`}
+                    rows={5}
+                    value={selected.message}
+                    onChange={(e) => update(selectedIndex, { message: e.target.value })}
+                  />
+                ) : (
+                  <div className={styles.rebasePreview}>
+                    {selected.commit.message.trimEnd() || selected.commit.summary}
+                  </div>
+                )}
+              </section>
             )}
-            <IconButton
-              icon="arrow-up"
-              size="small"
-              title="Move Up"
-              disabled={i === 0}
-              onClick={() => setRows((rs) => moveRow(rs, i, -1))}
-            />
-            <IconButton
-              icon="arrow-down"
-              size="small"
-              title="Move Down"
-              disabled={i === rows.length - 1}
-              onClick={() => setRows((rs) => moveRow(rs, i, 1))}
-            />
+          </SplitPanel>
+        </SplitGroup>
+        {problem && (
+          <div className={styles.error} role="alert">
+            {tx(problem)}
           </div>
-        ))}
+        )}
       </div>
-      <div style={{ height: 12 }} />
     </Dialog>
   );
 }

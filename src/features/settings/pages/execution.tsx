@@ -3,15 +3,19 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
+import { useEffect } from "react";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
+import { useSettingsPageFocus } from "@/workbench/contributions";
+import { isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { SelectOption } from "@/ui";
-import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
-import { useSetting } from "../components/context";
+import { ColorSwatches, FormGroup, GlobListEditor, Row, SettingNumber, Toggle } from "../components/Form";
+import { usePageContext, useSetting } from "../components/context";
+import { useSettingsDialog } from "../model/staging";
 import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
-import { Indented, ToggleNumber } from "./workflowControls";
-import styles from "./Workflow.module.css";
-import { T } from "@/ui";
+import { ToggleNumber } from "./workflowControls";
+import dataViewStyles from "./DebuggerDataViews.module.css";
 
 const CMakeProfiles = lazyPage("build.cmake", () => import("./cmake").then((m) => m.CMakeProfiles));
 const GradlePage = lazyPage("build.gradle", () => import("../languages/LanguagePages").then((m) => m.GradlePage));
@@ -45,6 +49,7 @@ function BufferRow() {
       numberKey="console.bufferKb"
       label="Override console cycle buffer size"
       unit="KB"
+      disableWhenOff
       hint="Older output is discarded"
       {...L.bufferKb}
     />
@@ -53,6 +58,18 @@ function BufferRow() {
 
 function FoldPatterns() {
   const [patterns, set] = useSetting<string[]>("console.foldPatterns");
+  // Opened as `build.console#<text>` by the console's Fold Lines Like This: add it as a pattern.
+  const { focus, consume } = useSettingsPageFocus();
+  // With a project open, the Global list arrives after the dialog opens (until then it is the project's).
+  const { scope } = usePageContext();
+  const globalPending = useSettingsDialog((s) => s.globalBase === s.base);
+  const hasProject = useProject((s) => !!s.project);
+  const waiting = scope === "global" && globalPending && hasProject && isTauri();
+  useEffect(() => {
+    if (!focus || waiting) return;
+    consume();
+    if (!patterns.includes(focus)) set([...patterns, focus]);
+  }, [focus, consume, waiting, patterns, set]);
   return (
     <Row
       label="Fold console lines that contain"
@@ -64,6 +81,7 @@ function FoldPatterns() {
         onChange={set}
         placeholder="at org.example."
         aria-label="Fold console lines that contain"
+        fullWidth
       />
     </Row>
   );
@@ -117,31 +135,66 @@ function LogLevelRow({ level, label }: { level: (typeof LOG_LEVELS)[number]["lev
   );
 }
 
-function TooltipDelayRow() {
-  const [enabled] = useSetting<boolean>("debugger.valueTooltip");
-  const [delay, setDelay] = useSetting<number>("debugger.valueTooltipDelay");
+const tooltipHint = "Hovering a variable while suspended evaluates it in the selected frame.";
+
+function ValueTooltipRow() {
+  const [enabled, setEnabled] = useSetting<boolean>("debugger.valueTooltip");
   return (
-    <Indented>
-      <Row label="Value tooltip delay (ms)">
-        <NumberInput
-          value={delay}
-          onChange={setDelay}
-          {...L.tooltipDelay}
-          integer
-          step={100}
-          aria-label="Value tooltip delay (ms)"
-        />
-        {!enabled && (
-          <span className={styles.note}>
-            <T>Value tooltips are off</T>
-          </span>
-        )}
-      </Row>
-    </Indented>
+    <div className={dataViewStyles.hover}>
+      <Toggle label="Show value tooltip on mouse hover" checked={enabled} onChange={setEnabled} hint={tooltipHint} />
+      <SettingNumber
+        k="debugger.valueTooltipDelay"
+        label="Value tooltip delay (ms)"
+        {...L.tooltipDelay}
+        integer
+        step={100}
+        disabled={!enabled}
+      />
+    </div>
   );
 }
 
+const BUILD_WINDOW_WHEN = [
+  { value: "always", label: "Always" },
+  { value: "onError", label: "Only on errors" },
+  { value: "never", label: "Never" },
+];
+
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.compiler",
+    title: "Compiler",
+    group: BUILD_GROUP,
+    order: 355,
+    projectScope: true,
+    keywords: [
+      "Build tool window",
+      "Open Build tool window",
+      "Focus Build tool window",
+      "automatic build",
+      "before launch",
+    ],
+    sections: [
+      {
+        options: [
+          {
+            kind: "select",
+            key: "build.openToolWindow",
+            label: "Open Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
+          },
+          {
+            kind: "select",
+            key: "build.focusToolWindow",
+            label: "Focus Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "When Build opens, whether it takes keyboard focus from the editor.",
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "build.cmake",
     title: "CMake",
@@ -215,6 +268,11 @@ export const EXECUTION_PAGES: PageSpec[] = [
       "threads",
       "-T",
       "parallel",
+      "Always update snapshots",
+      "SNAPSHOT",
+      "-U",
+      "Importing",
+      "Automatically download sources",
     ],
     component: MavenPage,
   },
@@ -228,8 +286,8 @@ export const EXECUTION_PAGES: PageSpec[] = [
     sections: [
       {
         options: [
-          { kind: "custom", label: "Override console cycle buffer size", keywords: ["KB"], component: BufferRow },
           { kind: "toggle", key: "console.softWrap", label: "Use soft wraps in console" },
+          { kind: "custom", label: "Override console cycle buffer size", keywords: ["KB"], component: BufferRow },
           {
             kind: "select",
             key: "console.encoding",
@@ -237,6 +295,11 @@ export const EXECUTION_PAGES: PageSpec[] = [
             options: CONSOLE_ENCODINGS,
             hint: "Encoding of the output of processes started from Run configurations.",
           },
+        ],
+      },
+      { options: [{ kind: "custom", label: "Fold console lines that contain", component: FoldPatterns }] },
+      {
+        options: [
           {
             kind: "custom",
             label: "Colour log lines by level",
@@ -245,7 +308,6 @@ export const EXECUTION_PAGES: PageSpec[] = [
           },
         ],
       },
-      { options: [{ kind: "custom", label: "Fold console lines that contain", component: FoldPatterns }] },
     ],
   },
   {
@@ -312,12 +374,6 @@ export const EXECUTION_PAGES: PageSpec[] = [
     sections: [
       {
         options: [
-          {
-            kind: "toggle",
-            key: "debugger.inlineValues",
-            label: "Show values inline",
-            hint: "Values of local variables are shown after the lines that use them while suspended.",
-          },
           { kind: "toggle", key: "debugger.sortValues", label: "Sort values alphabetically" },
           {
             kind: "toggle",
@@ -325,14 +381,24 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Evaluate watches while the program runs",
             hint: "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
           },
+        ],
+      },
+      {
+        title: "Editor",
+        options: [
           {
             kind: "toggle",
-            key: "debugger.valueTooltip",
+            key: "debugger.inlineValues",
+            label: "Show values inline",
+            hint: "Values of local variables are shown after the lines that use them while suspended.",
+          },
+          {
+            kind: "custom",
             label: "Show value tooltip on mouse hover",
-            hint: "Hovering a variable while suspended evaluates it in the selected frame.",
+            keywords: ["Value tooltip delay (ms)", tooltipHint],
+            component: ValueTooltipRow,
           },
           { kind: "toggle", key: "debugger.valueTooltipOnSelection", label: "Show value tooltip on code selection" },
-          { kind: "custom", label: "Value tooltip delay (ms)", component: TooltipDelayRow },
         ],
       },
     ],

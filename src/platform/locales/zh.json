@@ -98,7 +98,7 @@
   "app.window.pickFileTitle": "打开文件",
   "app.window.pickTitle": "在新窗口中打开",
   "app.window.askTitle": "打开项目",
-  "app.window.askBody": "要如何打开“{name}”？",
+  "app.window.askBody": "项目可以在新窗口中打开、替换当前项目，或附加到已打开的项目。\n要如何打开“{name}”？",
   "app.window.askThis": "当前窗口",
   "app.action.attachProject": "附加项目…",
   "app.window.detachTitle": "分离项目",

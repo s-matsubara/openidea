@@ -63,6 +63,8 @@ pub struct Project {
     pub notebooks: Arc<crate::notebook::NotebookService>,
     /// Flutter's devices; its daemon starts when the UI first asks for them.
     pub(crate) flutter: ide_flutter::FlutterDaemon,
+    /// Flutter DevTools; its server starts when the UI first asks for it.
+    pub(crate) devtools: ide_flutter::DevToolsServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -104,6 +106,9 @@ impl Host {
         {
             return Ok(current);
         }
+        // A window takes the root over from the MCP server's background project, whose
+        // shutdown the wait below sits out; none opens until this open is over.
+        let _claim = (!crate::mcp::BackgroundProjects::is_key(window)).then(|| self.mcp_background.claim(self, &root));
         self.close_project(window);
         self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
@@ -202,6 +207,7 @@ impl Host {
                     };
                     let profiles = ide_build::maven_profiles(&cache);
                     ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
+                    ide_sdk::maven_profiles::configure_offline(cfg, ide_build::maven_offline(&cache));
                 }
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
@@ -609,6 +615,7 @@ impl Host {
             plugin_diagnostics,
             trusted,
             flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(root.clone()),
             root,
             sink,
             languages,
@@ -736,6 +743,19 @@ impl Host {
         let approvals = self.mcp_approvals.clone();
         let secrets = self.agent_secrets.clone();
         let root = root.to_path_buf();
+        // The skill policies sessions resolve against: both settings layers and the
+        // workspace's trust as it stands when a session starts.
+        let skill_settings = settings.clone();
+        let skill_root = root.clone();
+        let trust = self.trust.clone();
+        agents.set_skills_policy_hook(Box::new(move || {
+            let layer = |scope| skill_settings.layer(scope).agents.skills.clone();
+            ide_agent::SkillsPolicy {
+                user: layer(ide_workspace::settings::SettingsScope::Global),
+                workspace: layer(ide_workspace::settings::SettingsScope::Project),
+                workspace_trusted: trust.trusted(&skill_root).unwrap_or(false),
+            }
+        }));
         agents.set_mcp_servers_hook(Box::new(move || {
             crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));
@@ -822,6 +842,7 @@ impl Host {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
             flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(dir.clone()),
             sink,
             languages,
             settings,

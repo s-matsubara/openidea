@@ -8,7 +8,6 @@ use objc2::{
     runtime::{AnyClass, AnyObject, Imp, Sel},
 };
 use objc2_app_kit::{NSWindow, NSWindowUserTabbingPreference};
-use std::panic::AssertUnwindSafe;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
@@ -85,38 +84,34 @@ fn same_group(a: &NSWindow, b: &NSWindow) -> bool {
 }
 
 /// Adds `members` to the existing anchor's native tab group and shows `selected`.
-pub fn sync_tab_group(members: Vec<WebviewWindow>, anchor: &WebviewWindow, selected: &WebviewWindow) -> IdeResult<()> {
+pub fn sync_tab_group(
+    members: Vec<WebviewWindow>,
+    anchor: &WebviewWindow,
+    selected: &WebviewWindow,
+) -> tauri::Result<()> {
     let anchor = anchor.clone();
     let target = selected.clone();
     on_main(selected, move || {
-        let shown = native(&target).ok_or_else(|| IdeError::not_found("Window closed"))?;
-        let anchor_window = native(&anchor).ok_or_else(|| IdeError::not_found("Window closed"))?;
-        // AppKit can reject tab changes after a failed fullscreen transition.
-        objc2::exception::catch(AssertUnwindSafe(|| {
-            // Joining into a new tab's desktop window would take the existing group out of full screen.
-            for member in members.iter().filter(|m| m.label() != anchor.label()) {
-                if let Some(window) = native(member)
-                    && !same_group(anchor_window, window)
-                {
-                    anchor_window.addTabbedWindow_ordered(window, objc2_app_kit::NSWindowOrderingMode::Above);
-                }
+        let Some(shown) = native(&target) else { return };
+        let Some(anchor_window) = native(&anchor) else { return };
+        // Joining into a new tab's desktop window would take the existing group out of full screen.
+        for member in members.iter().filter(|m| m.label() != anchor.label()) {
+            if let Some(window) = native(member)
+                && !same_group(anchor_window, window)
+            {
+                anchor_window.addTabbedWindow_ordered(window, objc2_app_kit::NSWindowOrderingMode::Above);
             }
-            if let Some(group) = shown.tabGroup() {
-                group.setSelectedWindow(Some(shown));
+        }
+        if let Some(group) = shown.tabGroup() {
+            group.setSelectedWindow(Some(shown));
+        }
+        shown.makeKeyAndOrderFront(None);
+        for member in &members {
+            if let Some(window) = native(member) {
+                hide_tab_bar(window);
             }
-            shown.makeKeyAndOrderFront(None);
-            for member in &members {
-                if let Some(window) = native(member) {
-                    hide_tab_bar(window);
-                }
-            }
-        }))
-        .map_err(|exception| {
-            tracing::warn!(?exception, "AppKit rejected a project tab change");
-            IdeError::internal("Could not present the project tab")
-        })
+        }
     })
-    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Takes `window` out of its tab group into a window of its own; in full screen, a Space of its own.

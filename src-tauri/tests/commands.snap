@@ -6,7 +6,10 @@ agent_archive                                always             project_host bin
 agent_base_text                              trusted            project_host bindings async
 agent_cancel                                 always             project_host bindings sync
 agent_changes                                trusted            project_host bindings async
+agent_cli_update                             trusted            project_host bindings async
+agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
+agent_context_usage                          trusted            project_host bindings async
 agent_create                                 trusted            project_host bindings async
 agent_custom_import                          trusted            desktop      bindings sync
 agent_custom_remove                          trusted            desktop      bindings sync
@@ -16,6 +19,7 @@ agent_entries                                always             project_host bin
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
+agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
 agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync
@@ -42,11 +46,15 @@ agent_set_command                            trusted            project_host bin
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
 agent_set_mcp_overrides                      always             project_host bindings sync
+agent_set_skill_overrides                    always             project_host bindings sync
 agent_shell                                  trusted            project_host bindings async
+agent_skills_list                            always             project_host bindings async
+agent_skills_set_mode                        always             project_host bindings sync
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync
 agent_unqueue                                always             project_host bindings sync
+agent_unsubscribe                            always             project_host bindings sync
 analysis_locate_duplicates                   always             project_host bindings async
 android_devices                              trusted            desktop      bindings async
 android_logcat                               trusted            desktop      bindings async
@@ -103,6 +111,7 @@ db_disconnect                                trusted            project_host bin
 db_drop_database                             trusted            project_host bindings async
 db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
+db_execute_stream                            trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
 db_finish_transaction                        trusted            project_host bindings async
@@ -168,6 +177,7 @@ debug_jvm_memory_referrers                   trusted            project_host bin
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
+debug_resolve_variable                       trusted            project_host bindings async
 debug_restart_frame                          trusted            project_host bindings async
 debug_resume                                 trusted            project_host bindings async
 debug_run_to                                 trusted            project_host bindings async
@@ -177,6 +187,7 @@ debug_sessions                               always             project_host bin
 debug_set_breakpoints                        trusted            project_host bindings async
 debug_set_data_breakpoints                   trusted            project_host bindings async
 debug_set_exception_breakpoints              trusted            project_host bindings async
+debug_set_exception_class_breakpoints        trusted            project_host bindings async
 debug_set_function_breakpoints               trusted            project_host bindings async
 debug_set_variable                           trusted            project_host bindings async
 debug_stack_trace                            trusted            project_host bindings async
@@ -205,6 +216,7 @@ diff_external_tool                           always             desktop      bin
 doc_autosave                                 always             project_host bindings async
 doc_close                                    always             project_host bindings async
 doc_edit                                     always             project_host bindings async
+doc_flutter_outline                          always             project_host bindings async
 doc_folding                                  always             project_host bindings async
 doc_highlights                               always             project_host bindings async
 doc_language                                 always             project_host bindings async
@@ -213,6 +225,7 @@ doc_open_untitled                            always             project_host bin
 doc_open_virtual                             always             project_host bindings async
 doc_outline                                  always             project_host bindings async
 doc_python_facts                             always             project_host bindings async
+doc_reload_from_disk                         always             project_host bindings async
 doc_save                                     always             project_host bindings async
 doc_save_all                                 always             project_host bindings async
 doc_save_as                                  always             project_host bindings async
@@ -226,6 +239,7 @@ docker_compose_op                            trusted            desktop      bin
 docker_container_op                          trusted            desktop      bindings async
 docker_container_stats                       trusted            desktop      bindings async
 docker_container_top                         trusted            desktop      bindings async
+docker_disconnect                            always             desktop      bindings async
 docker_events                                trusted            desktop      bindings async
 docker_image_history                         trusted            desktop      bindings async
 docker_inspect                               trusted            desktop      bindings async
@@ -250,6 +264,7 @@ find_symbols_named                           always             project_host bin
 flutter_daemon_restart                       trusted            project_host bindings sync
 flutter_devices                              trusted            project_host bindings sync
 flutter_devices_refresh                      trusted            project_host bindings sync
+flutter_devtools_url                         trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -371,7 +386,9 @@ maven_dependency_completion                  trusted            project_host bin
 maven_dependency_declaration                 trusted            project_host bindings async
 maven_exclude_dependency                     trusted            project_host bindings async
 maven_goto_declaration                       trusted            project_host bindings async
+maven_managed_declarations                   trusted            project_host bindings async
 mcp_agent_run_closed                         trusted            project_host bindings sync
+mcp_background_projects                      always             project_host bindings sync
 mcp_regenerate_token                         outside_restricted project_host bindings sync
 mcp_report_problems                          trusted            project_host bindings sync
 mcp_respond                                  trusted            project_host bindings sync
@@ -379,6 +396,7 @@ mcp_server_status                            outside_restricted project_host bin
 mcp_set_focused_editor                       trusted            project_host bindings sync
 mcp_set_open_editors                         trusted            project_host bindings sync
 mcp_ui_ready                                 trusted            project_host bindings sync
+mcp_unload_background_project                always             project_host bindings async
 menu_configure                               always             desktop      bindings sync
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync
@@ -503,6 +521,7 @@ remote_current                               always             desktop      bin
 remote_delete                                trusted            project_host bindings async
 remote_disconnect                            always             desktop      bindings sync
 remote_download_into                         trusted            project_host bindings async
+remote_download_local                        trusted            desktop      bindings async
 remote_forward_port                          trusted            desktop      bindings async
 remote_forwarded_ports                       trusted            desktop      bindings sync
 remote_import_local                          trusted            desktop      bindings async
@@ -563,7 +582,7 @@ sdk_php_language_level                       trusted            project_host bin
 sdk_php_xdebug                               trusted            project_host bindings async
 sdk_project_libraries                        trusted            project_host bindings async
 sdk_python_create_venv                       outside_restricted project_host bindings async
-sdk_python_effective                         trusted            project_host bindings sync
+sdk_python_effective                         trusted            project_host bindings async
 sdk_python_interpreter                       outside_restricted project_host bindings async
 sdk_python_packages                          outside_restricted project_host bindings async
 sdk_python_pip                               outside_restricted project_host bindings async
@@ -731,6 +750,7 @@ vcs_tags                                     always             project_host bin
 vcs_undo_commit                              trusted            project_host bindings async
 vcs_unshelve                                 trusted            project_host bindings async
 vcs_unstage                                  trusted            project_host bindings async
+vcs_update_branches                          trusted            project_host bindings async
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
@@ -742,12 +762,14 @@ web_url                                      always             project_host bin
 window_close_context                         always             desktop      bindings sync
 window_complete_launch                       always             desktop      bindings sync
 window_cycle                                 always             desktop      bindings sync
+window_drag_files                            always             desktop      bindings async
 window_flash_taskbar                         always             desktop      bindings sync
 window_group_cancel_close                    always             desktop      bindings sync
 window_group_close                           always             desktop      bindings sync
 window_group_close_tabs                      always             desktop      bindings sync
 window_group_current                         always             desktop      bindings sync
 window_group_detach                          always             desktop      bindings async
+window_group_join                            always             desktop      bindings async
 window_group_merge                           always             desktop      bindings async
 window_group_reorder                         always             desktop      bindings async
 window_group_restore                         always             desktop      bindings async

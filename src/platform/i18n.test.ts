@@ -81,6 +81,12 @@ describe("t / locales", () => {
   it("resolves locale tags", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
+    expect(resolveLocale("zh-Hans-HK")).toBe("zh");
+    expect(resolveLocale("zh-TW")).toBe("zh-TW");
+    expect(resolveLocale("zh_tw")).toBe("zh-TW");
+    expect(resolveLocale("zh-HK")).toBe("zh-TW");
+    expect(resolveLocale("zh-Hant")).toBe("zh-TW");
+    expect(resolveLocale("zh-Hant-TW")).toBe("zh-TW");
     expect(resolveLocale("ko-KR")).toBe("ko");
     expect(resolveLocale("pt-BR")).toBe("pt");
     expect(resolveLocale("pt_PT")).toBe("pt");
@@ -88,6 +94,7 @@ describe("t / locales", () => {
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
     expect(resolveLocale("pl_PL")).toBe("pl");
+    expect(resolveLocale("tr-TR")).toBe("tr");
     expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("es-MX")).toBe("es");
     expect(resolveLocale("es_MX")).toBe("es");
@@ -111,6 +118,8 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
+    await setLocale("zh-Hant-TW");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 個快速鍵");
     await setLocale("pt-BR");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
@@ -220,6 +229,13 @@ describe("t / locales", () => {
     expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
   });
 
+  it("loads the Turkish catalogs", async () => {
+    await setLocale("tr-TR");
+    expect(useI18n.getState().locale).toBe("tr");
+    expect(t("common.cancel")).toBe("İptal");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 kısayol");
+  });
+
   it("loads the Spanish catalogs", async () => {
     await setLocale("es-MX");
     expect(useI18n.getState().locale).toBe("es");
@@ -255,12 +271,14 @@ describe("catalogs", () => {
   const OWN_SCRIPT = new Set(["zh", "ko"]);
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
+    "Flutter DevTools",
     "4096 MB",
     "6144 MB",
     "8192 MB",
     "12288 MB",
     "16384 MB",
     "Docker",
+    "URL",
     "Code Vision",
     "JUnit",
     "⌘Enter",
@@ -276,6 +294,10 @@ describe("catalogs", () => {
     "Go",
     "Rust",
     "Kotlin",
+    "Claude Code",
+    "GitHub Copilot",
+    "Codex",
+    "Cursor",
     "PHP",
     "SQL",
     "COPY",

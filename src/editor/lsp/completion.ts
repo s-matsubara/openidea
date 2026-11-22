@@ -25,7 +25,16 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
+import {
+  EditorView,
+  ViewPlugin,
+  getTooltip,
+  keymap,
+  repositionTooltips,
+  showTooltip,
+  type Rect,
+  type ViewUpdate,
+} from "@codemirror/view";
 import {
   call,
   commands,
@@ -59,6 +68,8 @@ import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
 import { languageSemantics } from "./semantic";
 import { remoteChange } from "@/editor/api";
+import { tooltipBounds } from "@/editor/core/cm/setup";
+import { completionLabelOffset } from "./theme";
 
 interface RequestContext {
   doc: number;
@@ -451,6 +462,8 @@ async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: nu
 interface ServerInsert {
   at: number;
   others: readonly number[];
+  /** The item is a call that takes arguments: the caret goes inside an inserted `()`. */
+  inside?: boolean;
 }
 const awaitServerInsert = StateEffect.define<ServerInsert | null>();
 const serverInsertAt = StateField.define<ServerInsert | null>({
@@ -459,7 +472,11 @@ const serverInsertAt = StateField.define<ServerInsert | null>({
     for (const e of tr.effects) if (e.is(awaitServerInsert)) return e.value;
     // The edit landed, or the caret moved on before it did.
     if (value === null || tr.annotation(remoteChange) || tr.selection) return null;
-    return { at: tr.changes.mapPos(value.at, -1), others: value.others.map((p) => tr.changes.mapPos(p, -1)) };
+    return {
+      at: tr.changes.mapPos(value.at, -1),
+      others: value.others.map((p) => tr.changes.mapPos(p, -1)),
+      inside: value.inside,
+    };
   },
 });
 
@@ -530,7 +547,9 @@ const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
     if (tr.changes.touchesRange(from, to)) continue;
     others.push({ from: tr.changes.mapPos(from, 1), to: tr.changes.mapPos(to, -1) });
   }
-  const selection = EditorSelection.cursor(mainAfter);
+  const inside =
+    pending.inside && /\(\)$/.test(landed.insert) && tr.newDoc.sliceString(mainAfter - 2, mainAfter) === "()";
+  const selection = EditorSelection.cursor(inside ? mainAfter - 1 : mainAfter);
   if (!others.length) return [tr, { selection, sequential: true }];
   // Not part of this transaction: a remote one is not sent back to the document model.
   const changes = others
@@ -541,6 +560,12 @@ const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
 
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
+
+/** A function or method whose signature lists parameters (`(name: String)`), as far as the item tells. */
+function takesArguments(item: Pick<CompletionItem, "kind" | "labelDetail" | "detail">): boolean {
+  if (item.kind && !CALLABLE.has(item.kind)) return false;
+  return /^\s*\(\s*[^)\s]/.test(item.labelDetail ?? item.detail ?? "");
+}
 
 /** kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing goes in here. */
 function serverInserts(item: CompletionItem): boolean {
@@ -553,7 +578,10 @@ function runCommand(view: EditorView, item: CompletionItem, others: readonly num
   if (!command?.command) return;
   const cmd = command.command;
   const serverInserted = serverInserts(item);
-  if (serverInserted) view.dispatch({ effects: awaitServerInsert.of({ at: view.state.selection.main.head, others }) });
+  if (serverInserted)
+    view.dispatch({
+      effects: awaitServerInsert.of({ at: view.state.selection.main.head, others, inside: takesArguments(item) }),
+    });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
@@ -983,36 +1011,48 @@ function sortToggle(view: EditorView): HTMLElement {
   return button;
 }
 
-/** IDEA's advertiser bar under the list (one tip: "Press ↵ to insert, ⇥ to replace") and its Sort by Name toggle. */
-const completionFooter = ViewPlugin.fromClass(
+const completionPopup = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
-      if (completionStatus(u.state) !== "active") return;
+      // The lookup can show partial results while another source is still pending.
+      const popup = u.state
+        .facet(showTooltip)
+        .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
+        .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
+      if (!popup) return;
+      popup.offset ??= { x: -completionLabelOffset, y: 0 };
+      const t = popup.dom;
       this.view.requestMeasure({
-        read: () => null,
-        write: () => {
-          const scope = this.view.dom.ownerDocument;
-          const tooltips = [
-            ...this.view.dom.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-            ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-          ];
-          for (const t of tooltips) {
-            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
-            if (footer) {
-              // CodeMirror rebuilds the option list by appending a fresh <ul>,
-              // which would leave an existing footer above the list.
-              const list = t.querySelector(":scope > ul");
-              if (list && list.nextElementSibling !== footer) list.after(footer);
-              continue;
-            }
+        key: this,
+        read: () => {
+          const { left, right } = tooltipBounds(this.view);
+          return {
+            width: `${Math.max(0, Math.floor(right - left))}px`,
+            fontSize: getComputedStyle(this.view.contentDOM).fontSize,
+          };
+        },
+        write: ({ width, fontSize }) => {
+          if (!t.isConnected) return;
+          const widthChanged = t.style.getPropertyValue("--cm-completion-max-width") !== width;
+          if (widthChanged) t.style.setProperty("--cm-completion-max-width", width);
+          // The body-level tooltip does not inherit the editor's temporary font zoom.
+          const fontChanged = t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize;
+          if (fontChanged) t.style.setProperty("--openidea-editor-font-size", fontSize);
+          let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+          if (!footer) {
             footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
             footer.append(tip, sortToggle(this.view));
-            t.appendChild(footer);
           }
+          // CodeMirror appends a fresh list when the candidates change.
+          const list = t.querySelector(":scope > ul");
+          const footerMoved = list && list.nextElementSibling !== footer;
+          if (footerMoved) list.after(footer);
+          // CodeMirror has already measured the lookup. Reposition it before this frame paints.
+          if (widthChanged || fontChanged || footerMoved) repositionTooltips(this.view);
         },
       });
     }
@@ -1067,7 +1107,7 @@ export function completionExtension() {
       tooltipClass: () => "cm-lsp-completion",
       positionInfo: positionCompletionInfo,
     }),
-    completionFooter,
+    completionPopup,
     lookupTracker,
     serverInsertAt,
     caretAfterServerInsert,

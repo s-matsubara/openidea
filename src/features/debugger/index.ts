@@ -18,9 +18,11 @@ import {
   useDebugRunSessions,
 } from "@/workbench/contributions";
 import { registerDebugActions } from "./actions";
+import { registerDevToolsWindows } from "./flutter/devTools";
 import { registerDebugTabActions } from "./tabActions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadExceptionClasses } from "./breakpoints/exceptionClasses";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
 import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
@@ -78,18 +80,21 @@ function useLiveSessionCount(): number | null {
 export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
+    View: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugServiceView)),
   });
   loadWatches(useProject.getState().project?.root ?? null);
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
+  loadExceptionClasses(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   loadJsBreakpoints(useProject.getState().project?.root ?? null);
   loadResponseOverrides(useProject.getState().project?.root ?? null);
   const disposers = [
-    () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
+    () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null, View: null }),
     registerDebugActions(),
     registerDebugTabActions(),
+    registerDevToolsWindows(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
     registerRunConfigType(jsBrowserType),
@@ -177,6 +182,7 @@ export function activate(): () => void {
         loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
+        loadExceptionClasses(root);
         loadSpecialBreakpoints(root);
         loadJsBreakpoints(root);
         loadResponseOverrides(root);

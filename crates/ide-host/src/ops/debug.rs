@@ -32,7 +32,12 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
-    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let java_exec = java_exec_path(&config);
+    let agents = if is_jvm_launch(&config) {
+        ide_run::java_agent::current_for(java_exec.as_deref())
+    } else {
+        Default::default()
+    };
     let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
@@ -124,7 +129,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     };
     host.require_trust(window)?;
     let server_port = debug_server_port(&config);
-    let result = host.debugger.start_with(config, owner, custom).await;
+    let exception_classes = server_port.and_then(|port| exception_class_backend(host, window, port));
+    let result = host.debugger.start_with_exception_classes(config, owner, custom, exception_classes).await;
     flush_output();
     if let Ok(id) = &result {
         let sink = host.window_sink(label);
@@ -203,12 +209,30 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
     }
 }
 
+/// Given before the session starts, unlike the inspector: the breakpoints are armed before
+/// `configurationDone`, so a throw in `main`'s first line stops.
+fn exception_class_backend(
+    host: &Host,
+    window: &str,
+    port: u16,
+) -> Option<std::sync::Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>> {
+    let project = host.project(window).ok()?;
+    let module = project.lsp.java_debug_server_module(port)?;
+    Some(std::sync::Arc::new(ide_lsp::JdtExceptionBreakpoints::new(project.lsp.clone(), module)))
+}
+
 /// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
 /// java-debug, java-analyzer or the Kotlin debugger (JAR Application debugs through a run with a
 /// JDWP agent).
 fn is_jvm_launch(config: &LaunchConfig) -> bool {
     config.request == "launch"
         && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER | ide_dap::adapter::JAVA_ANALYZER)
+}
+
+/// `javaExec` from the launch extras, for gating contributed `vmOptions` on JetBrains Runtime.
+fn java_exec_path(config: &LaunchConfig) -> Option<std::path::PathBuf> {
+    let extra: serde_json::Value = serde_json::from_str(config.extra_json.as_deref()?).ok()?;
+    extra.get("javaExec").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
@@ -332,6 +356,11 @@ pub async fn debug_variables(host: &Host, session: DebugSessionId, reference: i6
 }
 
 #[command(trust = trusted)]
+pub async fn debug_resolve_variable(host: &Host, session: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+    host.debugger.resolve_variable(session, variable).await
+}
+
+#[command(trust = trusted)]
 pub async fn debug_evaluate(
     host: &Host,
     session: DebugSessionId,
@@ -435,6 +464,16 @@ pub async fn debug_set_exception_breakpoints(
     choices: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<()> {
     host.debugger.set_exception_breakpoints(choices).await
+}
+
+/// Exception breakpoints on chosen classes (all sessions that take them, and later ones).
+#[command(trust = trusted)]
+pub async fn debug_set_exception_class_breakpoints(
+    host: &Host,
+    breakpoints: Vec<ExceptionClassBreakpoint>,
+) -> IdeResult<()> {
+    host.debugger.set_exception_class_breakpoints(breakpoints).await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -823,6 +862,7 @@ ide_command::domain!(
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,
+    debug_resolve_variable,
     debug_restart_frame,
     debug_resume,
     debug_run_to,
@@ -832,6 +872,7 @@ ide_command::domain!(
     debug_set_breakpoints,
     debug_set_data_breakpoints,
     debug_set_exception_breakpoints,
+    debug_set_exception_class_breakpoints,
     debug_set_function_breakpoints,
     debug_set_variable,
     debug_stack_trace,

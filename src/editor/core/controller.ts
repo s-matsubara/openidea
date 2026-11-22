@@ -47,12 +47,14 @@ import { useDistractionFree } from "@/workbench/distractionFree";
 import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask, confirm } from "@/workbench/messages";
 import { t, tx } from "@/platform/i18n";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
+import { hoverActionsAt } from "@/platform/hoverActions";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
@@ -113,6 +115,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
+import { selectedLineContext } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -465,6 +468,8 @@ export class EditorController implements SlotHost {
     if (prevRoot) this.projectTransition = this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
+    if (this.manager.backend.onDiskConflict)
+      this.disposers.push(this.manager.backend.onDiskConflict((e) => this.onDiskConflict(e.path)));
     const onWindowBlur = () => {
       if (this.autoSave() && !this.closeSession) {
         void this.manager.saveAll("auto");
@@ -660,6 +665,8 @@ export class EditorController implements SlotHost {
 
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
   async restoreSession(root: string) {
+    // The project window owns the saved layout; a lightweight window shows what it was opened for.
+    if (auxiliaryWindow()) return;
     this.sessionRoot = root;
     // A window close dropped this session: the next open starts from the tabs opened now.
     if (this.forgottenSessions.delete(root)) return;
@@ -735,7 +742,7 @@ export class EditorController implements SlotHost {
         return this.slots.get(tabId) ?? this.createSlot(tabId, m, init);
       })
       .catch((e: unknown) => {
-        if (this.restoredTabs.has(tabId) && (e as { kind?: string } | null)?.kind === "notFound") {
+        if (this.restoredTabs.has(tabId) && isErrorKind(e, "notFound")) {
           // A file from the saved session no longer exists: drop its tab quietly.
           this.restoredTabs.delete(tabId);
           this.restoredViews.delete(path);
@@ -864,8 +871,23 @@ export class EditorController implements SlotHost {
     if (pos !== null && !view.state.selection.ranges.some((r) => r.from <= pos && pos <= r.to))
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
+    const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+    const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
+      label: action.label,
+      verbatim: true,
+      icon: "run",
+      run: () =>
+        void call(
+          commands.lspExecuteCommand(slot.model.doc, {
+            title: action.tooltip ?? action.label,
+            command: `openidea.plugin-language:${plugin}:${action.command}`,
+            arguments: [JSON.stringify(action.argument)],
+          }),
+        ).catch(console.warn),
+    }));
     const items: MenuItem[] = [
       { kind: "action", action: "code.showIntentions", label: "Show Context Actions", icon: "bulb" },
+      ...(hoverItems.length ? ([{ kind: "separator" }, ...hoverItems] as MenuItem[]) : []),
       { kind: "separator" },
       // Like IDEA, Cut / Copy only with a selection.
       ...((hasSel
@@ -973,7 +995,7 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path, view.state.doc.lineAt(view.state.selection.main.head).number - 1),
+            openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
@@ -1749,6 +1771,39 @@ export class EditorController implements SlotHost {
     });
   }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
+  /**
+   * A file changed on disk while its buffer had unsaved changes: the buffer keeps them (autosave
+   * leaves the file alone) until the user loads the disk version or saves over it.
+   */
+  private onDiskConflict(path: string) {
+    const key = `disk-conflict:${path}`;
+    notifications().notify({
+      level: "warning",
+      key,
+      sticky: true,
+      title: tx`${basename(path)} changed on disk`,
+      body: tx(
+        "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+      ),
+      actions: [
+        {
+          label: tx("Load Changes from Disk"),
+          run: () => {
+            const doc = this.manager.get(path)?.getMeta().doc;
+            if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
+            this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
+              notifications().notify({
+                level: "error",
+                title: tx("Cannot reload from disk"),
+                body: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          },
+        },
+        { label: tx("Keep Editor Changes"), run: () => {} },
+      ],
+    });
+  }
   async reloadFromDisk(paths: string[]) {
     for (const path of paths) {
       const model = this.manager.get(path);
@@ -1862,6 +1917,8 @@ export class EditorController implements SlotHost {
   /** Open a lightweight aux editor (or a full window outside the project), then remove the original tab. */
   async detachTab(paneId: string, tabId: string): Promise<boolean> {
     const tab = useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId);
+    const moves = tab && useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow;
+    if (moves) return moves(tab.input);
     const path = tab?.input.path;
     if (
       !tab ||
@@ -1929,6 +1986,11 @@ export class EditorController implements SlotHost {
         }
       },
     });
+  }
+  /** Shows `input` in a lightweight window of this project; resolves to the window's label once it is shown. */
+  openInWindow(input: EditorInput): Promise<string> {
+    if (!isTauri() || isRemoteWindow()) return Promise.reject(new Error(t("app.window.desktopOnly")));
+    return openLightweightEditor({ input: JSON.stringify(input) }, windowBackgroundHex(), input.key);
   }
   /** IDEA "Open in Opposite Group": the tab stays and a copy opens next door (or in a new split). */
   openInOpposite(paneId: string, tabId: string) {
@@ -2243,8 +2305,9 @@ export class EditorController implements SlotHost {
             { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
           ] as MenuItem[])
         : []),
-      ...(tab.input.path &&
-      (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds))
+      ...(useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow ||
+      (tab.input.path &&
+        (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds)))
         ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
         : []),
       { kind: "separator" },
@@ -2290,7 +2353,7 @@ export class EditorController implements SlotHost {
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
-function openInMenu(path: string, line?: number): MenuItem {
+function openInMenu(path: string, lines?: { line: number; endLine?: number }): MenuItem {
   return {
     label: "Open In",
     submenu: [
@@ -2310,7 +2373,7 @@ function openInMenu(path: string, line?: number): MenuItem {
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path], line }),
+      ...menuGroupItems("openIn", { paths: [path], ...lines }),
     ],
   };
 }

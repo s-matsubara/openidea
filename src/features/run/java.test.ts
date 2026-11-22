@@ -261,7 +261,12 @@ describe("application configurations", () => {
   });
 
   it("scopes Maven and Gradle test configs to a class or method", () => {
-    const file = cfg({ id: "f", kind: "maven", args: ["test", "-Dtest=OrderTest"], isTest: true });
+    const file = cfg({
+      id: "f",
+      kind: "maven",
+      args: ["test", "-Dtest=OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      isTest: true,
+    });
     expect(jvmTestConfig(file, "a.OrderTest$Nested", "fails")).toMatchObject({
       name: "Nested.fails",
       args: ["test", "-Dtest=a.OrderTest$Nested#fails", "-Dsurefire.failIfNoSpecifiedTests=false"],
@@ -666,6 +671,52 @@ describe("temporary configurations", () => {
     expect(buildRows(configs, "x", app, temporary)[0]?.type).not.toBe("save");
     // Not a desktop app in tests: saving fails at the IPC layer but the config stops being temporary.
     await saveTemporary(app.id).catch(() => undefined);
+    expect(useRun.getState().temporary).toEqual([]);
+  });
+
+  it("reuse the detected configuration of the same Maven goal instead of adding a temporary one", () => {
+    const detected = cfg({ id: "maven:package", kind: "maven", name: "mvn package", args: ["package"] });
+    useRun.setState({ configs: [detected] });
+    const goal = cfg({
+      id: "maven:goal:pom.xml:package",
+      kind: "maven",
+      name: "demo [package]",
+      args: ["package"],
+      detected: false,
+    });
+    expect(adoptTemporary(goal)).toBe(detected);
+    expect(useRun.getState().temporary).toEqual([]);
+    expect(useRun.getState().selectedId).toBe(detected.id);
+  });
+
+  it("reuse a Maven goal configuration with the same command line, but not across goals, flags, builds or tools", () => {
+    const detected = cfg({ id: "maven:package", kind: "maven", name: "mvn package", args: ["package"] });
+    useRun.setState({ configs: [detected] });
+    const goal = (over: Partial<RunConfig>): RunConfig =>
+      cfg({ id: "maven:goal:pom.xml:package", kind: "maven", args: ["package"], detected: false, ...over });
+    expect(adoptTemporary(goal({}))).toBe(detected);
+    expect(
+      adoptTemporary(goal({ id: "maven:goal:pom.xml:package.skipTests", args: ["package", "-DskipTests"] })).id,
+    ).toBe("maven:goal:pom.xml:package.skipTests");
+    expect(adoptTemporary(goal({ id: "maven:goal:pom.xml:clean", args: ["clean"] })).id).toBe(
+      "maven:goal:pom.xml:clean",
+    );
+    expect(adoptTemporary(goal({ id: "maven:goal:core/pom.xml:package", args: ["package"], cwd: "core" })).id).toBe(
+      "maven:goal:core/pom.xml:package",
+    );
+    expect(adoptTemporary(goal({ id: "gradle:task:...:package", kind: "gradle", command: "gradle" })).id).toBe(
+      "gradle:task:...:package",
+    );
+    const { configs, temporary } = useRun.getState();
+    expect(temporary).toHaveLength(4);
+    expect(configs.filter((c) => !temporary.includes(c.id))).toEqual([detected]);
+  });
+
+  it("reuse the detected configuration of the same Gradle tasks", () => {
+    const detected = cfg({ id: "gradle:test", kind: "gradle", name: "gradle test", args: ["test"], isTest: true });
+    useRun.setState({ configs: [detected] });
+    const task = cfg({ id: "gradle:task:...:test", kind: "gradle", args: ["test"], detected: false });
+    expect(adoptTemporary(task)).toBe(detected);
     expect(useRun.getState().temporary).toEqual([]);
   });
 });

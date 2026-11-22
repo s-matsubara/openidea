@@ -182,6 +182,18 @@ describe("New Task composer commands", () => {
     expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
   });
 
+  it("opens the per-session skills picker when /skills is completed in the composer", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "/sk");
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/skills");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("");
+    expect(await screen.findByText("Session Skills")).toBeInTheDocument();
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;
@@ -298,6 +310,24 @@ describe("New Task composer commands", () => {
     await screen.findByRole("listbox", { name: "Commands" });
     fireEvent.keyDown(box, { key: "Enter" });
     expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
+  });
+
+  it("completes a `!` command from earlier ones with Tab and runs it with Enter", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    useAgents.setState({ history: ["!git status", "fix it"] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    typeIn(box, "!gi");
+    expect(await screen.findByRole("option")).toHaveTextContent("git status");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(textOf(box)).toBe("!git status");
+
+    typeIn(box, "!gi");
+    await screen.findByRole("option");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(agentCreate).toHaveBeenCalled());
+    expect(agentCreate.mock.calls[0]![0]).toMatchObject({ idle: true, prompt: { text: "!gi" } });
   });
 });
 

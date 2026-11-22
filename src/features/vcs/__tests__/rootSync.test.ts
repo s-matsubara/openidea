@@ -56,25 +56,22 @@ const styleOf = (attr: string) => ({
   textDecoration: `var(--git-${attr}-effect, none)`,
 });
 
+const separator = { text: "/", color: COLORS.headTags, ...styleOf("head-tags") };
+const clean = { text: "∅", label: "No local changes", color: COLORS.headTags, ...styleOf("head-tags") };
+
 describe("rootSyncSuffix", () => {
-  it("strikes out zero when the branch matches its upstream", () => {
+  it("shows the empty-set marker for a clean working tree", () => {
     expect(rootSyncSuffix(info("main", "origin/main"))).toEqual([
       { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
-      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
-      {
-        text: "0",
-        strike: true,
-        label: "Up to date with origin/main",
-        color: COLORS.headTags,
-        ...styleOf("head-tags"),
-      },
+      { ...separator, label: "Up to date with origin/main" },
+      clean,
     ]);
   });
 
-  it("shows outgoing then incoming commits with their icons", () => {
+  it("shows commit divergence before the working tree indicator", () => {
+    const head = { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") };
     expect(rootSyncSuffix(info("main", "origin/main", 1, 3))).toEqual([
-      { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
-      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
+      head,
       {
         text: "1",
         icon: "vcs-outgoing",
@@ -89,10 +86,11 @@ describe("rootSyncSuffix", () => {
         color: COLORS.changed,
         ...styleOf("branch-changed"),
       },
+      separator,
+      clean,
     ]);
-    expect(rootSyncSuffix(info("main", "origin/main", 0, 2))).toEqual([
-      { text: "main", color: COLORS.withRemote, ...styleOf("master-with-remote") },
-      { text: "/", color: COLORS.headTags, ...styleOf("head-tags") },
+    expect(rootSyncSuffix(info("main", "origin/main", 0, 2), 4)).toEqual([
+      head,
       {
         text: "2",
         icon: "vcs-incoming",
@@ -100,12 +98,16 @@ describe("rootSyncSuffix", () => {
         color: COLORS.changed,
         ...styleOf("branch-changed"),
       },
+      separator,
+      { text: "4 Δ", label: "4 changed files", color: "var(--vcs-modified)" },
     ]);
   });
 
-  it("shows only the branch without an upstream", () => {
+  it("shows the working tree indicator even without an upstream", () => {
     expect(rootSyncSuffix(info("feature", null))).toEqual([
       { text: "feature", color: COLORS.local, ...styleOf("local-branch") },
+      separator,
+      clean,
     ]);
   });
 
@@ -142,9 +144,11 @@ describe("installRootSync", () => {
   it("decorates every repository root when the setting is on", async () => {
     enable(true);
     dispose = installRootSync();
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("1"));
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[1]?.text).toBe("1"));
     expect(getFileDecoration("/p/lib")?.suffix).toEqual([
       { text: "dev", color: COLORS.local, ...styleOf("local-branch") },
+      separator,
+      clean,
     ]);
     expect(getFileDecoration("/p")?.suffixColor).toBe("var(--git-local-branch, var(--accent))");
     expect(ipc.branchInfo).toHaveBeenCalledWith("/p");
@@ -163,13 +167,13 @@ describe("installRootSync", () => {
   it("queries again after a change inside .git, such as a fetch, push or commit", async () => {
     enable(true);
     dispose = installRootSync();
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("1"));
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[1]?.text).toBe("1"));
     ipc.branchInfo.mockImplementation(async (root: string) => ({
       status: "ok",
       data: root === "/p" ? info("main", "origin/main", 1, 4) : info("dev", null),
     }));
     gitChanged();
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[3]?.text).toBe("4"));
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("4"));
   });
 
   it("does not query git when only the status refreshes or worktree files change", async () => {
@@ -196,15 +200,16 @@ describe("installRootSync", () => {
     });
     await vi.waitFor(() =>
       expect(getFileDecoration("/p")?.suffix?.at(-1)).toEqual({
-        text: "2",
-        icon: "edit",
+        text: "2 Δ",
         label: "2 changed files",
         color: "var(--vcs-modified)",
       }),
     );
-    expect(getFileDecoration("/p/lib")?.suffix?.map((s) => s.text)).toEqual(["dev", "1"]);
+    expect(getFileDecoration("/p/lib")?.suffix?.map((s) => s.text)).toEqual(["dev", "/", "1 Δ"]);
     useVcs.setState({ status: [] });
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1"]));
+    await vi.waitFor(() =>
+      expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "1", "/", "∅"]),
+    );
     expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
   });
 
@@ -239,8 +244,8 @@ describe("installRootSync", () => {
     expect(getFileDecoration(jjRoot.root)?.suffix?.map((s) => s.text)).toEqual(["2"]);
     expect(getFileDecoration("/p/jj/nested")?.suffix?.map((s) => s.text)).toEqual(["1"]);
     await vi.waitFor(() => {
-      expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1", "1"]);
-      expect(getFileDecoration("/p/jj/git")?.suffix?.map((s) => s.text)).toEqual(["dev", "1"]);
+      expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "1", "/", "1 Δ"]);
+      expect(getFileDecoration("/p/jj/git")?.suffix?.map((s) => s.text)).toEqual(["dev", "/", "1 Δ"]);
     });
     expect(ipc.branchInfo.mock.calls).toEqual([["/p"], ["/p/jj/git"]]);
     useVcs.setState({ jjRoots: [jjRoot] });
@@ -292,6 +297,8 @@ describe("installRootSync", () => {
     await vi.waitFor(() =>
       expect(getFileDecoration("/p/lib")?.suffix).toEqual([
         { text: "dev", color: COLORS.local, ...styleOf("local-branch") },
+        separator,
+        clean,
       ]),
     );
     expect(getFileDecoration("/p")?.suffix).toBeUndefined();
@@ -300,13 +307,13 @@ describe("installRootSync", () => {
   it("keeps a repository's previous suffix when a later read fails", async () => {
     enable(true);
     dispose = installRootSync();
-    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("1"));
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.[1]?.text).toBe("1"));
     ipc.branchInfo.mockImplementation(async (root: string) =>
       root === "/p" ? { status: "error", error: "index.lock" } : { status: "ok", data: info("dev", "origin/dev") },
     );
     gitChanged();
-    await vi.waitFor(() => expect(getFileDecoration("/p/lib")?.suffix?.[2]?.text).toBe("0"));
-    expect(getFileDecoration("/p")?.suffix?.[2]?.text).toBe("1");
+    await vi.waitFor(() => expect(getFileDecoration("/p/lib")?.suffix?.[2]?.text).toBe("∅"));
+    expect(getFileDecoration("/p")?.suffix?.[1]?.text).toBe("1");
   });
 
   it("runs one query round at a time and coalesces Git changes made meanwhile", async () => {
@@ -331,6 +338,8 @@ describe("installRootSync", () => {
     await vi.waitFor(() =>
       expect(getFileDecoration("/p")?.suffix).toEqual([
         { text: "main", color: COLORS.withoutRemote, ...styleOf("master-without-remote") },
+        separator,
+        clean,
       ]),
     );
     await settle();

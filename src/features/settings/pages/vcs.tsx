@@ -4,19 +4,32 @@
  * Behaviour lives in the vcs feature, which reads `vcs.*` through
  * `platform/workflowSettings`.
  */
-import { useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSettings";
+import { WORKFLOW_LIMITS, type IssueLinkValid, type VcsSettingsValid } from "@/platform/workflowSettings";
 import { showInFileManagerLabel } from "@/platform/fileManager";
-import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@/ui";
+import {
+  Button,
+  Icon,
+  IconButton,
+  Input,
+  Radio,
+  rowSelectionMode,
+  Select,
+  selectRow,
+  type SelectOption,
+  T,
+} from "@/ui";
 import { choosePath } from "@/platform/choosePath";
-import { Row, SettingSelect } from "../components/Form";
+import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import type { AgentModelCatalog, AgentProvider } from "@/bindings";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
+import { BoundToggle, Grid, Indented, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
+import gitStyles from "./GitSettings.module.css";
 import { tx } from "@/platform/i18n";
 import type { VcsRoot, DetectedVcsRoot } from "@/bindings";
 
@@ -63,130 +76,220 @@ function mappingPath(root: string, key: string): string {
 export function MappingsTable() {
   const project = useProject((s) => s.project);
   const root = project?.root ?? null;
-  const [excluded, setExcluded] = useSetting<string[]>("vcs.mappings.excluded", "project");
-  const [added, setAdded] = useSetting<string[]>("vcs.mappings.added", "project");
+  const [{ excluded, added }, setMappings] = useSetting<VcsSettingsValid["mappings"]>("vcs.mappings", "project");
   const [detectedState, setDetected] = useState<{ root: string; data: DetectedVcsRoot[] } | null>(null);
   const [rootsState, setRoots] = useState<{ root: string; data: VcsRoot[] } | null>(null);
   const detected = detectedState?.root === root ? detectedState.data : null;
   const roots = useMemo(() => (rootsState?.root === root ? rootsState.data : []), [rootsState, root]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ keys: ReadonlySet<string>; anchor: string | null }>(() => ({
+    keys: new Set(),
+    anchor: null,
+  }));
   useEffect(() => {
     if (!root || !isTauri()) return;
     let live = true;
-    call(commands.vcsRoots()).then(
-      (r) => live && setRoots({ root, data: r }),
-      () => undefined,
-    );
     call(commands.vcsDetectedRoots(added.map((key) => mappingPath(root, key)))).then(
       (roots) => live && setDetected({ root, data: roots }),
       () => live && setDetected({ root, data: [] }),
     );
+    const refreshRegistered = () =>
+      call(commands.vcsRoots()).then(
+        (roots) => live && setRoots({ root, data: roots }),
+        () => live && setRoots({ root, data: [] }),
+      );
+    void refreshRegistered();
+    const off = onIdeEvent("vcsChanged", (event) => {
+      if (event.root === root) void refreshRegistered();
+    });
     return () => {
       live = false;
+      off();
     };
   }, [root, added]);
 
   const rows = useMemo(() => {
     if (!root) return [];
-    const keys = new Set([...(detected ?? []).map((p) => mappingKey(root, p.root)), ...added]);
-    if (!keys.size) keys.add(".");
+    const detectedKeys = new Set((detected ?? []).map((path) => mappingKey(root, path.root)));
+    const registeredKeys = new Set(roots.map((path) => mappingKey(root, path.root)));
+    const keys = new Set([...detectedKeys, ...added, ...excluded]);
+    if (!keys.size && detected === null && project?.isGit) keys.add(".");
     return [...keys]
       .sort((a, b) => (a === "." ? -1 : b === "." ? 1 : a.localeCompare(b)))
-      .map((key) => {
-        const path = mappingPath(root, key);
-        const active = roots.find((r) => r.root === path);
-        const kind = detected?.find((r) => r.root === path)?.kind ?? active?.kind ?? "git";
-        return {
-          key,
-          path,
-          kind,
-          unavailableReason: active?.unavailableReason,
-          manual: added.includes(key),
-          vcs: (excluded.includes(key) || (!project?.isGit && key === "." && !detected?.length && !added.length)
-            ? "none"
-            : kind) as VcsChoice,
-        };
-      });
-  }, [root, detected, added, excluded, project?.isGit, roots]);
+      .map((key) => ({
+        key,
+        path: mappingPath(root, key),
+        detected: detectedKeys.has(key),
+        knownRoot: detectedKeys.has(key) || registeredKeys.has(key),
+        unregistered: excluded.includes(key),
+        kind:
+          detected?.find((r) => r.root === mappingPath(root, key))?.kind ??
+          roots.find((r) => r.root === mappingPath(root, key))?.kind ??
+          "git",
+        unavailableReason: roots.find((r) => r.root === mappingPath(root, key))?.unavailableReason,
+      }));
+  }, [root, detected, roots, added, excluded, project?.isGit]);
+
+  const activeRows = rows.filter((row) => !row.unregistered);
+  const unregisteredRows = rows.filter((row) => row.unregistered);
+  const displayedRows = [...activeRows, ...unregisteredRows];
+  const selected = displayedRows.filter((row) => selection.keys.has(row.key));
+  const selectedUnregistered = selected.filter((row) => row.unregistered);
+  const canAdd = !selectedUnregistered.length || selectedUnregistered.length === selected.length;
+  const canRemove = selected.length > 0 && !selectedUnregistered.length;
 
   const setVcs = (key: string, vcs: VcsChoice) =>
-    setExcluded(vcs === "none" ? [...excluded.filter((k) => k !== key), key] : excluded.filter((k) => k !== key));
+    setMappings({
+      added,
+      excluded: vcs === "none" ? [...new Set([...excluded, key])] : excluded.filter((k) => k !== key),
+    });
 
+  const register = (mappings: readonly { key: string; detected: boolean }[]) => {
+    const keys = new Set(mappings.map((row) => row.key));
+    setMappings({
+      added: [...new Set([...added, ...mappings.filter((row) => !row.detected).map((row) => row.key)])],
+      excluded: excluded.filter((entry) => !keys.has(entry)),
+    });
+  };
   const add = async () => {
-    if (!root) return;
+    if (!root || !canAdd) return;
+    if (selectedUnregistered.length) {
+      register(selectedUnregistered);
+      return;
+    }
     const picked = await choosePath({ directory: true, title: "Select Repository Root", defaultPath: root });
     if (!picked) return;
     const key = mappingKey(root, picked);
-    if (excluded.includes(key)) setExcluded(excluded.filter((k) => k !== key));
-    if (!rows.some((r) => r.key === key)) setAdded([...added, key]);
-    setSelected(key);
+    register([{ key, detected: rows.some((row) => row.key === key && row.detected) }]);
+    setSelection({ keys: new Set([key]), anchor: key });
   };
-  const removable = rows.find((r) => r.key === selected && r.manual);
   const remove = () => {
-    if (!removable) return;
-    setAdded(added.filter((k) => k !== removable.key));
-    setExcluded(excluded.filter((k) => k !== removable.key));
-    setSelected(null);
+    if (!canRemove) return;
+    const moved = selected.filter((row) => row.knownRoot).map((row) => row.key);
+    setMappings({
+      added: added.filter((key) => !selection.keys.has(key)),
+      excluded: [...excluded, ...moved],
+    });
+    setSelection({
+      keys: new Set(moved),
+      anchor: selection.anchor && moved.includes(selection.anchor) ? selection.anchor : (moved[0] ?? null),
+    });
   };
+  const revealRow = useCallback((row: HTMLTableRowElement | null) => {
+    row?.scrollIntoView({ block: "nearest" });
+  }, []);
 
   return (
-    <div className={styles.tableBox}>
+    <div className={clsx(styles.tableBox, styles.mappingsTable)}>
       {root && (
         <div className={styles.toolbar} role="toolbar" aria-label={tx("Directory mappings actions")}>
-          <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
-          <IconButton icon="minus" title="Remove" size="small" disabled={!removable} onClick={remove} />
+          <IconButton icon="plus" title="Add" size="small" disabled={!canAdd} onClick={() => void add()} />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!canRemove} onClick={remove} />
         </div>
       )}
-      <table className={styles.table} aria-label={tx("Directory mappings")}>
-        <thead>
-          <tr>
-            <th>
-              <T>Directory</T>
-            </th>
-            <th style={{ width: 120 }}>
-              <T>VCS</T>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {!root ? (
+      <div className={styles.mappingRows}>
+        <table className={styles.table} aria-label={tx("Directory mappings")}>
+          <colgroup>
+            <col />
+            <col className={styles.mappingVcsColumn} />
+          </colgroup>
+          <thead>
             <tr>
-              <td colSpan={2} className={styles.empty}>
-                <T>No project is open</T>
-              </td>
+              <th scope="col">
+                <T>Directory</T>
+              </th>
+              <th scope="col">
+                <T>VCS</T>
+              </th>
             </tr>
-          ) : (
-            rows.map((row) => {
-              const name = row.key === "." ? tx("<Project>") : row.key;
-              return (
-                <tr
-                  key={row.key}
-                  aria-selected={selected === row.key}
-                  className={clsx(selected === row.key && styles.selectedRow)}
-                  onMouseDown={() => setSelected(row.key)}
-                >
-                  <td title={row.path}>
-                    <Icon name="folder" size={16} className={styles.mappingIcon} />
-                    {name}
-                  </td>
-                  <td>
-                    <Select
-                      value={row.vcs}
-                      options={VCS_OPTIONS.filter((o) => o.value === "none" || o.value === row.kind)}
-                      variant="ghost"
-                      aria-label={tx`VCS of ${name}`}
-                      onChange={(v) => setVcs(row.key, v)}
-                    />
-                    {row.unavailableReason && <div role="status">{row.unavailableReason}</div>}
-                  </td>
-                </tr>
-              );
-            })
+          </thead>
+          <tbody>
+            {root ? (
+              activeRows.map(renderRow)
+            ) : (
+              <tr>
+                <td colSpan={2} className={styles.empty}>
+                  <T>No project is open</T>
+                </td>
+              </tr>
+            )}
+          </tbody>
+          {unregisteredRows.length > 0 && (
+            <tbody className={styles.unregisteredMappings} aria-label={tx("Unregistered roots")}>
+              <tr className={styles.mappingGroupHeader}>
+                <td colSpan={2}>
+                  <T>Unregistered roots</T>
+                </td>
+              </tr>
+              {unregisteredRows.map(renderRow)}
+            </tbody>
           )}
-        </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   );
+
+  function renderRow(row: (typeof rows)[number]) {
+    const directory = mappingKey(root!.replaceAll("\\", "/"), row.path.replaceAll("\\", "/"));
+    const name = directory === "." ? tx("<Project>") : directory;
+    const leaf = name.lastIndexOf("/") + 1;
+    const isSelected = selection.keys.has(row.key);
+    return (
+      <tr
+        key={row.key}
+        ref={isSelected && selection.anchor === row.key ? revealRow : undefined}
+        aria-selected={isSelected}
+        className={clsx(isSelected && styles.selectedRow)}
+        onClick={(event) => selectMapping(event, row)}
+      >
+        <td title={row.path}>
+          <span className={styles.mappingDirectory}>
+            <Icon name="folder" size={16} className={styles.mappingIcon} />
+            <span className={styles.mappingPath}>
+              {leaf > 0 && <span className={styles.mappingParent}>{name.slice(0, leaf)}</span>}
+              <span className={styles.mappingName}>{name.slice(leaf)}</span>
+            </span>
+          </span>
+        </td>
+        <td>
+          {row.unregistered ? (
+            <T>{row.kind === "jj" ? "Jujutsu (jj)" : "Git"}</T>
+          ) : (
+            <Select
+              value={row.kind}
+              options={VCS_OPTIONS.filter((o) => o.value === "none" || o.value === row.kind)}
+              variant="ghost"
+              className={styles.mappingSelect}
+              aria-label={tx`VCS of ${name}`}
+              onChange={(v) => setVcs(row.key, v)}
+            />
+          )}
+          {row.unavailableReason && <div role="status">{row.unavailableReason}</div>}
+        </td>
+      </tr>
+    );
+  }
+
+  function selectMapping(event: MouseEvent<HTMLTableRowElement>, row: (typeof rows)[number]) {
+    if (!event.currentTarget.contains(event.target as Node)) return;
+    const mode = rowSelectionMode(event);
+    setSelection(({ keys, anchor }) => {
+      if (mode === "toggle" && keys.size === 1 && keys.has(row.key)) {
+        return { keys: new Set(), anchor: null };
+      }
+      const index = displayedRows.indexOf(row);
+      const anchorIndex = displayedRows.findIndex((entry) => entry.key === anchor);
+      const next = selectRow(
+        displayedRows,
+        { keys, lead: anchorIndex, anchor: anchorIndex },
+        index,
+        anchorIndex < 0 ? "single" : mode,
+      );
+      return {
+        keys: next.keys ?? new Set([row.key]),
+        anchor: displayedRows[next.anchor]?.key ?? null,
+      };
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,32 +326,35 @@ function ExecutableRow({ vcs }: { vcs: "git" | "jj" }) {
     }
   };
   return (
-    <Row
-      label={vcs === "jj" ? "Path to jj executable" : "Path to Git executable"}
-      htmlFor={id}
-      hint={
-        result ? (
-          <span className={result.ok ? styles.ok : styles.error} role="status">
-            {result.text}
-          </span>
-        ) : undefined
-      }
-    >
-      <Input
-        id={id}
-        mono
-        className={styles.wide}
-        value={path}
-        placeholder={detected ? tx`Auto-detected: ${detected}` : "Auto-detected"}
-        onChange={(e) => {
-          setPath(e.target.value);
-          setResult(null);
-        }}
-      />
-      <Button size="small" disabled={testing || !isTauri()} onClick={() => void test()}>
-        <T>Test</T>
-      </Button>
-    </Row>
+    <div className={gitStyles.executable}>
+      <Row
+        label={vcs === "jj" ? "Path to jj executable" : "Path to Git executable"}
+        htmlFor={id}
+        hint={
+          result ? (
+            <span className={clsx(gitStyles.testResult, result.ok ? styles.ok : styles.error)} role="status">
+              {result.text}
+            </span>
+          ) : undefined
+        }
+      >
+        <div className={gitStyles.executableControls}>
+          <Input
+            id={id}
+            mono
+            value={path}
+            placeholder={detected ? tx`Auto-detected: ${detected}` : "Auto-detected"}
+            onChange={(e) => {
+              setPath(e.target.value);
+              setResult(null);
+            }}
+          />
+          <Button disabled={testing || !isTauri()} onClick={() => void test()}>
+            <T>Test</T>
+          </Button>
+        </div>
+      </Row>
+    </div>
   );
 }
 
@@ -261,7 +367,7 @@ function ProtectedBranchesRow() {
       htmlFor={id}
       hint="Force push is not allowed to these branches. Separate patterns with ; (wildcards * and ? are supported)."
     >
-      <Input id={id} className={styles.medium} value={value} onChange={(e) => set(e.target.value)} />
+      <Input id={id} className={gitStyles.branchPatterns} value={value} onChange={(e) => set(e.target.value)} />
     </Row>
   );
 }
@@ -362,6 +468,31 @@ function PushDialogRows() {
   );
 }
 
+function GitUpdateMethodRow() {
+  const [method, setMethod] = useSetting<"merge" | "rebase">("vcs.git.updateMethod");
+  const name = useId();
+  return (
+    <div>
+      <Row label="Update method">
+        <div className={gitStyles.updateMethods} role="radiogroup" aria-label={tx("Update method")}>
+          <Radio
+            name={name}
+            checked={method === "merge"}
+            onChange={() => setMethod("merge")}
+            label={<SearchLabel text="Merge" />}
+          />
+          <Radio
+            name={name}
+            checked={method === "rebase"}
+            onChange={() => setMethod("rebase")}
+            label={<SearchLabel text="Rebase" />}
+          />
+        </div>
+      </Row>
+    </div>
+  );
+}
+
 const PATCH_CREATED: SelectOption[] = [
   { value: "ask", label: "Ask" },
   { value: "no", label: "No" },
@@ -399,6 +530,117 @@ function MessageLimits() {
         <BoundToggle k="vcs.commit.showRightMargin" label="Show right margin" disabled={!anyLimit} />
         <BoundToggle k="vcs.commit.wrapAtMargin" label="Wrap when typing reaches right margin" disabled={!limitBody} />
       </Indented>
+    </>
+  );
+}
+
+const AUTOMATIC = "";
+
+/** The installed coding agents, as the agents feature reports them; empty where agents can't run. */
+function useInstalledAgents(): AgentProvider[] {
+  const [agents, setAgents] = useState<AgentProvider[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.agentProviders())
+      .then((all) => live && setAgents(all.filter((p) => p.installed)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return agents;
+}
+
+type ModelCatalog = Pick<AgentModelCatalog, "config" | "thoughtLevels">;
+
+/** The models `agent` offers, from its catalog; asks the agent for it once when it hasn't reported one. */
+function useModelCatalog(agent: AgentProvider | undefined): ModelCatalog | undefined {
+  const [catalog, setCatalog] = useState<{ provider: string } & ModelCatalog>();
+  const id = agent?.id;
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let polls = 0;
+    const load = () =>
+      call(commands.agentRefreshModels(id, false, null))
+        .then((c) => {
+          if (!live) return;
+          setCatalog(c);
+          if (c.refreshing && ++polls < CATALOG_POLLS) timer = setTimeout(load, CATALOG_POLL_MS);
+        })
+        .catch(() => {});
+    void load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [id]);
+  if (!agent) return undefined;
+  const fresh = catalog?.provider === agent.id && catalog.config.some((o) => o.category === "model");
+  return fresh ? catalog : { config: agent.config, thoughtLevels: agent.thoughtLevels ?? {} };
+}
+
+const CATALOG_POLL_MS = 1_500;
+const CATALOG_POLLS = 40;
+
+/** `values` as options after `automatic`, keeping a saved value the agent no longer lists. */
+function choiceOptions(
+  automatic: string,
+  values: readonly { value: string; name: string }[],
+  saved: string,
+): SelectOption<string>[] {
+  const options = [{ value: AUTOMATIC, label: automatic }, ...values.map((v) => ({ value: v.value, label: v.name }))];
+  return saved && !values.some((v) => v.value === saved) ? [...options, { value: saved, label: saved }] : options;
+}
+
+function CommitAgentRows() {
+  const agents = useInstalledAgents();
+  const [agent, setAgent] = useSetting<string>("vcs.commit.agent");
+  const [model, setModel] = useSetting<string>("vcs.commit.agentModel");
+  const [effort, setEffort] = useSetting<string>("vcs.commit.agentEffort");
+  const catalog = useModelCatalog(agents.find((p) => p.id === agent));
+  const models = catalog?.config.find((o) => o.category === "model");
+  const shown = model || models?.current;
+  const levels = (shown ? catalog?.thoughtLevels[shown] : undefined)?.find((o) => o.category === "thought_level");
+  const agentOptions = choiceOptions(
+    tx("Automatic (the agent of the latest task)"),
+    agents.map((p) => ({ value: p.id, name: p.name })),
+    agent,
+  );
+  const pick = (next: string) => {
+    if (next === agent) return;
+    setAgent(next);
+    setModel(AUTOMATIC);
+    setEffort(AUTOMATIC);
+  };
+  return (
+    <>
+      <Row label="Agent" hint="Commit messages are short: a fast model with low effort is usually enough.">
+        <Select value={agent} options={agentOptions} onChange={pick} aria-label={tx("Agent")} />
+      </Row>
+      <Row label="Model" disabled={!agent}>
+        <Select
+          value={model}
+          options={choiceOptions(tx("The agent's current model"), models?.values ?? [], model)}
+          onChange={(next) => {
+            setModel(next);
+            setEffort(AUTOMATIC);
+          }}
+          disabled={!agent}
+          aria-label={tx("Model")}
+        />
+      </Row>
+      <Row label="Effort" disabled={!agent}>
+        <Select
+          value={effort}
+          options={choiceOptions(tx("The agent's default"), levels?.values ?? [], effort)}
+          onChange={setEffort}
+          disabled={!agent}
+          aria-label={tx("Effort")}
+        />
+      </Row>
     </>
   );
 }
@@ -538,6 +780,11 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Use non-modal commit interface",
             hint: "When off, Local Changes and Stash are tabs of the Git tool window and Commit opens a dialog.",
           },
+          {
+            kind: "toggle",
+            key: "vcs.commit.includeChangesByDefault",
+            label: "Include changes in the commit by default",
+          },
           { kind: "toggle", key: "vcs.commit.clearInitialMessage", label: "Clear initial commit message" },
         ],
       },
@@ -556,6 +803,17 @@ export const VCS_PAGES: PageSpec[] = [
       {
         title: "Commit Message Generation",
         options: [
+          {
+            kind: "toggle",
+            key: "vcs.commit.agentButton",
+            label: "Show the Generate Commit Message with Agent button",
+          },
+          {
+            kind: "custom",
+            label: "Agent",
+            keywords: ["agent", "ai", "model", "effort", "thinking", "reasoning", "generate commit message"],
+            component: CommitAgentRows,
+          },
           {
             kind: "custom",
             label: "Instructions for Generate Commit Message with Agent",
@@ -588,36 +846,24 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Confirmation",
         options: [
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onCreate",
             label: "When files are created",
-            keywords: ["Add silently", "Do not add"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onCreate"
-                label="When files are created"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Add silently" },
-                  { value: "never", label: "Do not add" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Add silently" },
+              { value: "never", label: "Do not add" },
+            ],
           },
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onDelete",
             label: "When files are deleted",
-            keywords: ["Remove silently", "Do not remove"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onDelete"
-                label="When files are deleted"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Remove silently" },
-                  { value: "never", label: "Do not remove" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Remove silently" },
+              { value: "never", label: "Do not remove" },
+            ],
           },
           { kind: "toggle", key: "vcs.confirmation.showUpdateOptions", label: "Show options before Update" },
           {
@@ -637,6 +883,16 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Highlight directories that contain modified files in the Project tree",
           },
           {
+            kind: "toggle",
+            key: "vcs.diffAsEditorTab",
+            label: "Open diff as editor tab",
+            hint: "When off, diffs you open (changes, history, Compare) show in a separate window.",
+          },
+        ],
+      },
+      {
+        options: [
+          {
             kind: "select",
             key: "vcs.confirmation.onPatchCreated",
             label: "When patch is created",
@@ -652,6 +908,7 @@ export const VCS_PAGES: PageSpec[] = [
     title: "Directory Mappings",
     order: 3,
     keywords: ["root", "repository", "vcs root"],
+    component: MappingsTable,
     sections: [
       { options: [{ kind: "custom", label: "Directory", keywords: ["VCS", "Git"], component: MappingsTable }] },
     ],
@@ -703,6 +960,12 @@ export const VCS_PAGES: PageSpec[] = [
           },
           {
             kind: "toggle",
+            key: "vcs.git.syncBranchOperations",
+            label: "Execute branch operations on all repositories",
+            hint: "Only applies to projects with several Git repositories.",
+          },
+          {
+            kind: "toggle",
             key: "vcs.git.cliStatus",
             label: "Detect changes with the Git command line",
             hint: "Slower, but matches git status where encryption or file protection software makes files look modified.",
@@ -725,12 +988,6 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Warn when committing in detached HEAD or during rebase",
           },
           {
-            kind: "toggle",
-            key: "vcs.git.signOff",
-            label: "Sign-off commit",
-            hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
-          },
-          {
             kind: "custom",
             label: "Warn when committing files larger than",
             keywords: ["MB"],
@@ -740,6 +997,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.warnBadFileNames",
             label: "Warn when committing files with names that might cause issues on other systems",
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.signOff",
+            label: "Sign-off commit",
+            hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
           },
         ],
       },
@@ -767,16 +1030,7 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "custom",
             label: "Update method",
             keywords: ["Merge", "Rebase", "pull"],
-            component: () => (
-              <RadioRow
-                k="vcs.git.updateMethod"
-                label="Update method"
-                choices={[
-                  { value: "merge", label: "Merge" },
-                  { value: "rebase", label: "Rebase" },
-                ]}
-              />
-            ),
+            component: GitUpdateMethodRow,
           },
           {
             kind: "custom",

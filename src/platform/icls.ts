@@ -11,6 +11,7 @@ import {
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
 import { RUST_COLORS } from "./rustColors";
+import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 
 // Many language keys share the editor's language-default tokens.
 const ATTRIBUTE_NAMES: Record<string, string> = {
@@ -178,7 +179,16 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.STRING.U": "pyString",
   "PY.FUNC_DEFINITION": "pyFunctionDeclaration",
   "PY.NESTED_FUNC_DEFINITION": "pyNestedFunction",
+  "PY.FUNCTION_CALL": "pyFunctionCall",
   "PY.METHOD_CALL": "pyMethodCall",
+  "PY.CLASS_DEFINITION": "pyClassDefinition",
+  "PY.PARAMETER": "pyParameter",
+  "PY.LOCAL_VARIABLE": "pyLocalVariable",
+  "PY.TYPE_PARAMETER": "pyTypeParameter",
+  "PY.INVALID_STRING_ESCAPE": "pyInvalidEscape",
+  // PyCharm's own f-string keys come first, so exports use them; PY.STRING.F is still read.
+  "PY.FSTRING_FRAGMENT_BRACES": "pyFString",
+  "PY.FSTRING_FORMAT_SPEC_NUMBER": "pyFormat",
   "PY.DOC_COMMENT": "pyDocstring",
   "PY.BUILTIN_NAME": "pyBuiltin",
   "PY.DECORATOR": "pyDecorator",
@@ -273,6 +283,17 @@ Object.assign(ATTRIBUTE_NAMES, {
 // Preserve editor attributes without a standard exchange name on our own round trip.
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;
+// Earlier versions exported these under OPENIDEA_ names, before their PyCharm keys were mapped.
+for (const id of [
+  "pyFunctionCall",
+  "pyClassDefinition",
+  "pyParameter",
+  "pyLocalVariable",
+  "pyTypeParameter",
+  "pyInvalidEscape",
+  "pyFormat",
+])
+  ATTRIBUTE_NAMES[`OPENIDEA_${id}`] ??= id;
 
 // One key colours an attribute, as IntelliJ shows it in the file the user sees: an explicit value replaces
 // its fallback's. TypeScript keys win over JavaScript (TS.* falls back to JS.*), then Python, then the
@@ -453,6 +474,12 @@ export function parseIcls(
       }
   }
   const parentName = root.getAttribute("parent_scheme") ?? "";
+  // IntelliJ replaces a parent's attribute as a whole: any entry of the file, even an empty one or
+  // one only naming its baseAttributes, wins.
+  if (parentName === "Darcula") {
+    const own = new Set([...entries.keys()].flatMap((name) => (name ? targets(name) : [])));
+    for (const [id, value] of Object.entries(DARCULA_ATTRIBUTES)) if (!own.has(id)) attributes[id] ??= { ...value };
+  }
   const bg = attributes.text?.background;
   const rgb = bg ? [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16)) : [255, 255, 255];
   const dark = rgb[0]! * 0.299 + rgb[1]! * 0.587 + rgb[2]! * 0.114 < 128;
@@ -562,7 +589,8 @@ export function exportIcls(
       if (isHexColor(v[field])) opts.push(`<option name="${key}" value="${exportColor(v[field]!)}" />`);
     if (attr.token) opts.push(`<option name="FONT_TYPE" value="${(v.bold ? 1 : 0) + (v.italic ? 2 : 0)}" />`);
     if (effect) opts.push(`<option name="EFFECT_TYPE" value="${effect}" />`);
-    if (opts.length) attributes.push(`    <option name="${key}"><value>${opts.join("")}</value></option>`);
+    // An empty value keeps the parent scheme's attribute from showing through.
+    attributes.push(`    <option name="${key}"><value>${opts.join("")}</value></option>`);
   }
   const parent = custom?.parent ?? (isBuiltinTheme(id) ? themeKind(id) : "dark");
   return `<scheme name="${escapeXml(name)}" version="142" parent_scheme="${parent === "dark" ? "Darcula" : "Default"}">\n  <colors>\n${colors.join("\n")}\n  </colors>\n  <attributes>\n${attributes.join("\n")}\n  </attributes>\n</scheme>\n`;

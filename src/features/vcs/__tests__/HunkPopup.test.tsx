@@ -11,13 +11,18 @@ import { useVcs } from "../store";
 import type { LineHunk } from "@/bindings";
 
 const execute = vi.hoisted(() => vi.fn());
+const copy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@/platform/clipboard", () => ({ writeClipboardText: copy }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
   call: () => new Promise(() => {}),
   commands: { vcsLineHunks: () => undefined },
 }));
-vi.mock("@/platform/actions", () => ({ executeAction: execute }));
+vi.mock("@/platform/actions", async (original) => ({
+  ...(await original<typeof import("@/platform/actions")>()),
+  executeAction: execute,
+}));
 let view: EditorView;
 let dispose: () => void;
 const hunks: LineHunk[] = [
@@ -74,24 +79,23 @@ afterEach(() => {
     dispose?.();
   });
 });
-it("opens jj markers with parent and unsaved text, rollback, copy and navigation", async () => {
-  const copy = vi.fn().mockResolvedValue(undefined);
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+it("opens jj markers with the original text beside the unsaved editor, rollback, copy and navigation", async () => {
   open();
   expect(await screen.findByText("parent")).toBeTruthy();
-  expect(within(screen.getByRole("dialog")).getByText("unsaved")).toBeTruthy();
+  expect(within(screen.getByRole("dialog")).queryByText("unsaved")).toBeNull();
+  expect(view.state.doc.toString()).toContain("unsaved");
   expect(screen.getByLabelText("Rollback")).toBeTruthy();
-  expect(screen.queryByLabelText("Show Diff")).toBeNull();
+  expect(screen.getByLabelText("Show Diff")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Copy Original Text"));
   expect(copy).toHaveBeenCalledWith("parent\n");
   fireEvent.click(screen.getByLabelText("Next Change"));
-  expect(await waitFor(() => within(screen.getByRole("dialog")).getByText("added buffer"))).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Added lines" })).toBeTruthy();
   expect(screen.getByLabelText("Copy Original Text")).toBeDisabled();
   fireEvent.click(screen.getByLabelText("Next Change"));
   expect(await screen.findByText("deleted parent")).toBeTruthy();
   expect(within(screen.getByRole("dialog")).queryByText("added buffer")).toBeNull();
   fireEvent.click(screen.getByLabelText("Previous Change"));
-  expect(await waitFor(() => within(screen.getByRole("dialog")).getByText("added buffer"))).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Added lines" })).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Close"));
   await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
   expect(execute).not.toHaveBeenCalled();

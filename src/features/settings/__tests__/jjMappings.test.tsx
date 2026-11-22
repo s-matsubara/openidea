@@ -49,8 +49,9 @@ it("excludes and restores jj without offering to change ownership to Git", async
   expect(screen.queryByRole("option", { name: "Git" })).toBeNull();
   fireEvent.click(screen.getByRole("option", { name: "<none>" }));
   expect(stagedValue(useSettingsDialog.getState(), "project", "vcs.mappings.excluded")).toEqual(["."]);
-  fireEvent.click(screen.getByRole("button", { name: "VCS of <Project>" }));
-  fireEvent.click(screen.getByRole("option", { name: "Jujutsu (jj)" }));
+  const unregistered = screen.getByRole("row", { name: /<Project>.*Jujutsu/ });
+  fireEvent.click(unregistered);
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
   expect(stagedValue(useSettingsDialog.getState(), "project", "vcs.mappings.excluded")).toEqual([]);
   expect(screen.getByRole("button", { name: "VCS of git" })).toHaveTextContent("Git");
 });

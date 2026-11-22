@@ -3,17 +3,38 @@ import {
   Fragment,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MutableRefObject,
 } from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
-import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
+import { editorPrefs } from "@/platform/editorSettings";
+import { monoFontFamily } from "@/platform/fonts";
+import type { AttachableProcess, RunConfig, Variable } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { Button, Checkbox, Dialog, Icon, IconButton, Input, Kbd, List, Menu, Popup, Toggle, T } from "@/ui";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Kbd,
+  List,
+  MenuList,
+  Popup,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Toggle,
+  T,
+} from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { isConditional, suspends, type BreakpointEntry } from "../breakpoints/model";
 import {
   removeAllBreakpoints,
@@ -22,7 +43,8 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
+import { activeSession, addWatch, evaluate, isLive, startSession, useDebug } from "../state";
+import { cancelSmartStep, chooseStepTarget, smartStepAnchor } from "../editor/smartStep";
 import { AmbiguousClassError, rememberImport } from "../classImports";
 import {
   addMethodBreakpoint,
@@ -35,12 +57,23 @@ import {
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
 import { openAttachPopup, installAttachAdapter } from "../attachPopup";
 import {
+  ANY_EXCEPTION_ADAPTER,
+  anyException,
   exceptionGroups,
   filterHint,
   refreshExceptionFilters,
+  setAnyException,
   setExceptionFilter,
   useExceptionBreakpoints,
 } from "../breakpoints/exceptions";
+import {
+  addExceptionClass,
+  removeAllExceptionClasses,
+  updateExceptionClass,
+  useExceptionClasses,
+  type ExceptionClassEntry,
+} from "../breakpoints/exceptionClasses";
+import { AnyExceptionDetail, ExceptionClassDetail } from "./ExceptionClassDetail";
 import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
@@ -371,7 +404,20 @@ interface BpRow {
 type DialogRow =
   | { type: "section"; key: string; label: string }
   | ({ type: "line"; key: string } & BpRow)
-  | { type: "special"; key: string; bp: SpecialBreakpoint };
+  | { type: "special"; key: string; bp: SpecialBreakpoint }
+  | { type: "anyException"; key: string }
+  | { type: "exceptionClass"; key: string; bp: ExceptionClassEntry };
+
+const ANY_EXCEPTION_KEY = "any-exception";
+
+function BreakpointLocation({ path, line }: { path: string; line: number }) {
+  return (
+    <span className={styles.bpLocation} title={`${path}:${line + 1}`}>
+      <span className={styles.bpName}>{basename(path)}</span>
+      <span className={styles.bpLine}>:{line + 1}</span>
+    </span>
+  );
+}
 
 function BreakpointsDialog() {
   const state = useOverlays((s) => s.breakpoints);
@@ -381,6 +427,10 @@ function BreakpointsDialog() {
   const methods = useSpecialBreakpoints((s) => s.methods);
   const fields = useSpecialBreakpoints((s) => s.fields);
   const specialStatus = useSpecialBreakpoints((s) => s.status);
+  const exceptionClasses = useExceptionClasses((s) => s.list);
+  const knownFilters = useExceptionBreakpoints((s) => s.known);
+  const filterChoices = useExceptionBreakpoints((s) => s.choices);
+  const any = anyException(knownFilters, filterChoices);
   const root = useProject((s) => s.project?.root ?? "");
   const rows = useMemo<DialogRow[]>(() => {
     const lines: DialogRow[] = Object.keys(byFile)
@@ -399,14 +449,30 @@ function BreakpointsDialog() {
       "Field Watchpoints",
       fields.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
+    section("Java Exception Breakpoints", [
+      { type: "anyException", key: ANY_EXCEPTION_KEY },
+      ...exceptionClasses.map((bp) => ({ type: "exceptionClass" as const, key: bp.id, bp })),
+    ]);
     return out;
-  }, [byFile, methods, fields]);
+  }, [byFile, methods, fields, exceptionClasses]);
   const items = rows.filter((r) => r.type !== "section");
   const [selected, setSelected] = useState<string | null>(null);
   // The shown breakpoint's typed fields, saved before it is closed or another one is shown:
   // Enter on Done and a click on a row don't blur them.
   const commitRef = useRef<(() => void) | null>(null);
   const open = !!state;
+  const layout = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const el = layout.current;
+    if (!open || !el) return;
+    const update = () => setStacked(el.clientWidth > 0 && el.clientWidth < 560);
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [open]);
   const current = items.find((r) => r.key === (selected ?? state?.id)) ?? items[0];
   const close = () => {
     commitRef.current?.();
@@ -423,6 +489,7 @@ function BreakpointsDialog() {
   const removeAll = () => {
     removeAllBreakpoints();
     removeAllSpecial();
+    removeAllExceptionClasses();
   };
 
   return (
@@ -430,34 +497,52 @@ function BreakpointsDialog() {
       open={open}
       onClose={close}
       title="Breakpoints"
+      className={styles.bpWindow}
       width={760}
+      minWidth={400}
+      minHeight={340}
+      resizable="both"
       aria-label="Breakpoints"
       buttons={[{ label: "Done", role: "default", onClick: close }]}
     >
-      <div className={styles.bpDialog}>
-        <div className={styles.bpListPane}>
+      <SplitGroup
+        elementRef={layout}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey={stacked ? "openidea.debug.breakpoints.stacked" : "openidea.debug.breakpoints.split"}
+        className={styles.bpDialog}
+      >
+        <SplitPanel id="breakpoint-list" defaultSize={stacked ? "42%" : "35%"} minSize={stacked ? "34%" : "216px"}>
           <div className={styles.bpListHeader}>
             <Toggle checked={muted} onChange={setMuted} label="Mute breakpoints" />
-            <div className={styles.spacer} />
-            <IconButton
-              icon="plus"
-              title="Add Method Breakpoint"
-              size="small"
-              onClick={() => setSelected(addMethodBreakpoint("").id)}
-            />
-            <IconButton
-              icon="trash"
-              title="Remove All Breakpoints"
-              size="small"
-              disabled={!items.length}
-              onClick={removeAll}
-            />
+            <div className={styles.bpListActions}>
+              <IconButton
+                icon="plus"
+                title="Add Method Breakpoint"
+                size="small"
+                onClick={() => setSelected(addMethodBreakpoint("").id)}
+              />
+              <IconButton
+                icon="breakpoint-exception"
+                title="Add Java Exception Breakpoint"
+                size="small"
+                onClick={() => setSelected(addExceptionClass("").id)}
+              />
+              <IconButton
+                icon="trash"
+                title="Remove All Breakpoints"
+                size="small"
+                disabled={!items.some((r) => r.type !== "anyException")}
+                onClick={removeAll}
+              />
+            </div>
           </div>
           <List
             items={rows}
             getKey={(r) => r.key}
             isSection={(r) => r.type === "section"}
-            renderSection={(r) => <div className={styles.exceptionAdapter}>{r.type === "section" ? r.label : ""}</div>}
+            renderSection={(r) => (
+              <div className={styles.exceptionAdapter}>{r.type === "section" ? tx(r.label) : ""}</div>
+            )}
             activeIndex={current ? rows.indexOf(current) : -1}
             onActiveChange={(i) => {
               commitRef.current?.();
@@ -476,6 +561,40 @@ function BreakpointsDialog() {
             }
             renderItem={(r) => {
               if (r.type === "section") return null;
+              if (r.type === "anyException") {
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={any.caught || any.uncaught}
+                      onChange={(on) => {
+                        setAnyException("caught", on);
+                        setAnyException("uncaught", on);
+                      }}
+                      aria-label={tx("Enable Any exception")}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName}>
+                      <T>Any exception</T>
+                    </span>
+                  </div>
+                );
+              }
+              if (r.type === "exceptionClass") {
+                const name = r.bp.className || tx("No class chosen");
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={r.bp.enabled}
+                      onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
+                      aria-label={tx`Enable ${name}`}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName} title={name}>
+                      {name}
+                    </span>
+                  </div>
+                );
+              }
               if (r.type === "special") {
                 const st = specialStatus[r.bp.id];
                 return (
@@ -486,7 +605,9 @@ function BreakpointsDialog() {
                       aria-label={tx`Enable ${specialTitle(r.bp)}`}
                     />
                     <Icon name={r.bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-                    <span className={styles.bpName}>{specialTitle(r.bp)}</span>
+                    <span className={styles.bpName} title={specialTitle(r.bp)}>
+                      {specialTitle(r.bp)}
+                    </span>
                     {r.bp.path && (
                       <span className={styles.bpDir}>
                         {basename(r.bp.path)}
@@ -520,9 +641,7 @@ function BreakpointsDialog() {
                     }
                     aria-hidden
                   />
-                  <span className={styles.bpName}>
-                    {basename(r.path)}:{r.bp.line + 1}
-                  </span>
+                  <BreakpointLocation path={r.path} line={r.bp.line} />
                   <span className={styles.bpDir}>{relativePath(root, r.path)}</span>
                   {isConditional(r.bp) && <span className={styles.bpCond}>{suspends(r.bp) ? "if" : "log"}</span>}
                   {r.bp.temporary && (
@@ -534,17 +653,26 @@ function BreakpointsDialog() {
               );
             }}
           />
-          <ExceptionBreakpoints open={open} />
-          <EventBreakpointsSection />
-        </div>
-        <div className={styles.bpDetail}>
-          {current?.type === "line" ? (
-            <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
-          ) : current?.type === "special" ? (
-            <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
-          ) : null}
-        </div>
-      </div>
+          <div className={styles.bpAuxiliary}>
+            <ExceptionBreakpoints open={open} />
+            <EventBreakpointsSection />
+          </div>
+        </SplitPanel>
+        <SplitHandle />
+        <SplitPanel id="breakpoint-detail" minSize={stacked ? "42%" : "284px"}>
+          <div className={styles.bpDetail}>
+            {current?.type === "line" ? (
+              <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : current?.type === "special" ? (
+              <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : current?.type === "exceptionClass" ? (
+              <ExceptionClassDetail key={current.key} bp={current.bp} commitRef={commitRef} />
+            ) : current?.type === "anyException" ? (
+              <AnyExceptionDetail />
+            ) : null}
+          </div>
+        </SplitPanel>
+      </SplitGroup>
     </Dialog>
   );
 }
@@ -553,7 +681,11 @@ function BreakpointsDialog() {
 function ExceptionBreakpoints({ open }: { open: boolean }) {
   const known = useExceptionBreakpoints((s) => s.known);
   const choices = useExceptionBreakpoints((s) => s.choices);
-  const groups = useMemo(() => exceptionGroups(known, choices), [known, choices]);
+  // java-debug's filters are "Any exception" in the list above.
+  const groups = useMemo(
+    () => exceptionGroups(known, choices).filter((g) => g.adapter !== ANY_EXCEPTION_ADAPTER),
+    [known, choices],
+  );
   useEffect(() => {
     if (open) void refreshExceptionFilters();
   }, [open]);
@@ -610,10 +742,7 @@ function BreakpointDetail({
   return (
     <div className={styles.detail}>
       <div className={styles.bpTitle}>
-        <span className={styles.bpFile}>
-          {basename(path)}:{bp.line + 1}
-        </span>
-        <div className={styles.spacer} />
+        <BreakpointLocation path={path} line={bp.line} />
         <Button size="small" variant="ghost" onClick={onGo}>
           <T>Go to Source</T>
         </Button>
@@ -664,8 +793,9 @@ function SpecialDetail({
     <div className={styles.detail}>
       <div className={styles.bpTitle}>
         <Icon name={bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-        <span className={styles.bpFile}>{specialTitle(bp)}</span>
-        <div className={styles.spacer} />
+        <span className={styles.bpFile} title={specialTitle(bp)}>
+          {specialTitle(bp)}
+        </span>
         {bp.path && (
           <Button size="small" variant="ghost" onClick={onGo}>
             <T>Go to Source</T>
@@ -764,8 +894,17 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
   const [history, setHistory] = useState(() => readHistory("evaluate"));
   const [historyMenu, setHistoryMenu] = useState(false);
   const historyPos = useRef(-1);
-  const historyButton = useRef<HTMLSpanElement>(null);
+  const expressionRow = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
+  const expressionId = useId();
+  const resultTitleId = useId();
+  const settings = useProject((s) => s.settings);
+  const editor = settings?.editor;
+  const font = {
+    "--evaluate-font": monoFontFamily(editor?.fontFamily, editorPrefs(settings).fallbackFont, "var(--font-mono)"),
+    "--evaluate-font-size": editor?.fontSize ? `${editor.fontSize}px` : undefined,
+    "--evaluate-line-height": editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+  } as CSSProperties;
   const session = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const paused = session?.status === "paused";
   const close = () => useOverlays.setState({ evaluate: null });
@@ -824,7 +963,10 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       onClose={close}
       title="Evaluate"
       width={620}
+      minWidth={340}
+      minHeight={240}
       resizable="both"
+      className={styles.evalDialog}
       aria-label="Evaluate expression"
       footerStart={
         <Button
@@ -844,13 +986,14 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       ]}
     >
       <div className={styles.evalBody}>
-        <div className={styles.field}>
-          <span className={styles.label}>
+        <div className={styles.evalExpression}>
+          <label className={styles.label} htmlFor={expressionId}>
             <T>Expression</T>
-          </span>
-          <div className={styles.evalInputRow}>
+          </label>
+          <div ref={expressionRow} className={styles.evalInputRow} style={font}>
             <textarea
               ref={field}
+              id={expressionId}
               className={styles.evalInput}
               rows={lines}
               value={expression}
@@ -862,62 +1005,82 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               }}
               onKeyDown={onKeyDown}
               onBlur={completion.close}
-              onFocus={(e) => e.currentTarget.select()}
+              onFocus={(e) => {
+                setHistoryMenu(false);
+                e.currentTarget.select();
+              }}
               spellCheck={false}
               autoComplete="off"
               data-autofocus=""
-              aria-label={tx("Expression")}
-              placeholder={paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate"}
+              placeholder={tx(
+                paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate",
+              )}
             />
             {completion.popup}
-            <span ref={historyButton}>
-              <IconButton
-                icon="history"
-                title="History"
-                size="small"
-                disabled={!history.length}
-                onClick={() => setHistoryMenu(true)}
-              />
-            </span>
+            <IconButton
+              className={styles.evalHistory}
+              icon="chevron-down"
+              title="History"
+              size="small"
+              aria-haspopup="menu"
+              aria-expanded={historyMenu}
+              disabled={!history.length}
+              onClick={() => setHistoryMenu((open) => !open)}
+            />
           </div>
-          <Menu
+          <Popup
             open={historyMenu}
             onClose={() => setHistoryMenu(false)}
-            anchor={historyButton}
-            placement="bottom-end"
-            aria-label="Expression history"
-            items={history
-              .slice(0, 20)
-              .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
-          />
+            anchor={expressionRow}
+            placement="bottom-start"
+            matchWidth
+            role="presentation"
+            autoFocus={false}
+            className={styles.evalHistoryPopup}
+            style={font}
+          >
+            <MenuList
+              aria-label={tx("Expression history")}
+              iconColumn={false}
+              onDone={() => setHistoryMenu(false)}
+              items={history
+                .slice(0, 20)
+                .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
+            />
+          </Popup>
         </div>
-        {ambiguous && (
-          <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
-            <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
-            {ambiguous.candidates.map((c) => (
-              <Button
-                key={c}
-                variant="ghost"
-                size="small"
-                onClick={() => {
-                  if (session) rememberImport(session.id, c);
-                  void run();
-                }}
-              >
-                {c}
-              </Button>
-            ))}
+        <section className={styles.evalResult} aria-labelledby={resultTitleId}>
+          <span id={resultTitleId} className={styles.label}>
+            <T>Result</T>
+          </span>
+          <div className={styles.evalResultContent}>
+            {ambiguous && (
+              <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
+                <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
+                {ambiguous.candidates.map((c) => (
+                  <Button
+                    key={c}
+                    variant="ghost"
+                    size="small"
+                    onClick={() => {
+                      if (session) rememberImport(session.id, c);
+                      void run();
+                    }}
+                  >
+                    {c}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {result ? (
+              <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
+            ) : (
+              <div className={styles.evalHint}>
+                {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
+              </div>
+            )}
           </div>
-        )}
-        <div className={styles.evalResult}>
-          {result ? (
-            <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
-          ) : (
-            <div className={styles.empty}>
-              {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
-            </div>
-          )}
-        </div>
+        </section>
       </div>
     </Dialog>
   );
@@ -969,6 +1132,7 @@ function AttachPopup() {
   const [filter, setFilter] = useState("");
   const [active, setActive] = useState(0);
   const [installing, setInstalling] = useState(false);
+  const gridId = useId();
   const rows = useMemo(() => attachRows(state?.processes ?? [], filter), [state?.processes, filter]);
   const firstItem = rows.findIndex((r) => r.kind === "process");
   const activeIndex = rows[active]?.kind === "process" ? active : firstItem;
@@ -1007,8 +1171,13 @@ function AttachPopup() {
       open
       onClose={close}
       title={state.mode === "unity" ? "Attach to Unity Process" : "Attach to Process"}
-      width={640}
-      position="top"
+      width={780}
+      minWidth={360}
+      minHeight={300}
+      resizable="both"
+      dismissOnBackdrop
+      closeOnDeactivate
+      className={styles.attachDialog}
       aria-label={state.mode === "unity" ? "Attach to Unity Process" : "Attach to process"}
       buttons={[
         {
@@ -1032,7 +1201,7 @@ function AttachPopup() {
         },
       ]}
     >
-      <div className={styles.evalBody}>
+      <div className={styles.attachContent}>
         {state.mode === "unity" && (
           <p>
             <T>
@@ -1060,6 +1229,7 @@ function AttachPopup() {
           placeholder="Filter by name, PID or command line"
           data-autofocus=""
           aria-label="Filter processes"
+          aria-controls={state.processes !== null && !state.error ? gridId : undefined}
         />
         {state.processes == null ? (
           <div className={styles.empty}>
@@ -1081,43 +1251,80 @@ function AttachPopup() {
             )}
           </div>
         ) : (
-          <List<AttachRow>
-            items={rows}
-            getKey={(r) => r.key}
-            isSection={(r) => r.kind === "group"}
-            renderSection={(r) =>
-              r.kind === "group" ? (
-                <div className={styles.exceptionAdapter}>
-                  {r.label} · {r.count}
-                </div>
-              ) : null
-            }
-            activeIndex={activeIndex}
-            onActiveChange={setActive}
-            onActivate={(r) => r.kind === "process" && void attach(r.process)}
-            focusable={false}
-            aria-label="Processes"
-            className={styles.attachList}
-            empty={
-              <div className={styles.empty}>
-                {filter
-                  ? tx`No attachable processes match the filter.`
-                  : state.mode === "unity"
-                    ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
-                    : tx`No attachable processes.`}
+          <div
+            id={gridId}
+            className={styles.attachGrid}
+            role="grid"
+            aria-label={tx("Processes")}
+            aria-rowcount={rows.filter((r) => r.kind === "process").length + 1}
+          >
+            <div role="rowgroup">
+              <div className={styles.attachHeader} role="row" aria-rowindex={1}>
+                <span role="columnheader">
+                  <T>Executable</T>
+                </span>
+                <span role="columnheader" className={styles.attachPid}>
+                  <T>PID</T>
+                </span>
+                <span role="columnheader">
+                  <T>Command line</T>
+                </span>
               </div>
-            }
-            renderItem={(r) =>
-              r.kind === "process" ? (
-                <div className={styles.chooserRow} title={r.process.commandLine}>
-                  <span className={styles.attachPid}>{r.process.pid}</span>
-                  <span className={styles.bpName}>{r.process.name}</span>
-                  <span className={styles.bpDir}>{r.process.commandLine}</span>
-                  <span className={styles.bpCond}>{attachDetail(r.process)}</span>
+            </div>
+            <List<AttachRow>
+              items={rows}
+              getKey={(r) => r.key}
+              isSection={(r) => r.kind === "group"}
+              renderSection={(r) =>
+                r.kind === "group" ? (
+                  <div className={styles.exceptionAdapter}>
+                    {r.label} · {r.count}
+                  </div>
+                ) : null
+              }
+              activeIndex={activeIndex}
+              onActiveChange={setActive}
+              onActivate={(r) => r.kind === "process" && void attach(r.process)}
+              focusable={false}
+              tableBody={{ headerRows: 1 }}
+              className={styles.attachList}
+              empty={
+                <div className={styles.empty}>
+                  {filter
+                    ? tx`No attachable processes match the filter.`
+                    : state.mode === "unity"
+                      ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
+                      : tx`No attachable processes.`}
                 </div>
-              ) : null
-            }
-          />
+              }
+              renderItem={(r) => {
+                if (r.kind !== "process") return null;
+                const { name, pid, commandLine, port } = r.process;
+                const endpoint = port == null ? null : attachDetail(r.process);
+                return (
+                  <div className={styles.attachRow} role="presentation">
+                    <span className={styles.attachCell} role="gridcell" title={name}>
+                      {name}
+                    </span>
+                    <span className={styles.attachPid} role="gridcell">
+                      {pid}
+                    </span>
+                    <span className={styles.attachCommand} role="gridcell">
+                      <span className={styles.attachCell} title={commandLine}>
+                        {commandLine}
+                      </span>
+                      {endpoint && (
+                        <span className={styles.attachEndpoint} title={endpoint}>
+                          <span className={styles.attachFullAddress}>{endpoint}</span>
+                          <span className={styles.attachPort}>:{port}</span>
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          </div>
         )}
       </div>
     </Dialog>
@@ -1128,34 +1335,44 @@ function AttachPopup() {
 
 function SmartStepChooser() {
   const all = useOverlays((s) => s.smartStep);
-  // Picked in the editor instead.
   const state = all?.inline ? null : all;
-  const close = () => useOverlays.setState({ smartStep: null });
-  const pick = (targetId: number) => {
-    if (!state) return;
-    close();
-    void resumeExecution(state.session, () =>
-      call(commands.debugStepInTarget(state.session, state.thread, targetId)),
-    ).catch((e) =>
-      notifications().notify({ group: "run", level: "error", title: "Smart Step Into failed", body: errorText(e) }),
-    );
-  };
+  const anchor = useMemo(() => (state ? smartStepAnchor() : "center"), [state]);
+  const rowHeight = useRowHeight();
+  if (!state) return null;
+
   return (
-    <Dialog open={!!state} onClose={close} title="Step Into" width={420} position="top" aria-label="Smart Step Into">
-      <List
-        items={state?.targets ?? []}
-        getKey={(t) => String(t.id)}
-        defaultActiveIndex={0}
-        onActivate={(t) => pick(t.id)}
-        aria-label="Calls on the current line"
-        className={styles.chooser}
-        renderItem={(t) => (
-          <div className={styles.chooserRow}>
-            <Icon name="method" size={14} />
-            <span className={styles.bpName}>{t.label}</span>
-          </div>
-        )}
-      />
-    </Dialog>
+    <Popup
+      open
+      anchor={anchor}
+      placement="top-start"
+      onClose={cancelSmartStep}
+      trapFocus
+      className={styles.stepPopup}
+      aria-label={tx("Smart Step Into")}
+    >
+      <div className={styles.stepHeading}>
+        <T>Step Into</T>
+      </div>
+      <div className={styles.stepTargets} style={{ height: Math.min(state.targets.length, 8) * rowHeight }}>
+        <List
+          items={state.targets}
+          getKey={(t) => String(t.id)}
+          rowHeight={rowHeight}
+          autoFocus
+          hoverSelects
+          onActivate={(t) => chooseStepTarget(t.id)}
+          aria-label={tx("Calls on the current line")}
+          className={styles.stepList}
+          renderItem={(t) => (
+            <>
+              <Icon name="method" size={16} />
+              <span className={styles.stepLabel} title={t.label}>
+                {t.label}
+              </span>
+            </>
+          )}
+        />
+      </div>
+    </Popup>
   );
 }

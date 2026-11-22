@@ -8,6 +8,7 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+export type BuildToolWindowWhen = "always" | "onError" | "never";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -21,6 +22,7 @@ export interface GitSettingsValid {
   inlineBlame: boolean;
   inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
+  syncBranchOperations: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -43,6 +45,7 @@ export interface GitSettingsValid {
 
 export interface CommitSettingsValid {
   nonModal: boolean;
+  includeChangesByDefault: boolean;
   clearInitialMessage: boolean;
   analyzeCode: boolean;
   checkTodo: boolean;
@@ -62,10 +65,20 @@ export interface CommitSettingsValid {
   doubleClickOpensDiff: boolean | null;
   /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
   agentInstructions: string;
+  /** The agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+  agent: string;
+  /** That agent's model for commit messages; empty keeps the model the agent would use. */
+  agentModel: string;
+  /** That model's thinking level for commit messages; empty keeps the agent's. */
+  agentEffort: string;
+  /** Show the Generate Commit Message with Agent button above the commit message. */
+  agentButton: boolean;
 }
 
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
+  /** Off: diffs the user opens show in a separate window. */
+  diffAsEditorTab: boolean;
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
@@ -92,6 +105,11 @@ export interface LogLevelColorsValid {
   info: string;
   debug: string;
   trace: string;
+}
+
+export interface BuildSettingsValid {
+  openToolWindow: BuildToolWindowWhen;
+  focusToolWindow: BuildToolWindowWhen;
 }
 
 export interface ConsoleSettingsValid {
@@ -141,6 +159,8 @@ export interface ExternalDiffValid {
 }
 
 export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+/** When a title the program sets (OSC 0/2) names the terminal tab, as IDEA's option. */
+export type TerminalAppTitle = "running" | "always" | "off";
 
 export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
   { value: "unlimited", label: "Unlimited" },
@@ -155,6 +175,7 @@ export interface TerminalSettingsValid {
   env: Record<string, string>;
   shellPath: string;
   tabName: string;
+  appTitleAsTabName: TerminalAppTitle;
   audibleBell: boolean;
   closeOnExit: boolean;
   mouseReporting: boolean;
@@ -214,6 +235,7 @@ export interface AgentRunSettingsValid {
 
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
+  build: BuildSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
   run: RunSettingsValid;
@@ -256,6 +278,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   vcs: {
     // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
     showDirtyDirectories: false,
+    diffAsEditorTab: true,
     limitHistory: true,
     historyLimit: 1000,
     jj: { executable: "" },
@@ -263,6 +286,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       inlineBlame: false,
       inlineBlameClickable: true,
       showBranchInProjectView: false,
+      syncBranchOperations: true,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -283,6 +307,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     commit: {
       nonModal: true,
+      includeChangesByDefault: true,
       clearInitialMessage: false,
       analyzeCode: true,
       checkTodo: true,
@@ -299,6 +324,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
       agentInstructions: "",
+      agent: "",
+      agentModel: "",
+      agentEffort: "",
+      agentButton: true,
     },
     confirmation: {
       onCreate: "ask",
@@ -310,6 +339,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     shelf: { removeApplied: false },
     issueNavigation: [],
     mappings: { excluded: [], added: [] },
+  },
+  build: {
+    openToolWindow: "always",
+    focusToolWindow: "never",
   },
   console: {
     softWrap: false,
@@ -363,6 +396,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     env: {},
     shellPath: "",
     tabName: "Local",
+    appTitleAsTabName: "running",
     audibleBell: true,
     closeOnExit: true,
     mouseReporting: true,
@@ -421,6 +455,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const confirm = ["ask", "silently", "never"] as const;
   return {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
+    diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     jj: { executable: text(obj(v.jj).executable, d.jj.executable).trim() },
@@ -428,6 +463,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
       inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
+      syncBranchOperations: bool(g.syncBranchOperations, d.git.syncBranchOperations),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -448,6 +484,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
+      includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),
@@ -464,6 +501,10 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
       agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
+      agent: text(c.agent, d.commit.agent),
+      agentModel: text(c.agentModel, d.commit.agentModel),
+      agentEffort: text(c.agentEffort, d.commit.agentEffort),
+      agentButton: bool(c.agentButton, d.commit.agentButton),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -483,6 +524,16 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
       added: strings(obj(v.mappings).added, d.mappings.added),
     },
+  };
+}
+
+export function validateBuild(raw: unknown): BuildSettingsValid {
+  const d = DEFAULT_WORKFLOW.build;
+  const v = obj(raw);
+  const when = ["always", "onError", "never"] as const;
+  return {
+    openToolWindow: oneOf(v.openToolWindow, when, d.openToolWindow),
+    focusToolWindow: oneOf(v.focusToolWindow, when, d.focusToolWindow),
   };
 }
 
@@ -573,6 +624,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     env,
     shellPath: text(v.shellPath, d.shellPath).trim(),
     tabName: nonEmpty(v.tabName, d.tabName),
+    appTitleAsTabName: oneOf(v.appTitleAsTabName, ["running", "always", "off"] as const, d.appTitleAsTabName),
     audibleBell: bool(v.audibleBell, d.audibleBell),
     closeOnExit: bool(v.closeOnExit, d.closeOnExit),
     mouseReporting: bool(v.mouseReporting, d.mouseReporting),
@@ -655,6 +707,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
     vcs: validateVcs(root.vcs),
+    build: validateBuild(root.build),
     console: validateConsole(root.console),
     debugger: validateDebugger(root.debugger),
     run: validateRun(root.run),

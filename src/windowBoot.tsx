@@ -4,6 +4,7 @@ import "./styles/global.css";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
 import { installImeKeyGuard } from "./platform/ime";
+import { installMiddleClickLinks } from "./platform/openUrl";
 import { call, commands, isTauri } from "./platform/ipc";
 import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { guessOs } from "./platform/platformInfo";
@@ -49,6 +50,7 @@ export async function installCommonWindowBoot(): Promise<void> {
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
   installPointerFocus();
+  installMiddleClickLinks();
   installImeKeyGuard();
   installErrorLogging();
   installPageSwipeTracking(window);
@@ -58,8 +60,23 @@ export function mountWindowRoot(View: ComponentType, { prefetchLazy = false }: {
   function App() {
     useEffect(() => {
       hideSplash();
+      if (!prefetchLazy) return;
+      // The first file opened would otherwise also build the editor setup cold.
+      const warm = () => {
+        if (!document.querySelector(".cm-editor"))
+          void import("./editor/core/cm/prewarm").then((m) => m.prewarmEditor());
+      };
+      const idle =
+        typeof requestIdleCallback === "function"
+          ? requestIdleCallback(warm, { timeout: 2000 })
+          : window.setTimeout(warm, 500);
       // Views split out of the start-up bundle load in the background once the UI is up.
-      if (prefetchLazy) return prefetchLazyComponents();
+      const stopPrefetch = prefetchLazyComponents();
+      return () => {
+        if (typeof cancelIdleCallback === "function") cancelIdleCallback(idle);
+        else window.clearTimeout(idle);
+        stopPrefetch();
+      };
     }, []);
     return <View />;
   }

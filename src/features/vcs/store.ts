@@ -158,9 +158,15 @@ export async function focusRepo(root: string): Promise<void> {
   if (!useVcs.getState().branchesLoaded) await loadBranches();
 }
 
+/** Whether the changed file still exists in the working tree (not deleted there). */
+export const existsOnDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+
 export function conflictedFiles(status: readonly FileStatus[] = useVcs.getState().status): FileStatus[] {
   return status.filter((f) => effectiveKind(f) === "conflicted");
 }
+
+// Reopening the same root starts a new lifetime.
+let projectGeneration = 0;
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 /** A full refresh is queued; it answers for every path an incremental one would. */
@@ -241,11 +247,13 @@ export function refreshNow(): Promise<void> {
     });
     return followUp;
   }
+  const generation = projectGeneration;
   inflight = (async () => {
     useVcs.setState({ loading: true });
     try {
       const s = useVcs.getState();
       const vcsRoots = await call(commands.vcsRoots());
+      if (generation !== projectGeneration) return;
       const jjRoots = vcsRoots.filter((r) => r.kind === "jj");
       useVcs.setState({ jjRoots, kinds: Object.fromEntries(vcsRoots.map((r) => [r.root, r.kind ?? "git"])) });
       const roots = vcsRoots.filter((r) => r.kind !== "jj").map((r) => r.root);
@@ -272,15 +280,15 @@ export function refreshNow(): Promise<void> {
       }
       const scoped = Promise.all([
         call(commands.vcsBranchInfo(selectedRepo)),
-        s.branchesLoaded && selectedRepo === s.repo ? call(commands.vcsBranches(selectedRepo)) : Promise.resolve([]),
-        s.stashesLoaded && selectedRepo === s.repo ? call(commands.vcsStashes(selectedRepo)) : Promise.resolve([]),
+        s.branchesLoaded ? call(commands.vcsBranches(selectedRepo)) : Promise.resolve([]),
+        s.stashesLoaded ? call(commands.vcsStashes(selectedRepo)) : Promise.resolve([]),
       ]).then(
         (values) => ({ values }),
         (error: unknown) => ({ error }),
       );
       const [status, selected] = await Promise.all([call(commands.vcsStatus()), scoped]);
+      if (generation !== projectGeneration) return;
       if ("error" in selected) {
-        // The selected repository is gone (removed since the last scan): fall back to the primary one.
         if (!s.repo || roots.includes(s.repo)) throw selected.error;
         useVcs.setState({ roots, repo: null, branchesLoaded: false, stashesLoaded: false });
         void refreshNow();
@@ -301,16 +309,18 @@ export function refreshNow(): Promise<void> {
       if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
-      if (selectedRepo !== s.repo) useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
       // Branch info and branches above are of another repository: load the selected one's.
-      if (repo !== shown || (s.repo && repo !== s.repo)) {
-        useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
+      if (repo !== shown) {
         void refreshNow();
       }
     } catch (e) {
-      useVcs.setState({ error: e instanceof Error ? e.message : String(e) });
+      if (generation === projectGeneration) {
+        useVcs.setState({ error: e instanceof Error ? e.message : String(e) });
+      }
     } finally {
-      useVcs.setState((st) => ({ loading: false, version: st.version + 1 }));
+      if (generation === projectGeneration) {
+        useVcs.setState((st) => ({ loading: false, version: st.version + 1 }));
+      }
       inflight = null;
     }
   })();
@@ -337,9 +347,11 @@ export function refreshPathsNow(paths: readonly string[]): Promise<void> {
     });
     return followUp;
   }
+  const generation = projectGeneration;
   const run = (async () => {
     try {
       const fresh = await call(commands.vcsStatusPaths([...paths]));
+      if (generation !== projectGeneration) return false;
       const current = useVcs.getState();
       if (!current.statusLoaded || pairsRenames(current.status, paths, fresh)) return false;
       applyStatus(mergeStatus(current.status, paths, fresh), current.branch);
@@ -351,7 +363,7 @@ export function refreshPathsNow(paths: readonly string[]): Promise<void> {
   })();
   const done = run.then((ok) => {
     inflight = null;
-    return ok ? undefined : refreshNow();
+    return ok || generation !== projectGeneration ? undefined : refreshNow();
   });
   inflight = done;
   return done;
@@ -447,10 +459,10 @@ export function statusOf(path: string): FileStatus | undefined {
 
 /** Repositories found below a project that is not itself under git (scanned in the background). */
 export async function discoverRoots() {
-  const root = useVcs.getState().root;
-  if (!root || !isTauri()) return;
+  if (!useVcs.getState().root || !isTauri()) return;
+  const generation = projectGeneration;
   const roots = await call(commands.vcsRoots()).catch(() => []);
-  if (useVcs.getState().root !== root || useVcs.getState().available) return;
+  if (generation !== projectGeneration || useVcs.getState().available) return;
   useVcs.setState({ kinds: Object.fromEntries(roots.map((r) => [r.root, r.kind ?? "git"])) });
   useVcs.setState({ jjRoots: roots.filter((r) => r.kind === "jj") });
   if (!roots.length) return;
@@ -480,8 +492,8 @@ export function installVcsStore(): () => void {
     const available = !!project?.isGit;
     const root = project?.root ?? null;
     if (useVcs.getState().root === root && useVcs.getState().available === available) return;
+    projectGeneration++;
     clearTimeout(timer);
-    pendingFull = false;
     pendingPaths.clear();
     useVcs.setState({ ...initial, available, root, version: useVcs.getState().version + 1 });
     setContext("vcsAvailable", available);

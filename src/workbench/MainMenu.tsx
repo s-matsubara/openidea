@@ -6,6 +6,7 @@ import { lookup, t, useI18n } from "@/platform/i18n";
 import { commands, type MenuNode } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
+import { useChromeIconSize } from "@/ui/density";
 import menuStyles from "@/ui/Menu.module.css";
 import { isDistractionFree } from "./distractionFree";
 import { toolWindowsRestorable } from "./toolwindows/store";
@@ -32,7 +33,14 @@ export function menuItems(nodes: MenuNode[]): MenuItem[] {
       case "placeholder":
         return { id: n.id, label: label(n.id, n.label), disabled: true };
       case "submenu":
-        return { id: n.id, label: label(n.id, n.label), submenu: menuItems(n.children) };
+        return {
+          id: n.id,
+          label: n.current == null ? label(n.id, n.label) : n.label,
+          verbatim: n.current != null,
+          current: n.current ?? undefined,
+          icon: n.current ? "check" : undefined,
+          submenu: menuItems(n.children),
+        };
       case "action":
         return {
           kind: "action",
@@ -94,6 +102,7 @@ export function MainMenu({ row = false, ...props }: MainMenuProps) {
 
 function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged: boolean; row: boolean }) {
   useI18n((s) => s.locale);
+  const iconSize = useChromeIconSize();
   const [menus, setMenus] = useState<Submenu[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
@@ -249,7 +258,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
         }
       }}
     >
-      <Icon name="main-menu" size={20} />
+      <Icon name="main-menu" size={iconSize} />
     </button>
   );
   const titles = (

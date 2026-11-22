@@ -84,11 +84,16 @@ pub struct Launch {
     pub editor: Option<Box<EditorLaunch>>,
 }
 
-/// A file opened in a lightweight editor window, with optional caret / selection (0-based).
+/// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+/// the tab of another editor kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorLaunch {
-    pub path: ide_core::IpcPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ide_core::IpcPath>,
+    /// The tab's editor input, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +137,7 @@ pub struct ComparisonLaunch {
 
 /// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiffSide {
     /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
     Rev {
@@ -148,6 +153,8 @@ pub enum DiffSide {
         jj_blame: Option<ide_vcs::JjBlameTarget>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
     },
     /// Another file (Compare With…, Compare Files).
     File {
@@ -155,7 +162,7 @@ pub enum DiffSide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// Literal text: a side that does not exist.
+    /// Literal text, such as clipboard contents or an editor selection.
     Text {
         text: String,
         label: String,
@@ -163,6 +170,8 @@ pub enum DiffSide {
         absent: Option<bool>,
         #[serde(default, rename = "jjBlame", skip_serializing_if = "Option::is_none")]
         jj_blame: Option<ide_vcs::JjBlameTarget>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
     },
     /// A Local History revision.
     History { id: String, label: String },
@@ -218,6 +227,74 @@ pub struct RemoteLaunch {
 pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     let w = ide_core::wsl::parse(path)?;
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
+}
+
+/// A saved project path that is a remote location: `ssh://`, `wsl://`, `devcontainer://`,
+/// or a `\\wsl.localhost` share remembered before those locations existed.
+pub(crate) fn saved_remote(path: &Path) -> Option<RemoteLaunch> {
+    if let Some(text) = path.to_str()
+        && let Some((target, root)) = crate::remote_dev::parse_remote_location(text)
+    {
+        return Some(RemoteLaunch { target, path: root });
+    }
+    wsl_launch(path)
+}
+
+/// What reopening `path` should launch. A remote location is recognised before any stat,
+/// so a WSL share that is down still comes back as a remote project.
+pub(crate) fn saved_project_launch(path: &Path) -> Option<Launch> {
+    if let Some(remote) = saved_remote(path) {
+        return Some(Launch { remote: Some(remote), ..Default::default() });
+    }
+    path.is_dir().then(|| Launch { project: Some(path.to_path_buf().into()), ..Default::default() })
+}
+
+/// The same project, including a WSL share and the `wsl://` location of that folder.
+pub(crate) fn same_saved_project(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (saved_remote(a), saved_remote(b)) {
+        (Some(left), Some(right)) => {
+            left.target == right.target && left.path.trim_end_matches('/') == right.path.trim_end_matches('/')
+        }
+        _ => false,
+    }
+}
+
+/// The project `label` has open: a remote location (`wsl://` and the rest), else its local root.
+pub(crate) fn window_project_path(app: &AppHandle, label: &str) -> Option<PathBuf> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(c) = state.remote_dev.get(label) {
+        return Some(PathBuf::from(crate::remote_dev::remote_location(&c.target, &c.root)));
+    }
+    state.project(label).ok().filter(|p| !p.light).map(|p| p.root.clone())
+}
+
+/// Reopens a project saved at quit. Remote locations become a remote launch; a missing
+/// local folder is skipped. An already connected window is focused instead of duplicated.
+pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Option<WebviewWindow>> {
+    let Some(launch) = saved_project_launch(path) else {
+        return Ok(None);
+    };
+    if let Some(remote) = launch.remote.clone() {
+        let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
+        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+            return Ok(Some(w));
+        }
+        let title = remote
+            .path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty() && *n != "~")
+            .map(str::to_owned);
+        return Ok(Some(create_window_for(app, title, launch, true)?));
+    }
+    if let Some(w) = find_project_window(app, path) {
+        return Ok(Some(w));
+    }
+    Ok(Some(create_restored_window(app, path.to_path_buf())?))
 }
 
 #[derive(Default)]
@@ -296,6 +373,12 @@ impl WindowsState {
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launches = self.launches.lock();
+        // Lightweight windows need their launch again when their webview reloads.
+        if let Some(launch) = launches.get(label)
+            && launch.editor.is_some()
+        {
+            return Some(launch.clone());
+        }
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
@@ -758,7 +841,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -843,7 +926,7 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new(), WindowPlacement::Automatic)
+    create_window_with(app, project, Vec::new(), false)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
@@ -851,43 +934,27 @@ fn create_window_with(
     app: &AppHandle,
     project: Option<PathBuf>,
     files: Vec<PathBuf>,
-    placement: WindowPlacement<'_>,
+    restoring: bool,
 ) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, placement)
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
 }
 
 /// Restoring a saved group preserves its membership and selected tab.
 pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
-    create_window_with(app, Some(project), Vec::new(), WindowPlacement::Restored)
-}
-
-enum WindowPlacement<'a> {
-    Automatic,
-    Restored,
-    Tab(&'a str),
+    create_window_with(app, Some(project), Vec::new(), true)
 }
 
 fn create_window_for(
     app: &AppHandle,
     title: Option<String>,
     launch: Launch,
-    placement: WindowPlacement<'_>,
+    _restoring: bool,
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
-    let tab_target = match placement {
-        WindowPlacement::Automatic => crate::macos::new_project_tab_target(app, &launch)?,
-        WindowPlacement::Restored => None,
-        WindowPlacement::Tab(anchor) => {
-            Some(app.get_webview_window(anchor).ok_or_else(|| IdeError::not_found("Window closed"))?)
-        }
-    };
-    #[cfg(not(target_os = "macos"))]
-    if let WindowPlacement::Tab(anchor) = placement {
-        return Err(IdeError::unavailable(format!("Cannot open a new tab in window {anchor} on this platform")));
-    }
+    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     // The label is free only until the window exists, so concurrent opens take turns.
     let creating = CREATING.lock();
     let windows = app.webview_windows();
@@ -916,9 +983,6 @@ fn create_window_for(
         config.visible = false;
     }
     let window = build_project_window(app, config);
-    if window.is_err() {
-        app.state::<WindowsState>().take_launch(&label);
-    }
     drop(creating);
     // Plugins hear of the window from the main thread's queue; forget it after them.
     #[cfg(target_os = "macos")]
@@ -929,10 +993,7 @@ fn create_window_for(
     let window = window?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
-        if let Err(error) = crate::window_groups::join(app, target.label(), window.label()) {
-            let _ = window.destroy();
-            return Err(error);
-        }
+        crate::window_groups::join(app, target.label(), window.label())?;
         return Ok(window);
     }
     focus(&window);
@@ -953,11 +1014,11 @@ fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathB
 
 fn open_launch_window(app: &AppHandle, title: Option<String>, launch: Launch, wait: bool) -> IdeResult<()> {
     if wait {
-        return create_window_for(app, title, launch, WindowPlacement::Automatic).map(|_| ());
+        return create_window_for(app, title, launch, false).map(|_| ());
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_for(&app, title, launch, WindowPlacement::Automatic) {
+        if let Err(e) = create_window_for(&app, title, launch, false) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -976,39 +1037,20 @@ pub enum OpenOutcome {
     Current,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub enum ProjectOpenMode {
-    Same,
-    New,
-    Tab,
-}
-
-impl ProjectOpenMode {
-    fn placement(self, caller: &str) -> Option<WindowPlacement<'_>> {
-        match self {
-            Self::Same => None,
-            Self::New => Some(WindowPlacement::Automatic),
-            Self::Tab => Some(WindowPlacement::Tab(caller)),
-        }
-    }
-}
-
 /// Opens folder `path` as a project and then `files` in its editor; see [`OpenOutcome`]
 /// (`Current`: the caller opens both itself).
 pub fn open_project_window(
     app: &AppHandle,
-    caller: &str,
     path: &Path,
-    mode: ProjectOpenMode,
+    new_window: bool,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
     // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
     if let Some(remote) = wsl_launch(path) {
-        return open_remote_window(app, caller, &remote.target, &remote.path, mode);
+        return open_remote_window(app, &remote.target, &remote.path, new_window);
     }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
-    tracing::info!("open_project_window {} mode={mode:?}", root.display());
+    tracing::info!("open_project_window {} new_window={new_window}", root.display());
     if let Some(w) = find_project_window(app, &root) {
         if files.is_empty() {
             focus(&w);
@@ -1017,10 +1059,10 @@ pub fn open_project_window(
         }
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    let Some(placement) = mode.placement(caller) else {
+    if !new_window {
         return Ok(OpenOutcome::Current);
-    };
-    let window = create_window_with(app, Some(root), files, placement)?;
+    }
+    let window = create_window_with(app, Some(root), files, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -1030,7 +1072,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file], WindowPlacement::Automatic)?;
+    let window = create_window_with(app, project, vec![file], false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -1046,24 +1088,23 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
 /// [`open_project_window`] for folder `path` of `target` (Remote Development).
 pub fn open_remote_window(
     app: &AppHandle,
-    caller: &str,
     target: &RemoteTarget,
     path: &str,
-    mode: ProjectOpenMode,
+    new_window: bool,
 ) -> IdeResult<OpenOutcome> {
-    tracing::info!("open_remote_window {target:?}:{path} mode={mode:?}");
+    tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
     let windows = app.webview_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    let Some(placement) = mode.placement(caller) else {
+    if !new_window {
         return Ok(OpenOutcome::Current);
-    };
+    }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, placement)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -2131,6 +2172,20 @@ fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
 }
 
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
+}
+
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
 /// private selector and environment override are absent from release builds.
 #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -2189,7 +2244,7 @@ mod tests {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
-            right: DiffSide::Worktree { label: None, jj_blame: None },
+            right: DiffSide::Worktree { label: None, jj_blame: None, label_detail: None },
             line: None,
         };
         let id = diff_window_id(&diff);
@@ -2199,6 +2254,18 @@ mod tests {
         assert_ne!(diff_window_id(&diff), id);
         diff.path = "/p/b.txt".into();
         assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn diff_window_keeps_file_and_selection_label_details() {
+        for side in [
+            serde_json::json!({"type": "worktree", "label": "file.rs", "labelDetail": "src"}),
+            serde_json::json!({"type": "text", "text": "let x = 1;", "label": "Selection from file.rs", "labelDetail": ""}),
+            serde_json::json!({"type": "text", "text": "let x = 2;", "label": "From Clipboard"}),
+        ] {
+            let parsed = serde_json::from_value::<DiffSide>(side.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), side);
+        }
     }
 
     #[test]
@@ -2499,9 +2566,39 @@ mod tests {
         let folder = launch_for(share.clone(), true);
         let remote =
             RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
-        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote), None, 0));
+        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote.clone()), None, 0));
         let file = launch_for(share.join("main.py"), false);
         assert_eq!((file.remote, file.project, file.files.len()), (None, None, 1));
+    }
+
+    #[test]
+    fn a_saved_wsl_project_reopens_as_a_remote_launch_without_the_share() {
+        let remote =
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
+        for saved in [r"\\wsl.localhost\Ubuntu\home\me\app", "wsl://Ubuntu/home/me/app", "//wsl$/Ubuntu/home/me/app"] {
+            let launch = saved_project_launch(Path::new(saved)).expect(saved);
+            assert_eq!(launch.remote, Some(remote.clone()));
+            assert!(launch.project.is_none(), "{saved}");
+        }
+        assert!(same_saved_project(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\app"),
+            Path::new("wsl://Ubuntu/home/me/app/")
+        ));
+        let ssh = saved_project_launch(Path::new("ssh://box/srv/app")).unwrap();
+        assert_eq!(
+            ssh.remote,
+            Some(RemoteLaunch { target: RemoteTarget::Ssh { config: "box".into() }, path: "/srv/app".into() })
+        );
+        let container =
+            saved_project_launch(Path::new("devcontainer://%2Fwork%2Fapp:devcontainer.json/workspaces/app")).unwrap();
+        assert_eq!(
+            container.remote,
+            Some(RemoteLaunch {
+                target: RemoteTarget::DevContainer { folder: "/work/app".into(), config: "devcontainer.json".into() },
+                path: "/workspaces/app".into(),
+            })
+        );
+        assert!(saved_project_launch(Path::new("/no/such/local/project-openidea")).is_none());
     }
 
     fn p(s: &str) -> PathBuf {
@@ -2708,6 +2805,27 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    #[test]
+    fn editor_launch_survives_webview_reload_until_window_closes() {
+        let st = WindowsState::default();
+        let launch = Launch {
+            editor: Some(Box::new(EditorLaunch {
+                path: None,
+                input: Some(r#"{"kind":"agent-session","key":"agent:running-task"}"#.into()),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            })),
+            ..Default::default()
+        };
+        st.set_launch("editor-main-3", launch.clone());
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch.clone()));
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch));
+        st.forget("editor-main-3");
+        assert!(st.take_launch("editor-main-3").is_none());
     }
 
     #[test]

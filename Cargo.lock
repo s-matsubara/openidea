@@ -4129,6 +4129,8 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "parking_lot 0.13.0",
+ "rustix",
+ "semver",
  "serde",
  "serde_json",
  "specta",
@@ -4331,6 +4333,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-drag-out"
+version = "0.0.0"
+dependencies = [
+ "gtk",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "tempfile",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "ide-extension"
 version = "0.0.0"
 dependencies = [
@@ -4484,6 +4500,7 @@ dependencies = [
 name = "ide-http"
 version = "0.0.0"
 dependencies = [
+ "hyper-util",
  "ide-core",
  "ide-vfs",
  "parking_lot 0.13.0",
@@ -4633,6 +4650,7 @@ dependencies = [
 name = "ide-lsp"
 version = "0.0.0"
 dependencies = [
+ "criterion 0.5.1",
  "dunce",
  "encoding_rs",
  "futures",
@@ -4917,6 +4935,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "specta",
+ "tokio",
  "tracing",
 ]
 
@@ -4989,6 +5008,7 @@ dependencies = [
  "ignore",
  "notify",
  "parking_lot 0.13.0",
+ "rayon",
  "rustix",
  "serde",
  "serde_json",
@@ -6658,6 +6678,7 @@ dependencies = [
  "ide-dap",
  "ide-db",
  "ide-docker",
+ "ide-drag-out",
  "ide-extension",
  "ide-fonts",
  "ide-github",

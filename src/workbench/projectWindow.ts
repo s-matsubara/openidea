@@ -1,16 +1,15 @@
 /** Where a project opens when this window already has one: System Settings › Project › "Open project in". */
 import { t, tx } from "@/platform/i18n";
-import { call, commands, type ProjectOpenMode, type RemoteTarget } from "@/platform/ipc";
-import { isMacHost } from "@/platform/keymap";
+import { call, commands, type RemoteTarget } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { ask } from "./messages";
 import { maybeEditorService } from "./contributions";
 
-/** The saved "Open project in" preference. */
-export function openPolicy(): "ask" | ProjectOpenMode {
+/** "Open project in": `new` | `same` | `ask`. */
+export function openPolicy(): "ask" | "new" | "same" | "tab" {
   const v = useProject.getState().settings?.general?.openProjectIn;
-  return v === "new" || v === "same" || (v === "tab" && isMacHost()) ? v : "ask";
+  return v === "new" || v === "same" || v === "tab" ? v : "ask";
 }
 
 /**
@@ -21,29 +20,34 @@ export function openPolicy(): "ask" | ProjectOpenMode {
 export async function chooseProjectWindow(
   name: string,
   allowAttach = true,
-): Promise<ProjectOpenMode | "attach" | null> {
+  allowSshTab = false,
+): Promise<"new" | "same" | "attach" | "tab" | null> {
   const { project, lightEdit } = useProject.getState();
   if (!project && !lightEdit) return "same";
-  const canAttach = allowAttach && !!project && !isRemoteWindow();
-  const canTab = !!project && !lightEdit && isMacHost();
+  // Both ways of keeping this window's project: a workspace folder, or a project tab of this window.
+  const canAdd = allowAttach && !!project && !isRemoteWindow();
+  const canTab = canAdd || (allowSshTab && !!project && !lightEdit && !isRemoteWindow());
   const mode = openPolicy();
-  if (mode !== "ask" && (mode !== "tab" || canTab)) return mode;
+  // A project tab needs this window's project beside it; without one, a new window is the closest.
+  if (mode === "tab") return canTab ? "tab" : "new";
+  if (mode !== "ask") return mode;
   const r = await ask({
     title: t("app.window.askTitle"),
-    width: canTab && canAttach ? 740 : canTab || canAttach ? 640 : undefined,
-    body: t("app.window.askBody", { name }),
+    width: canTab ? 640 : undefined,
+    body: canAdd
+      ? tx`Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open "${name}"?`
+      : t("app.window.askBody", { name }),
     buttons: [
       { id: "cancel", label: t("common.cancel") },
-      ...(canAttach ? [{ id: "attach", label: t("app.window.askAttach") }] : []),
+      ...(canAdd ? [{ id: "attach", label: t("app.window.askAttach") }] : []),
+      ...(canTab ? [{ id: "tab", label: tx`New Tab` }] : []),
       { id: "new", label: t("app.window.askNew") },
-      ...(canTab ? [{ id: "tab", label: tx("New Tab") }] : []),
       { id: "same", label: t("app.window.askThis"), primary: true },
     ],
     checkbox: t("app.window.askRemember"),
   });
-  if (r.button !== "same" && r.button !== "new" && r.button !== "attach" && !(r.button === "tab" && canTab)) {
-    return null;
-  }
+  // "Attach" is one-off, as in IDEA: "Open project in" has no value for it, so Don't ask again ignores it.
+  if (r.button !== "same" && r.button !== "new" && r.button !== "attach" && r.button !== "tab") return null;
   if (r.checked && r.button !== "attach") {
     try {
       useProject.setState({
@@ -58,7 +62,7 @@ export async function chooseProjectWindow(
 
 /**
  * Opens folder `path` of `target` (an SSH host or a WSL distribution): focuses the
- * window that has it, else opens it in a new window, tab, or (`here`) this window per
+ * window that has it, else opens it in a new window or (`here`) this one per
  * "Open project in". `false`: cancelled.
  */
 export async function openRemoteProject(
@@ -66,11 +70,16 @@ export async function openRemoteProject(
   path: string,
   here: () => Promise<unknown> = () => connectRemote(target, path),
 ): Promise<boolean> {
-  if ((await call(commands.windowOpenRemote(target, path, "same"))).kind === "focused") return true;
-  const mode = await chooseProjectWindow(path.replace(/\/+$/, "").split("/").pop() || path, false);
+  if ((await call(commands.windowOpenRemote(target, path, false))).kind === "focused") return true;
+  const mode = await chooseProjectWindow(
+    path.replace(/\/+$/, "").split("/").pop() || path,
+    false,
+    target.kind === "ssh",
+  );
   if (!mode) return false;
   if (mode === "new" || mode === "tab") {
-    await call(commands.windowOpenRemote(target, path, mode));
+    const outcome = await call(commands.windowOpenRemote(target, path, true));
+    if (mode === "tab" && outcome.kind === "opened") await call(commands.windowGroupJoin(outcome.label));
     return true;
   }
   // The remote host's project doesn't take this window's untitled buffers.
