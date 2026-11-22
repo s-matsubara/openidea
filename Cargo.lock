@@ -6658,7 +6658,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "2026.2.21"
+version = "2026.2.22"
 dependencies = [
  "base64 0.22.1",
  "blake3",
