@@ -167,7 +167,9 @@ impl Session<'_> {
             "serverInfo": { "name": "OpenIDEA", "version": ide_core::version::app_version() },
             "instructions": format!(
                 "Built-in OpenIDEA tools for {about}: they see the files as the IDE has them and, \
-                 for a project open in a window, its editors."
+                 for a project open in a window, its editors. The project's workspace can include other \
+                 projects attached to it: call `get_workspace_roots` to list them before answering about \
+                 workspace directories or planning a change across projects."
             ),
         })
     }

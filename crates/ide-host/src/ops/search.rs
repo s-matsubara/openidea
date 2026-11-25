@@ -111,7 +111,7 @@ pub(crate) fn search_project(
     };
     let literals = |path: &Path, text: &str| literals_of(project, syntax, path, text);
     let defaults = project.documents.file_defaults();
-    let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
+    let fallback = |path: &Path| defaults.fallback_for(path).map(str::to_owned);
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();
@@ -123,6 +123,10 @@ pub(crate) fn search_project(
         if let Some(prefix) = &prefix {
             remaining.include = rebase_masks(&query.include, prefix);
             remaining.exclude = rebase_masks(&query.exclude, prefix);
+            // An attached project's own excluded folders: the project's were rebased away.
+            if !query.include_excluded && project.member_excludes.read().contains_key(dir) {
+                remaining.exclude.extend(project.search_excludes_in(dir));
+            }
             // Only paths elsewhere were asked for.
             if remaining.include.is_empty() && !query.include.is_empty() {
                 continue;
@@ -135,7 +139,7 @@ pub(crate) fn search_project(
             &remaining,
             Some(&filter),
             Some(&literals),
-            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), decode: &decode },
+            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), fallback: &fallback },
             cancel,
             &|mut file| {
                 if let Some(prefix) = &prefix {
@@ -184,6 +188,11 @@ pub(crate) fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_leaves_unread_the_texts_the_parser_does_not_take() {
+        assert_eq!(ide_search::MAX_LITERALS_TEXT_BYTES, ide_language::MAX_PARSE_BYTES);
+    }
+
     #[test]
     fn masks_follow_the_root_they_search() {
         let masks = vec![".wt/a/src/**, src/**".into(), "*.rs".into(), "!.wt/a/out/**".into(), "**/build/**".into()];

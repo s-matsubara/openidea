@@ -43,6 +43,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
 }));
 const root = (name: string, unavailableReason: string | null = null): VcsRoot => ({
   root: name,
+  branchRoot: name,
   kind: "jj",
   unavailableReason,
   workingCopy: null,

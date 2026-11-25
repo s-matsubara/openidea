@@ -38,6 +38,7 @@ function open(jj = true, readOnly = false) {
       ? [
           {
             root: "/repo",
+            branchRoot: "/repo",
             kind: "jj",
             unavailableReason: null,
             workingCopy: null,

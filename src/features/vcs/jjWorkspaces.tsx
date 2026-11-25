@@ -10,7 +10,7 @@ import { Button, Dialog, IconButton, Input, Select, showContextMenu, T } from "@
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage } from "./ops";
 import { refreshNow, repoName, useVcs } from "./store";
-import { defaultWorktreePath } from "./gitMenuDialogs";
+import { worktreeLocation, worktreePath } from "./worktrees";
 import styles from "./common.module.css";
 
 export function JjWorkspacesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
@@ -257,7 +257,17 @@ export function NewWorkspaceDialog({
     };
   }, []);
   const suffix = name || "workspace";
-  const path = folder ?? (/^\/[^/]+$/.test(root) ? `${root}-${suffix}` : defaultWorktreePath(root, suffix));
+  const path =
+    folder ??
+    (/^\/[^/]+$/.test(root)
+      ? `${root}-${suffix}`
+      : worktreePath(
+          worktreeLocation(root),
+          `${root
+            .replace(/[\\/]+$/, "")
+            .split(/[\\/]/)
+            .pop()}-${suffix || "worktree"}`,
+        ));
   const invalid = !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$/.test(name) || !path.trim() || !revision.trim();
   const create = async () => {
     if (busy || invalid) return;

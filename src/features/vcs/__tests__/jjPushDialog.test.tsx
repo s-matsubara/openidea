@@ -26,6 +26,15 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsJjHistoryFiles: (...a: unknown[]) => historyFiles(...a),
       vcsJjHistoryFileDiff: (...a: unknown[]) => historyFileDiff(...a),
       vcsCommitFiles: () => Promise.resolve(ok([])),
+      vcsCommitsChanges: () => Promise.resolve(ok([])),
+      vcsHasHook: () => Promise.resolve(ok(false)),
+      cancelRequest: () => Promise.resolve(ok(null)),
+      vcsBranches: () => Promise.resolve(ok([{ name: "main", remote: false, current: true, upstream: "origin/main" }])),
+      vcsPushTargetChoices: () => Promise.resolve(ok({ branch: "main", destinations: [], destination: null })),
+      vcsInspectPush: () =>
+        Promise.resolve(
+          ok({ state: "ready", localTip: "git-id", remoteTip: "base", remoteChecked: true, remoteCommits: 0 }),
+        ),
       vcsRemotes: () => Promise.resolve(ok([{ name: "origin" }])),
       vcsLog: () =>
         Promise.resolve(
@@ -78,6 +87,7 @@ vi.mock("@/ui", async (original) => ({
 const ok = (data: unknown) => ({ status: "ok", data });
 const root = (path: string) => ({
   root: path,
+  branchRoot: path,
   kind: "jj" as const,
   unavailableReason: null,
   workingCopy: null,
@@ -294,7 +304,7 @@ it("routes jj generic Push and retains explicit Git targets, header, commit rows
   const git = dialogs.mock.calls.at(-1)![0](() => {});
   expect(git.type.name).toBe("PushDialog");
   render(git);
-  expect(await screen.findByText("Git outgoing subject")).toBeInTheDocument();
+  expect((await screen.findAllByText("Git outgoing subject")).length).toBeGreaterThan(0);
   expect(screen.getByLabelText("Target branch")).toHaveValue("main");
   expect(screen.getByRole("checkbox", { name: "Force (with lease)" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Push tags:" })).toBeInTheDocument();

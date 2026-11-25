@@ -5,15 +5,15 @@
  * Clicking a sticky line scrolls to it, the caret where it was clicked.
  * With rainbow brackets on, its brackets keep their colours from the editor.
  */
-import { EditorSelection, Facet, RangeSet, RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
+import { EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { foldNodeProp, syntaxTree } from "@codemirror/language";
-import { highlightTree } from "@lezer/highlight";
 import { stickyHighlights } from "@/editor/api";
+
 import { backendFolds } from "./folding";
-import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
-import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
+import { bracketScanner } from "./rainbowBrackets";
+import { MAX_PREVIEW_LINE_LENGTH, renderLineContent } from "./renderLineContent";
 import { editorLineNumber } from "./relativeLineNumbers";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
@@ -53,54 +53,6 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
     .slice(-state.facet(stickyMaxLines));
 }
 
-/** Characters of a sticky line rendered at most. */
-const MAX_TEXT = 400;
-
-/**
- * Renders line `lineNo` highlighted into `target`; `brackets` (ascending, as from the
- * rainbow bracket scanner) are wrapped in their rainbow class, outside the token's span
- * as in the editor.
- */
-export function renderLineContent(
-  state: EditorState,
-  lineNo: number,
-  target: HTMLElement,
-  brackets: readonly BracketMark[] = [],
-  colors = DEFAULT_BRACKET_COLORS,
-) {
-  const line = state.doc.line(lineNo);
-  const end = Math.min(line.to, line.from + MAX_TEXT);
-  const tree = syntaxTree(state);
-  const syntax = new RangeSetBuilder<Decoration>();
-  // Lezer's editor decorations cover the viewport. Highlight the pinned line directly.
-  if (tree.length >= end) {
-    highlightTree(
-      tree,
-      openideaHighlightStyle,
-      (from, to, cls) => syntax.add(Math.max(from, line.from), Math.min(to, end), Decoration.mark({ class: cls })),
-      line.from,
-      end,
-    );
-  }
-  const rainbow = Decoration.set(
-    brackets.map((b) => Decoration.mark({ class: bracketClass(b.depth, colors) }).range(b.from, b.from + 1)),
-    true,
-  );
-  RangeSet.spans([...state.facet(stickyHighlights), syntax.finish(), rainbow], line.from, end, {
-    span(from, to, marks) {
-      let parent = target;
-      // Match CodeMirror's nesting so higher-precedence marks set the final style.
-      for (let i = marks.length - 1; i >= 0; i--) {
-        const span = document.createElement("span");
-        span.className = marks[i]!.spec.class;
-        parent.appendChild(span);
-        parent = span;
-      }
-      parent.appendChild(document.createTextNode(state.doc.sliceString(from, to)));
-    },
-    point() {},
-  });
-}
 
 /** Character offset in a rendered sticky line closest to `clientX`. */
 export function offsetAtX(inner: HTMLElement, clientX: number): number {
@@ -153,6 +105,26 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
   if (!last) return inner.getBoundingClientRect().left + parseFloat(inner.style.paddingLeft || "0");
   range.selectNodeContents(last);
   return range.getBoundingClientRect().right;
+}
+
+export function readEditorTopLayout(view: EditorView) {
+  const scroller = view.scrollDOM;
+  const viewport = scroller.getBoundingClientRect();
+  const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
+  const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
+  const width = scroller.clientWidth;
+  return {
+    viewport,
+    top: scroller.offsetTop,
+    left: scroller.offsetLeft,
+    width,
+    rightInset: overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0,
+    gutterWidth: (gutters?.width ?? 0) / view.scaleX,
+    numberWidth: (numbers?.width ?? 0) / view.scaleX,
+    // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
+    numberLeft: gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0,
+  };
 }
 
 class StickyScroll {
@@ -209,29 +181,10 @@ class StickyScroll {
       key: this,
       read: (view) => {
         this.scheduled = false;
-        const scroller = view.scrollDOM;
-        const viewport = scroller.getBoundingClientRect();
-        const scrollTop = scroller.scrollTop;
-        const docOffset = view.documentTop - viewport.top + scrollTop;
+        const layout = readEditorTopLayout(view);
+        const scrollTop = view.scrollDOM.scrollTop;
+        const docOffset = view.documentTop - layout.viewport.top + scrollTop;
         const lh = view.defaultLineHeight;
-        const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
-        const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
-        const gutterWidth = (gutters?.width ?? 0) / view.scaleX;
-        const numberWidth = (numbers?.width ?? 0) / view.scaleX;
-        // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
-        const numberLeft = gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0;
-        const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
-        const width = scroller.clientWidth;
-        const rightInset = overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0;
-        const layout = {
-          top: scroller.offsetTop,
-          left: scroller.offsetLeft,
-          width,
-          rightInset,
-          gutterWidth,
-          numberWidth,
-          numberLeft,
-        };
         if (scrollTop - docOffset <= 0) return { lines: [] as number[], layout, scrollLeft: 0 };
         // n sticky rows cover the first n visible lines; they show the n outermost
         // headers of the first line below them, as long as it has that many.
@@ -245,7 +198,7 @@ class StickyScroll {
           if (enclosing.length < n) break;
           headers = enclosing.slice(0, n);
         }
-        return { lines: headers, layout, scrollLeft: scroller.scrollLeft };
+        return { lines: headers, layout, scrollLeft: view.scrollDOM.scrollLeft };
       },
       write: ({ lines, layout, scrollLeft }) => {
         const state = this.view.state;
@@ -322,7 +275,7 @@ class StickyScroll {
               state,
               n,
               inner,
-              scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.marks(state, line.from, line.from + Math.min(MAX_PREVIEW_LINE_LENGTH, line.length)),
               scanner?.colors,
             );
             text.appendChild(inner);
@@ -412,3 +365,5 @@ class StickyScroll {
   }
 }
 export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+
+export { renderLineContent as renderContextLine };

@@ -128,6 +128,7 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": [],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -141,6 +142,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.applyQuickFix": [],
   "code.generate": [],
   "code.reformat": ["Alt+Shift+F"],
+  "code.rearrange": [],
   "code.reformatDialog": [],
   "code.optimizeImports": ["Alt+Shift+O"],
   "code.commentLine": ["Meta+/"],
@@ -337,6 +339,12 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
   "vcs.log.goToRef": [],
+  "vcs.log.editMessage": [],
+  "vcs.log.newBranch": [],
+  "vcs.log.goToChild": [],
+  "vcs.log.goToParent": [],
+  "vcs.log.toggleBookmark": [],
+  "vcs.log.toggleBookmarkWithMnemonic": [],
   // View › Appearance (VS Code: workbench.action.zoomIn / zoomOut / zoomReset)
   "view.zoomIn": ["Meta+="],
   "view.zoomOut": ["Meta+-"],
@@ -428,6 +436,10 @@ export const vscodeMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
+  // Python Console: VS Code's Shift+Enter would shadow typing in Python files, so unbound.
+  "python.console.executeSelection": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],

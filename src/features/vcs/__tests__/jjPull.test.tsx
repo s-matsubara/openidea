@@ -70,6 +70,7 @@ beforeEach(() => {
     jjRoots: [
       {
         root: "/project/jj",
+        branchRoot: "/project/jj",
         kind: "jj",
         unavailableReason: null,
         workingCopy: null,
@@ -132,8 +133,9 @@ it("fetches Git repositories without fetching Jujutsu", async () => {
   expect(mocks.git).toHaveBeenCalledExactlyOnceWith(
     "/project/git",
     expect.any(Number),
-    { op: "fetch" },
+    { op: "fetch", report: true },
     expect.anything(),
+    null,
   );
   expect(mocks.fetch).not.toHaveBeenCalled();
   expect(mocks.refresh).toHaveBeenCalledOnce();

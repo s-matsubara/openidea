@@ -10,7 +10,8 @@
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { create } from "zustand";
-import type { Branch, BranchInfo, FileStatus, Stash, VcsRoot } from "@/bindings";
+import type { Branch, BranchInfo, FileStatus, Stash, TrackedTip, UnfetchedBranch, VcsRoot } from "@/bindings";
+
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { setContext, useContextKeys } from "@/platform/context";
 import { useProject } from "@/platform/project";
@@ -20,6 +21,8 @@ import { effectiveKind, repoLabel, rootOf, statusDecorations, stripSlash } from 
 export interface RepoHead {
   head: string | null;
   headCommit: string | null;
+  shallow?: boolean;
+  interactiveRebase?: boolean;
 }
 
 export interface VcsState {
@@ -31,6 +34,11 @@ export interface VcsState {
   /** Repository roots, the project's own repository first. */
   roots: string[];
   kinds: Record<string, "git" | "jj">;
+  /** Whether any repository has a configured remote, or null until known. */
+  hasRemotes: boolean | null;
+  unfetched: ReadonlyMap<string, ReadonlyMap<string, UnfetchedBranch>>;
+  branchRoots: Record<string, string>;
+
   /** Root → merge / rebase / cherry-pick / revert in progress there. */
   operations: Record<string, string>;
   /** Root → its current branch (`head` null when detached) and HEAD commit. */
@@ -38,11 +46,15 @@ export interface VcsState {
   /** The selected repository's root (branch widget, log, push…). */
   repo: string | null;
   status: FileStatus[];
+  /** Files whose Git conflict stages can be restored during the current operation. */
+  resolvedConflicts: ReadonlySet<string>;
   /** `status` reflects the repository (false until the first refresh). */
   statusLoaded: boolean;
   /** Absolute path (no trailing slash) → status. */
   byPath: Map<string, FileStatus>;
   branch: BranchInfo | null;
+  /** Repository that supplied `branch`; selection can change while a refresh is in flight. */
+  branchRoot: string | null;
   branches: Branch[];
   branchesLoaded: boolean;
   stashes: Stash[];
@@ -61,13 +73,19 @@ const initial: VcsState = {
   root: null,
   roots: [],
   kinds: {},
+  hasRemotes: null,
+  unfetched: new Map(),
+  branchRoots: {},
+
   operations: {},
   heads: {},
   repo: null,
   status: [],
+  resolvedConflicts: new Set(),
   statusLoaded: false,
   byPath: new Map(),
   branch: null,
+  branchRoot: null,
   branches: [],
   branchesLoaded: false,
   stashes: [],
@@ -97,6 +115,23 @@ export function currentRepo(): string | null {
 export function currentRepoRoot(): string | null {
   const s = useVcs.getState();
   return s.repo ?? s.roots[0] ?? s.root;
+}
+
+/** An observation stops applying as soon as the tracking configuration or local ref changes. */
+export function unfetchedBranch(
+  observations: VcsState["unfetched"],
+  repo: string | null,
+  branch: string | null | undefined,
+  tip: TrackedTip | null | undefined,
+): UnfetchedBranch | undefined {
+  if (!repo || !branch || !tip) return undefined;
+  const pending = observations.get(repo)?.get(branch);
+  if (
+    pending?.trackedTip.commit === tip.commit &&
+    pending.trackedTip.tracking.remote === tip.tracking.remote &&
+    pending.trackedTip.tracking.branch === tip.tracking.branch
+  )
+    return pending;
 }
 
 /** Root of the innermost repository containing `path`. */
@@ -179,15 +214,15 @@ let inflight: Promise<void> | null = null;
 /** The refresh queued behind `inflight` (it may have started before the caller's change). */
 let followUp: Promise<void> | null = null;
 let conflictListener: ((files: FileStatus[]) => void) | null = null;
-let conflictsClearedListener: (() => void) | null = null;
+let conflictsClearedListener: ((files: FileStatus[]) => void) | null = null;
 
-/** Called when the set of conflicted files becomes non-empty. */
-export function onConflictsAppeared(fn: (files: FileStatus[]) => void) {
+/** Called when a changed set of conflicted files remains non-empty. */
+export function onConflictsChanged(fn: (files: FileStatus[]) => void) {
   conflictListener = fn;
 }
 
-/** Called when the last conflicted file is resolved (or the merge is aborted). */
-export function onConflictsCleared(fn: () => void) {
+/** Reports the last unresolved files when all conflicts are resolved or the operation ends. */
+export function onConflictsCleared(fn: (files: FileStatus[]) => void) {
   conflictsClearedListener = fn;
 }
 
@@ -261,6 +296,10 @@ export function refreshNow(): Promise<void> {
       if (!selectedRepo) {
         useVcs.setState({
           available: false,
+          hasRemotes: false,
+          branchRoots: {},
+          resolvedConflicts: new Set(),
+          unfetched: new Map(),
           roots: [],
           repo: null,
           status: [],
@@ -278,10 +317,18 @@ export function refreshNow(): Promise<void> {
         applyStatus([], null);
         return;
       }
+      const gitRoots = vcsRoots.filter((r) => r.kind !== "jj");
+      useVcs.setState({
+        hasRemotes: gitRoots.some((r) => r.hasRemotes === true)
+          ? true
+          : gitRoots.every((r) => r.hasRemotes === false)
+            ? false
+            : null,
+      });
       const scoped = Promise.all([
         call(commands.vcsBranchInfo(selectedRepo)),
-        s.branchesLoaded ? call(commands.vcsBranches(selectedRepo)) : Promise.resolve([]),
-        s.stashesLoaded ? call(commands.vcsStashes(selectedRepo)) : Promise.resolve([]),
+        s.branchesLoaded ? call(commands.vcsBranches(selectedRepo)) : Promise.resolve(s.branches),
+        s.stashesLoaded ? call(commands.vcsStashes(selectedRepo)) : Promise.resolve(s.stashes),
       ]).then(
         (values) => ({ values }),
         (error: unknown) => ({ error }),
@@ -291,6 +338,7 @@ export function refreshNow(): Promise<void> {
       if ("error" in selected) {
         if (!s.repo || roots.includes(s.repo)) throw selected.error;
         useVcs.setState({ roots, repo: null, branchesLoaded: false, stashesLoaded: false });
+
         void refreshNow();
         return;
       }
@@ -302,12 +350,39 @@ export function refreshNow(): Promise<void> {
       const shown = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(
-        vcsRoots.filter((r) => r.kind !== "jj").map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]),
+        vcsRoots
+          .filter((r) => r.kind !== "jj")
+          .map((r) => [
+            r.root,
+            { head: r.head, headCommit: r.headCommit, shallow: !!r.shallow, interactiveRebase: r.interactiveRebase },
+          ]),
       );
-      useVcs.setState({ available: true, operations, heads });
+      const resolvedConflicts = new Set(
+        vcsRoots.filter((r) => r.kind !== "jj").flatMap((r) => r.resolvedConflicts ?? []),
+      );
+      const sameRoots = roots.join("\n") === s.roots.join("\n");
+      const branchRoots = Object.fromEntries(
+        vcsRoots.filter((r) => r.kind !== "jj").map((r) => [r.root, r.branchRoot ?? r.root]),
+      );
+      const sameBranchRoots = sameRoots && roots.every((root) => branchRoots[root] === s.branchRoots[root]);
+      useVcs.setState({
+        available: true,
+        operations,
+        heads,
+        resolvedConflicts,
+        branchRoots: sameBranchRoots ? s.branchRoots : branchRoots,
+      });
+      if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
+      setContext(
+        "vcsShallowRepositories",
+        vcsRoots
+          .filter((r) => r.shallow)
+          .map((r) => r.root)
+          .join("\n"),
+      );
       setContext("vcsAvailable", true);
-      if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
-      applyStatus(status, branch);
+      applyStatus(status, branch, selectedRepo);
+
       useVcs.setState({ branches, stashes, error: null });
       // Branch info and branches above are of another repository: load the selected one's.
       if (repo !== shown) {
@@ -423,10 +498,14 @@ export function pairsRenames(
   return (has(fresh, "added") && has(outside, "deleted")) || (has(fresh, "deleted") && has(outside, "added"));
 }
 
-export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
-  const before = conflictedFiles().length;
+export function applyStatus(
+  status: FileStatus[],
+  branch: BranchInfo | null,
+  branchRoot = useVcs.getState().branchRoot,
+) {
+  const before = conflictedFiles();
   const byPath = new Map(status.map((f) => [stripSlash(f.path), f]));
-  useVcs.setState({ status, byPath, branch, statusLoaded: true });
+  useVcs.setState({ status, byPath, branch, branchRoot, statusLoaded: true });
   setFileDecorations(
     "vcs",
     statusDecorations(
@@ -434,9 +513,13 @@ export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
       workflowSettings().vcs.showDirtyDirectories,
     ),
   );
+
   const conflicts = conflictedFiles(status);
-  if (before === 0 && conflicts.length > 0) conflictListener?.(conflicts);
-  else if (before > 0 && conflicts.length === 0) conflictsClearedListener?.();
+  if (conflicts.length === 0) {
+    if (before.length > 0) conflictsClearedListener?.(before);
+  } else if (before.length !== conflicts.length || before.some((f, i) => f.path !== conflicts[i]?.path)) {
+    conflictListener?.(conflicts);
+  }
 }
 
 export async function loadBranches(): Promise<Branch[]> {
@@ -487,6 +570,13 @@ export function installVcsStore(): () => void {
   });
   syncPathCapability();
   setContext("vcsJjAvailable", useVcs.getState().jjRoots.length > 0);
+  const syncFetchContext = ({ hasRemotes, remoteBusy }: VcsState) =>
+    setContext("vcsFetchDisabled", hasRemotes === false || !!remoteBusy);
+  syncFetchContext(useVcs.getState());
+  const offFetchContext = useVcs.subscribe((s, prev) => {
+    if (s.hasRemotes !== prev.hasRemotes || s.remoteBusy !== prev.remoteBusy) syncFetchContext(s);
+  });
+
   const onProject = () => {
     const project = useProject.getState().project;
     const available = !!project?.isGit;
@@ -497,6 +587,7 @@ export function installVcsStore(): () => void {
     pendingPaths.clear();
     useVcs.setState({ ...initial, available, root, version: useVcs.getState().version + 1 });
     setContext("vcsAvailable", available);
+    setContext("vcsShallowRepositories", "");
     setFileDecorations("vcs", new Map());
     if (available && isTauri()) void refreshNow();
     else if (project) void discoverRoots();
@@ -538,6 +629,8 @@ export function installVcsStore(): () => void {
     offKinds();
     setContext("vcsJjPath", false);
     setContext("vcsJjAvailable", false);
+    offFetchContext();
+
     offSettings();
     clearTimeout(timer);
     pendingFull = false;
@@ -546,6 +639,8 @@ export function installVcsStore(): () => void {
     offVcs();
     offFs();
     setContext("vcsAvailable", false);
+    setContext("vcsFetchDisabled", false);
+    setContext("vcsShallowRepositories", "");
     setFileDecorations("vcs", new Map());
   };
 }

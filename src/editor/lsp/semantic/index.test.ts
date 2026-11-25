@@ -7,10 +7,12 @@ import { openideaHighlightStyle } from "../../core/cm/highlight";
 import { setSyntaxHighlights, syntaxHighlightField } from "../../core/cm/syntaxHighlight";
 
 // One `property` token over the whole word, as jdtls reports an instance field.
-const lspSemanticTokens = vi.fn(async () => ({
-  status: "ok" as const,
-  data: { data: [0, 0, 13, 0, 0], tokenTypes: ["property"], tokenModifiers: [] },
-}));
+const lspSemanticTokens = vi.hoisted(() =>
+  vi.fn(async () => ({
+    status: "ok" as const,
+    data: { data: [0, 0, 13, 0, 0], tokenTypes: ["property"], tokenModifiers: [] },
+  })),
+);
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();

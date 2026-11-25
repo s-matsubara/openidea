@@ -43,6 +43,9 @@ vi.mock("@/editor/api", async (importOriginal) => ({
       text: () => working,
       lineEnding: () => workingEol,
       readOnly,
+      subscribeReadOnly: () => () => {},
+      subscribeExternalChanges: () => () => {},
+
       extension: [],
       context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: false }),
       save: () => Promise.resolve(),

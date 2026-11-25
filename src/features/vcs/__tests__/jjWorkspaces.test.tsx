@@ -66,6 +66,7 @@ beforeEach(() => {
     jjRoots: [
       {
         root: "/project",
+        branchRoot: "/project",
         kind: "jj",
         unavailableReason: null,
         workingCopy: null,
@@ -134,6 +135,7 @@ it.each(["project switch", "member detach"])("drops a late list response after %
       jjRoots: [
         {
           root: "/new",
+          branchRoot: "/new",
           kind: "jj",
           unavailableReason: null,
           workingCopy: null,

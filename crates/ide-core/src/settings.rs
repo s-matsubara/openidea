@@ -60,6 +60,7 @@ pub struct Settings {
     pub spelling: SpellingSettings,
     /// Tools › SSH Configurations.
     pub ssh: SshSettings,
+    pub remote_development: RemoteDevelopmentSettings,
     /// Build, Execution, Deployment › Deployment.
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
@@ -578,6 +579,7 @@ impl Default for Settings {
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
+            remote_development: RemoteDevelopmentSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
@@ -1206,7 +1208,9 @@ pub struct LanguagesSettings {
     pub typescript: TypeScriptSettings,
     pub prettier: ExternalFormatterSettings,
     pub oxfmt: ExternalFormatterSettings,
+    pub biome: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
+    pub black: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
@@ -1226,7 +1230,15 @@ impl Default for LanguagesSettings {
             typescript: TypeScriptSettings::default(),
             prettier: ExternalFormatterSettings::default(),
             oxfmt: ExternalFormatterSettings::default(),
+            biome: ExternalFormatterSettings {
+                languages: BIOME_LANGUAGES.iter().map(|&l| l.into()).collect(),
+                ..ExternalFormatterSettings::default()
+            },
             ruff: ExternalFormatterSettings {
+                languages: vec!["python".into()],
+                ..ExternalFormatterSettings::default()
+            },
+            black: ExternalFormatterSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
             },
@@ -1254,6 +1266,7 @@ pub struct ArduinoSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
+    pub preview_layout: MarkdownPreviewLayout,
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
     /// "Detect commands that can be run right from Markdown files": gutter run icons on
@@ -1265,8 +1278,21 @@ pub struct MarkdownSettings {
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
-        Self { preview_font_size: None, run_commands: true, command_directory: None }
+        Self {
+            preview_layout: MarkdownPreviewLayout::default(),
+            preview_font_size: None,
+            run_commands: true,
+            command_directory: None,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkdownPreviewLayout {
+    #[default]
+    SideBySide,
+    Stacked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1283,7 +1309,9 @@ impl LanguagesSettings {
         match tool {
             ExternalFormatter::Prettier => &self.prettier,
             ExternalFormatter::Oxfmt => &self.oxfmt,
+            ExternalFormatter::Biome => &self.biome,
             ExternalFormatter::Ruff => &self.ruff,
+            ExternalFormatter::Black => &self.black,
         }
     }
 }
@@ -1294,7 +1322,9 @@ impl LanguagesSettings {
 pub enum ExternalFormatter {
     Prettier,
     Oxfmt,
+    Biome,
     Ruff,
+    Black,
 }
 
 impl ExternalFormatter {
@@ -1303,16 +1333,22 @@ impl ExternalFormatter {
         match self {
             Self::Prettier => "prettier",
             Self::Oxfmt => "oxfmt",
+            Self::Biome => "biome",
             Self::Ruff => "ruff",
+            Self::Black => "black",
         }
     }
 }
 
-/// An external formatter (Prettier, oxfmt, Ruff) and the languages it formats.
+/// The languages Biome formats (of those Prettier formats).
+pub const BIOME_LANGUAGES: [&str; 8] =
+    ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
+
+/// An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
-    /// Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH.
+    /// Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH.
     pub path: String,
     /// Ruff only: directory containing its configuration, or a configuration file.
     pub configuration_directory: String,
@@ -1370,6 +1406,9 @@ pub struct PythonSettings {
     pub hide_other_project_interpreters: bool,
     /// Show each interpreter's path under its name on the interpreters page.
     pub show_interpreter_paths: bool,
+    /// Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+    /// by interpreter executable; absolute or `~/`.
+    pub interpreter_paths: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for PythonSettings {
@@ -1381,6 +1420,7 @@ impl Default for PythonSettings {
             hidden_interpreters: Vec::new(),
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
+            interpreter_paths: BTreeMap::new(),
         }
     }
 }
@@ -1887,6 +1927,20 @@ mod tests {
                 assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
             }
         }
+    }
+
+    #[test]
+    fn markdown_preview_layout_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"markdown":{"previewFontSize":16}}}"#).unwrap();
+        assert_eq!(old.languages.markdown.preview_layout, MarkdownPreviewLayout::SideBySide);
+        assert_eq!(old.languages.markdown.preview_font_size, Some(16));
+
+        let stacked: Settings =
+            serde_json::from_str(r#"{"languages":{"markdown":{"previewLayout":"stacked"}}}"#).unwrap();
+        assert_eq!(stacked.languages.markdown.preview_layout, MarkdownPreviewLayout::Stacked);
+        let saved = serde_json::to_value(&stacked).unwrap();
+        assert_eq!(saved["languages"]["markdown"]["previewLayout"], "stacked");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().languages.markdown, stacked.languages.markdown);
     }
 
     #[test]

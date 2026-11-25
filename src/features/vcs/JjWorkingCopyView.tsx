@@ -30,7 +30,7 @@ import styles from "./CommitView.module.css";
 import { CommitCheckProblems, runJjCommitChecks, type CommitCheckRun } from "./commitChecks";
 import { CommitMessageHistory } from "./CommitMessageHistory";
 import { CommitOptionsButton } from "./CommitOptions";
-import { messageHistory, rememberMessage, savedDraft, writeDraft, useCommit } from "./commitStore";
+import { messageHistory, rememberMessage, savedJjDraft, writeJjDraft, useCommit } from "./commitStore";
 import { openMergeEditor } from "./conflictsUi";
 import { DiffEditor } from "./DiffEditor";
 import { diffInput } from "./diffInput";
@@ -66,19 +66,19 @@ export function JjWorkingCopyView() {
   const error = useVcs((s) => s.error);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const project = useVcs((s) => s.root);
-  const [description, setDescription] = useState(() => (project ? savedDraft(project, "jj") : ""));
+  const [description, setDescription] = useState(() => (project ? savedJjDraft(project) : ""));
   const draft = useRef(description);
   useLayoutEffect(() => {
     draft.current = description;
   }, [description]);
   useEffect(() => {
     if (!project) return;
-    const timer = setTimeout(() => writeDraft(project, description, "jj"), 500);
+    const timer = setTimeout(() => writeJjDraft(project, description), 500);
     return () => clearTimeout(timer);
   }, [project, description]);
   useEffect(() => {
     if (!project) return;
-    const flush = () => writeDraft(project, draft.current, "jj");
+    const flush = () => writeJjDraft(project, draft.current);
     window.addEventListener("pagehide", flush);
     return () => {
       window.removeEventListener("pagehide", flush);

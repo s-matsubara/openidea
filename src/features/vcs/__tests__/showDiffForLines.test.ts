@@ -95,6 +95,7 @@ describe("vcs.showDiffForLines", () => {
         jjRoots: [
           {
             root: "/r",
+            branchRoot: "/r",
             kind: "jj",
             unavailableReason: null,
             operation: null,

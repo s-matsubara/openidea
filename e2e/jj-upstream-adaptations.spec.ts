@@ -26,6 +26,7 @@ async function stubJj(page: Page) {
       h.vcs_roots = (): VcsRoot[] => [
         {
           root,
+          branchRoot: root,
           kind: "jj",
           head: "main",
           headCommit: commit,

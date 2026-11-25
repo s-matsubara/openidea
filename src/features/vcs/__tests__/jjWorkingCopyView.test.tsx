@@ -6,7 +6,7 @@ import { setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
 import { CommitTabs, CommitToolWindow } from "../CommitView";
 import { useVcs } from "../store";
-import { rememberMessage, savedDraft, writeDraft, useCommit } from "../commitStore";
+import { rememberMessage, savedDraft, savedJjDraft, useCommit } from "../commitStore";
 import { useProject } from "@/platform/project";
 import { maybeJjCommitMessageTarget } from "@/workbench/contributions";
 import { ContextMenuHost } from "@/ui";
@@ -50,6 +50,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
 
 const root = (patch: Partial<VcsRoot> = {}): VcsRoot => ({
   root: "/jj",
+  branchRoot: patch.root ?? "/jj",
   kind: "jj",
   unavailableReason: null,
   operation: null,
@@ -817,11 +818,11 @@ it("opens the explicit jj diff from the new-window action in a jj-only project",
 });
 
 it("keeps the jj draft across remounts without sharing the Git draft", () => {
-  writeDraft("/jj", "Git draft");
+  localStorage.setItem("openidea.vcs.commitDraft:/jj", "Git draft");
   const first = render(<CommitToolWindow />);
   fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "jj draft" } });
   first.unmount();
-  expect(savedDraft("/jj", "jj")).toBe("jj draft");
+  expect(savedJjDraft("/jj")).toBe("jj draft");
   expect(savedDraft("/jj")).toBe("Git draft");
   render(<CommitToolWindow />);
   expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("jj draft");
@@ -834,7 +835,7 @@ it("keeps jj drafts isolated when projects switch", () => {
   fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "second" } });
   act(() => useVcs.setState({ root: "/jj", jjRoots: [root()] }));
   expect(screen.getByRole("textbox", { name: "Description" })).toHaveValue("first");
-  expect(savedDraft("/other", "jj")).toBe("second");
+  expect(savedJjDraft("/other")).toBe("second");
 });
 
 it("honors the shared option hiding the agent message button", () => {

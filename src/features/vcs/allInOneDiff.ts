@@ -17,6 +17,8 @@ export interface CombinedDiffData {
 
 const KEY = "openidea.diff.allInOne";
 
+export const combinedDiffDocumentOwner = (tab: string, diff: string) => `${tab}\0${diff}`;
+
 /** Whether diffs of several files open as one all-in-one diff (off by default). */
 export function allInOneDiff(): boolean {
   try {
@@ -36,6 +38,7 @@ export function setAllInOneDiff(on: boolean) {
 
 /** The chain of `data` as an all-in-one diff, when that view is on and the chain has several files. */
 export function combinedOf(data: DiffData, enabled = allInOneDiff()): CombinedDiffData | null {
-  if (data.embedded || !data.chain || data.chain.length < 2 || !enabled) return null;
+  if (data.middle || data.embedded || !data.chain || data.chain.length < 2 || !enabled) return null;
+
   return { items: data.chain, reveal: data.path };
 }

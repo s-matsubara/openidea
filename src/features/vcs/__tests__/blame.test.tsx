@@ -4,6 +4,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import {
   annotationsShown,
   blameSlot,
@@ -12,6 +13,7 @@ import {
   toggleAnnotations,
   useAnnotateColumns,
 } from "../blame";
+
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
@@ -24,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   commitFiles: vi.fn(),
   openDiff: vi.fn(),
   menu: vi.fn(),
+  settingsSet: vi.fn(),
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
@@ -40,9 +43,10 @@ vi.mock("@/platform/ipc", async (original) => {
     commands: {
       ...actual.commands,
       vcsBlame: mocks.blame,
-      vcsJjAnnotate: mocks.jjBlame,
       vcsLog: mocks.log,
       vcsCommitFiles: mocks.commitFiles,
+      settingsSet: mocks.settingsSet,
+      vcsJjAnnotate: mocks.jjBlame,
     },
   };
 });
@@ -81,6 +85,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   useI18n.setState({ locale: "en", texts: {} });
+  useProject.setState({ settings: {} });
   useVcs.setState({ available: true, root: "/repo", repo: "/repo", roots: ["/repo"] });
   mocks.blame.mockResolvedValue({ status: "ok", data: lines });
   mocks.log.mockResolvedValue({ status: "ok", data: [fullCommit] });
@@ -152,10 +157,15 @@ describe("git blame gutter and commit popup", () => {
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", sha);
   });
 
-  it("shows the line's change from the gutter menu's Show Diff", async () => {
+  it.each([undefined, "/repo/src/original.py"])("shows the line's change from its origin %s", async (originPath) => {
+    const origin = originPath ?? "/repo/src/main.py";
+    mocks.blame.mockResolvedValue({
+      status: "ok",
+      data: lines.map((line) => ({ ...line, originPath })),
+    });
     mocks.commitFiles.mockResolvedValue({
       status: "ok",
-      data: [{ path: "src/main.py", kind: "added", oldPath: null }],
+      data: [{ path: origin.slice("/repo/".length), kind: "added", oldPath: null }],
     });
     view = new EditorView({
       parent: document.body,
@@ -167,14 +177,24 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(firstLine);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
-    expect(items.map((i) => i.label).slice(0, 2)).toEqual(["Show Commit in Git Log", "Show Diff"]);
+    expect(items.map((i) => i.label)).toEqual([
+      "Close Annotations",
+      "Show Diff",
+      "Copy Revision Number",
+      undefined,
+      "Annotate at Revision…",
+      "Annotate Previous Revision",
+      "Show Commit in Git Log",
+      "Ignore This Commit",
+      "Options",
+    ]);
 
     items[1]!.run!();
     await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
     expect(mocks.commitFiles).toHaveBeenCalledWith("/repo", sha);
     expect(mocks.openDiff).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: "/repo/src/main.py",
+        path: origin,
         left: expect.objectContaining({ label: "(does not exist)" }),
         right: expect.objectContaining({ type: "rev", rev: sha }),
       }),
@@ -198,7 +218,7 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
-    expect(items.map((i) => i.label)).toEqual(["Options", "Close Annotations"]);
+    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options"]);
   });
 });
 
@@ -228,7 +248,11 @@ describe("annotate Options", () => {
 
   it("shows date and author by default and adds the revision from Options", async () => {
     view = await annotated();
-    expect(options(view).map((i) => [i.label, i.checked])).toEqual([
+    expect(
+      options(view)
+        .slice(0, 3)
+        .map((i) => [i.label, i.checked]),
+    ).toEqual([
       ["Date", true],
       ["Author", true],
       ["Revision", false],
@@ -238,7 +262,11 @@ describe("annotate Options", () => {
 
     act(() => options(view!)[2]!.run!());
     expect(hidden(view)).toEqual([]);
-    expect(options(view).map((i) => i.checked)).toEqual([true, true, true]);
+    expect(
+      options(view)
+        .slice(0, 3)
+        .map((i) => i.checked),
+    ).toEqual([true, true, true]);
 
     act(() => options(view!)[1]!.run!());
     expect(hidden(view)).toEqual(["author"]);
@@ -248,7 +276,7 @@ describe("annotate Options", () => {
     view = await annotated();
     act(() => options(view!)[1]!.run!());
     const last = options(view);
-    expect(last.map((i) => [i.checked, i.disabled])).toEqual([
+    expect(last.slice(0, 3).map((i) => [i.checked, i.disabled])).toEqual([
       [true, true],
       [false, false],
       [false, false],
@@ -281,7 +309,11 @@ describe("annotate Options", () => {
       window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateColumns" }));
     });
     expect(hidden(view)).toEqual(["author"]);
-    expect(options(view).map((i) => i.checked)).toEqual([true, false, true]);
+    expect(
+      options(view)
+        .slice(0, 3)
+        .map((i) => i.checked),
+    ).toEqual([true, false, true]);
   });
 
   it("falls back to the defaults for a stored value it cannot use", () => {
@@ -292,6 +324,50 @@ describe("annotate Options", () => {
     }
     localStorage.setItem("openidea.vcs.annotateColumns", '{"date":"no","revision":true}');
     expect(readAnnotateColumns()).toEqual({ date: true, author: true, revision: true });
+  });
+
+  it("refreshes current and historical editors with the saved Git options", async () => {
+    const annotate = { ignoreWhitespace: true, movement: "none" };
+    mocks.settingsSet.mockImplementation(async (_scope, key: string, value: string) => {
+      if (key.endsWith("ignoreWhitespace")) annotate.ignoreWhitespace = JSON.parse(value);
+      else annotate.movement = JSON.parse(value);
+      return { status: "ok", data: { vcs: { git: { annotate: { ...annotate } } } } };
+    });
+    view = await annotated();
+    const historical = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [blameSlot()] }),
+    });
+    const historyPath = "/repo/src/old.py";
+    try {
+      await toggleAnnotations(historical, historyPath, "one\ntwo\nthree", sha);
+      const labels = () =>
+        options(view!)
+          .slice(-3)
+          .map(({ checked }) => checked);
+      const toggle = async (label: string) => {
+        await act(async () => {
+          await options(view!).find((item) => item.label === label)!.run!();
+          await vi.advanceTimersByTimeAsync(20);
+        });
+      };
+      expect(labels()).toEqual([true, false, false]);
+      await toggle("Ignore Whitespaces");
+      expect(labels()).toEqual([false, false, false]);
+      expect(mocks.settingsSet).toHaveBeenLastCalledWith("global", "vcs.git.annotate.ignoreWhitespace", "false");
+      await toggle("Detect Movements Across Files");
+      expect(labels()).toEqual([false, true, true]);
+      expect(mocks.blame.mock.calls.slice(-2)).toEqual([
+        ["/repo/src/main.py", null, null],
+        [historyPath, "one\ntwo\nthree", sha],
+      ]);
+      await toggle("Detect Movements Across Files");
+      expect(labels()).toEqual([false, true, false]);
+      await toggle("Detect Movements Within File");
+      expect(labels()).toEqual([false, false, false]);
+    } finally {
+      historical.destroy();
+    }
   });
 
   it("leaves the editor's classes alone once annotations are closed", async () => {

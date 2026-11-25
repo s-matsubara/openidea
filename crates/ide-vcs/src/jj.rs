@@ -495,7 +495,13 @@ pub(crate) fn annotate(repo: &crate::Repo, path: &Path, commit: &str, text: &str
     for line in out.split(|&b| b == b'\n').filter(|line| !line.is_empty()) {
         let (commit, author, time, summary): (String, String, String, String) =
             serde_json::from_slice(line).map_err(|e| IdeError::invalid(format!("invalid jj annotation JSON: {e}")))?;
-        lines.push(crate::BlameLine { commit, author, time_ms: time.parse().unwrap_or_default(), summary });
+        lines.push(crate::BlameLine {
+            commit,
+            author,
+            time_ms: time.parse().unwrap_or_default(),
+            summary,
+            origin_path: None,
+        });
     }
     let fileset = format!("file:{}", serde_json::to_string(rel).unwrap());
     let base = read_command(repo, &exe, &["file", "show", "-r", commit, "-T", "", "--", &fileset])?;
@@ -738,6 +744,7 @@ fn conflict_versions_at(repo: &crate::Repo, path: &Path, commit: &str, exe: &Pat
     }
     let [ours, base, theirs] = sides;
     Ok(crate::MergeVersions {
+        binary: false,
         base: Some(base),
         ours: Some(ours),
         theirs: Some(theirs),

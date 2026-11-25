@@ -274,11 +274,12 @@ const ICONS = {
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
-  // Python environment sources: virtualenv / conda / uv / Poetry, and version managers (pyenv, mise, asdf).
+  // Python environment sources: virtualenv / conda / uv / Poetry / Hatch, and version managers (pyenv, mise, asdf).
   "python-venv": "openidea/python/venv",
   "python-conda": "openidea/python/conda",
   "python-uv": "openidea/python/uv",
   "python-poetry": "openidea/python/poetry",
+  "python-hatch": "openidea/python/hatch",
   "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",
@@ -331,6 +332,7 @@ const ICONS = {
   "actual-size": "openidea/general/actualZoom",
   chessboard: "openidea/general/chessboard",
   eyedropper: "openidea/general/eyedropper",
+  archive: "openidea/general/archive",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
   "window-minimize": "openidea/general/windowMinimize",
@@ -423,6 +425,8 @@ const ICONS = {
   export: "openidea/general/export",
   artifact: "openidea/general/artifact",
   web: "openidea/general/web",
+  remote: "openidea/general/remote",
+  "file-new": "openidea/general/newFile",
   "browser-chrome": "openidea/browsers/chrome",
   "browser-chromium": "openidea/browsers/chromium",
   "browser-firefox": "openidea/browsers/firefox",
@@ -537,6 +541,8 @@ const ICONS = {
   "vcs-outgoing": "vcs/changesPush@12x12",
   diff: "vcs/diff",
   revert: "vcs/revert",
+  patch: "vcs/patch",
+  "cherry-pick": "vcs/cherryPick",
   // The merge tool's own controls (IntelliJ's AllIcons.Diff)
   "diff-side-by-side": "diff/sideBySide",
   "diff-unified": "diff/unified",
@@ -1067,7 +1073,7 @@ const FILE_NAMES = table({
   "file-makefile": "makefile gnumakefile bsdmakefile makefile.am makefile.in kbuild",
   "file-cmake": "cmakelists.txt cmakecache.txt",
   "file-perl": "makefile.pl build.pl cpanfile",
-  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
+  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap .worktreeinclude",
   "file-ignored":
     ".gitignore .gitignore_global .dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
     ".fdignore .helmignore .vscodeignore .gcloudignore .slugignore .cfignore .bzrignore .containerignore",
@@ -1136,7 +1142,7 @@ const EXT_ICONS = table({
   "file-word": "doc docx rtf odt",
   "file-pdf": "pdf",
   "file-rst": "rst",
-  "file-yaml": "yaml yml gotmpl",
+  "file-yaml": "yaml yml",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
@@ -1183,7 +1189,7 @@ const EXT_ICONS = table({
   "file-csharp": "cs csx",
   "file-fsharp": "fs fsi fsx",
   "file-swift": "swift swiftinterface",
-  "file-go": "go",
+  "file-go": "go gotmpl tmpl",
   "file-rust": "rs",
   "file-ruby": "rb rake gemspec ru rbi jbuilder podspec erb rhtml",
   "file-lua": "lua luau rockspec",

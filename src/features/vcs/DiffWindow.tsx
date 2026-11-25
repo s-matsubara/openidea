@@ -27,6 +27,8 @@ import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
 import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { isJjPath, refreshNow, useVcs } from "./store";
+import { saveStagedDocuments, stagedDiffPath } from "./stagedDocument";
+
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
@@ -54,8 +56,13 @@ export function diffWindowData(launch: DiffLaunch): DiffData {
   return {
     path: launch.path,
     left: side(launch.left),
+    middle: launch.middle ? side(launch.middle) : undefined,
     right: side(launch.right),
+
     line: launch.line ?? undefined,
+    lineSide: launch.lineSide ?? undefined,
+    col: launch.col ?? undefined,
+    chain: launch.chain?.map(diffWindowData),
   };
 }
 
@@ -83,19 +90,28 @@ function openSource(parent: string, path: string, options?: OpenOptions) {
 export function activateDiffWindow(parent: string): () => void {
   const native = getCurrentWindow();
   const documents = activateEmbeddedDocuments();
+  const save = async () => {
+    await saveStagedDocuments();
+    await documents.save();
+  };
   provideEditorService({
     openFile: (path, options) => openSource(parent, path, options),
-    openInput: (input, options) => {
+    openInput: async (input, options) => {
       // F7 along a diff chain shows the neighbour here; anything else goes to the project window.
       const data = input.kind === DIFF_KIND ? (input.data as DiffData) : null;
       if (!data) return input.path ? openSource(parent, input.path, options) : Promise.resolve();
+      try {
+        await saveStagedDocuments();
+      } catch {
+        return; // The staged pane shows the conflict and retains the draft.
+      }
       useDiff.setState({ data });
       showCaption(diffCaption(data));
       return Promise.resolve();
     },
     activePath: () => null,
     activeCursor: () => null,
-    saveAll: documents.save,
+    saveAll: save,
   });
   let disposed = false;
   let closing = false;
@@ -107,7 +123,7 @@ export function activateDiffWindow(parent: string): () => void {
     category: "File",
     run: async () => {
       try {
-        await documents.save();
+        await save();
       } catch (error) {
         showError(tx("Could not save diff"), error instanceof Error ? error.message : String(error));
       }
@@ -123,7 +139,7 @@ export function activateDiffWindow(parent: string): () => void {
       const data = useDiff.getState().data;
       if (!data) return;
       try {
-        await documents.save();
+        await save();
         await emitTo(parent, OPEN_DIFF, data);
         await native.close();
       } catch (error) {
@@ -131,7 +147,7 @@ export function activateDiffWindow(parent: string): () => void {
       }
     },
   });
-  const savingReady = installDiffWindowSave(parent, documents.save).then((off) => {
+  const savingReady = installDiffWindowSave(parent, save).then((off) => {
     if (disposed) off();
     else stopSave = off;
   });
@@ -157,7 +173,7 @@ export function activateDiffWindow(parent: string): () => void {
             return;
           }
         }
-        await documents.save();
+        await save();
         await documents.dispose();
         closed = true;
       } catch (error) {
@@ -273,15 +289,23 @@ export function showDiffWindow(data: DiffData, fallback: () => void) {
     fallback();
     return;
   }
-  const launch: DiffLaunch = {
-    path: data.path,
-    left: data.left,
-    right: data.right,
-    line: data.line,
-  };
+  const launch = toDiffLaunch(data);
   void call(commands.windowOpenDiff(launch, windowBackgroundHex())).catch((error) =>
     showError(tx("Cannot show diff in a new window"), error instanceof Error ? error.message : String(error)),
   );
+}
+
+function toDiffLaunch(data: DiffData): DiffLaunch {
+  return {
+    path: data.path,
+    left: data.left,
+    middle: data.middle,
+    right: data.right,
+    line: data.line,
+    lineSide: data.lineSide,
+    col: data.col,
+    chain: data.middle || stagedDiffPath(data) ? data.chain?.map(toDiffLaunch) : undefined,
+  };
 }
 
 export function DiffWindow() {
@@ -304,7 +328,7 @@ export function DiffWindow() {
         </div>
       ) : (
         <div className={styles.comparisonWindowBody} inert={closing}>
-          <DiffEditor input={diffInput(data)} />
+          <DiffEditor key={diffInput(data).key} input={diffInput(data)} />
         </div>
       )}
       <OverlayHost />

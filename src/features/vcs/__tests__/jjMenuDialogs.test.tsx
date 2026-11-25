@@ -53,6 +53,7 @@ beforeEach(() => {
     jjRoots: [
       {
         root: "/project",
+        branchRoot: "/project",
         kind: "jj",
         unavailableReason: null,
         workingCopy: null,

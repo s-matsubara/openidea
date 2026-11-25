@@ -33,6 +33,7 @@ import "./php";
 import "./go";
 import "./rust";
 import "./java";
+import "./javascript";
 
 const semanticBackoff = featureBackoff();
 
@@ -161,7 +162,8 @@ export function semanticRanges(
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    semantics?.tokenClasses?.({ type, text: doc.sliceString(from, to), modifiers: names, kind, classes });
+    semantics?.tokenClasses?.({ type, text: doc.sliceString(from, to), modifiers: names, kind, classes, marksLocals });
+
     const local =
       rainbow &&
       !constant &&

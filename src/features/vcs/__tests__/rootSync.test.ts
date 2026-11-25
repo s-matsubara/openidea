@@ -32,6 +32,7 @@ const file = (path: string, unstaged: FileStatus["unstaged"], renamedFrom: strin
 
 const jj = (root: string, files: FileStatus[]): VcsRoot => ({
   root,
+  branchRoot: root,
   kind: "jj",
   unavailableReason: null,
   workingCopy: { changeId: "change", commitId: "commit", description: "", files },

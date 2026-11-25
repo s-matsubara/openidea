@@ -7,11 +7,13 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { showContextMenu } from "@/ui";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { showContextMenu, type MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatDate, rootOf } from "./model";
 import { isJjPath, refreshNow, useVcs } from "./store";
+import { saveVcsSetting } from "./settingsUi";
 
 const ZERO = /^0+$/;
 
@@ -171,18 +173,41 @@ const annotateColumns = ViewPlugin.define(
 
 const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
 
-function optionsMenu() {
+function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
+  const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
-    submenu: COLUMNS.map((k) => ({
-      label: COLUMN_LABELS[k],
-      checked: c[k],
-      // At least one column stays, as in IDEA.
-      disabled: c[k] && shown === 1,
-      run: () => setAnnotateColumn(k, !c[k]),
-    })),
+    submenu: [
+      ...COLUMNS.map((k) => ({
+        label: COLUMN_LABELS[k],
+        checked: c[k],
+        disabled: c[k] && shown === 1,
+        run: () => setAnnotateColumn(k, !c[k]),
+      })),
+      { kind: "separator" },
+      {
+        label: "Ignore Whitespaces",
+        checked: ignoreWhitespace,
+        run: () => saveVcsSetting("vcs.git.annotate.ignoreWhitespace", !ignoreWhitespace, "global"),
+      },
+      {
+        label: "Detect Movements Within File",
+        checked: movement !== "none",
+        run: () => saveVcsSetting("vcs.git.annotate.movement", movement === "none" ? "withinFile" : "none", "global"),
+      },
+      {
+        label: "Detect Movements Across Files",
+        checked: movement === "acrossFiles",
+        run: () =>
+          saveVcsSetting(
+            "vcs.git.annotate.movement",
+            movement === "acrossFiles" ? "withinFile" : "acrossFiles",
+            "global",
+          ),
+      },
+    ],
   };
 }
 
@@ -248,11 +273,12 @@ const measureBlameColumns = {
   },
 };
 
-/** Re-blames `path` and repaints the gutter while annotations are still shown. */
-async function refreshAnnotations(view: EditorView, path: string) {
-  const lines = await call(commands.vcsBlame(path, null, null)).catch(() => null);
-  if (!lines || !view.state.field(blameField, false)) return;
-  view.dispatch({ effects: setBlame.of(lines) });
+interface BlameSource {
+  jj?: JjBlameTarget;
+  jjLive?: boolean;
+  path: string;
+  text?: string;
+  revision?: string;
 }
 
 function jjWorkingCommit(root: string, state = useVcs.getState()) {
@@ -260,52 +286,71 @@ function jjWorkingCommit(root: string, state = useVcs.getState()) {
 }
 
 /** Refreshes after edits or when the repository snapshot moves. */
+
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private destroyed = false;
-  private readonly offHead: () => void;
+  private generation = 0;
+  private readonly off: (() => void)[];
+  private readonly live: boolean;
+
   constructor(
     private readonly view: EditorView,
-    private readonly path: string,
-    private readonly jjRoot?: string,
+    private readonly source: BlameSource,
   ) {
-    this.offHead = useVcs.subscribe((s, p) => {
-      const changed = jjRoot
-        ? jjWorkingCommit(jjRoot, s) !== jjWorkingCommit(jjRoot, p)
-        : s.branch?.headCommit !== p.branch?.headCommit;
-      if (changed) this.schedule(100);
-    });
-  }
-  update(u: ViewUpdate) {
-    if (u.docChanged) this.schedule(800);
-  }
-  private schedule(delay: number) {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      const doc = this.view.state.doc;
-      const root = this.jjRoot;
-      const commit = root ? jjWorkingCommit(root) : undefined;
-      if (root && !commit) return;
-      const request =
-        root && commit
-          ? commands.vcsJjAnnotate(root, this.path, commit, doc.toString())
-          : commands.vcsBlame(this.path, null, null);
-      void call(request)
-        .then((lines) => {
+    this.live = source.jj ? !!source.jjLive : source.text === undefined && source.revision === undefined;
+    this.off = source.jj
+      ? []
+      : [
+          onWorkflowSettingsChange(
+            (s) => s.vcs.git.annotate,
+            () => this.schedule(0),
+          ),
+        ];
+    if (this.live) {
+      this.off.push(
+        useVcs.subscribe((s, p) => {
           if (
-            !this.destroyed &&
-            (!root || (this.view.state.doc === doc && jjWorkingCommit(root) === commit)) &&
-            this.view.state.field(blameField, false)
+            source.jj
+              ? jjWorkingCommit(source.jj.root, s) !== jjWorkingCommit(source.jj.root, p)
+              : s.branch?.headCommit !== p.branch?.headCommit
           )
-            this.view.dispatch({ effects: setBlame.of(lines) });
-        })
-        .catch(() => undefined);
-    }, delay);
+            this.schedule(100);
+        }),
+      );
+    }
   }
-  destroy() {
-    this.destroyed = true;
-    this.offHead();
+
+  update(u: ViewUpdate) {
+    if (this.live && u.docChanged) this.schedule(800);
+  }
+
+  schedule(delay: number) {
     clearTimeout(this.timer);
+    const generation = ++this.generation;
+    this.timer = setTimeout(() => void this.refresh(generation), delay);
+  }
+
+  private async refresh(generation: number) {
+    const { path, text, revision } = this.source;
+    const doc = this.view.state.doc;
+    const target = this.source.jj;
+    const commit = target ? (this.live ? jjWorkingCommit(target.root) : target.commit) : undefined;
+    if (target && !commit) return;
+    const lines = await call(
+      target && commit
+        ? commands.vcsJjAnnotate(target.root, path, commit, doc.toString())
+        : commands.vcsBlame(path, text ?? null, revision ?? null),
+    ).catch(() => null);
+    if (target && (this.view.state.doc !== doc || (this.live && jjWorkingCommit(target.root) !== commit))) return;
+    if (!lines || generation !== this.generation || !annotationsShown(this.view)) return;
+    closeBlamePopup(this.view);
+    this.view.dispatch({ effects: setBlame.of(lines) });
+  }
+
+  destroy() {
+    ++this.generation;
+    clearTimeout(this.timer);
+    for (const off of this.off) off();
   }
 }
 
@@ -392,7 +437,11 @@ class BlameInteraction implements PluginValue {
   }
 }
 
-function blameExtension(lines: BlameLine[], path: string, live: boolean, jj: boolean, jjRoot?: string): Extension {
+function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
+  const { path } = source;
+  const refresher = ViewPlugin.define((view) => new BlameRefresher(view, source));
+  const jj = !!source.jj;
+
   return [
     blameField.init((state) => build(lines, state.doc, jj)),
     Prec.high(
@@ -422,56 +471,60 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean, jj: boo
           contextmenu(view, block, event) {
             closeBlamePopup(view);
             const l = lineAt(view, block.from);
+            const origin = l?.originPath ?? path;
             event.preventDefault();
             showContextMenu(event as MouseEvent, [
+              { label: "Close Annotations", run: () => setAnnotations(view, null, source) },
               ...(l && !isUncommitted(l)
                 ? [
-                    ...(!jj
-                      ? [
-                          {
-                            label: "Show Commit in Git Log",
-                            icon: "commit",
-                            run: () => void executeAction("vcs.showCommit", l.commit),
-                          },
-                        ]
-                      : []),
                     ...(!jj
                       ? [
                           {
                             label: "Show Diff",
                             icon: "diff",
                             run: () =>
-                              void import("./annotateRevision").then((m) => m.showRevisionDiff(path, l.commit)),
+                              void import("./annotateRevision").then((m) => m.showRevisionDiff(origin, l.commit)),
                           },
                         ]
                       : []),
+
                     {
                       label: "Copy Revision Number",
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
                     },
-                    {
-                      label: "Ignore This Commit",
-                      icon: "hide",
-                      run: () => void ignoreCommit(view, path, l.commit, live),
-                    },
-                    {
-                      label: tx("Annotate at Revision…"),
-                      icon: "clock",
-                      run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
-                    },
-                    {
-                      label: tx("Annotate Previous Revision"),
-                      icon: "history",
-                      // Loads the history and diff viewer code only when it is used.
-                      run: () =>
-                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
-                    },
-                    { kind: "separator" as const },
+                    ...(!jj
+                      ? [
+                          { kind: "separator" as const },
+                          {
+                            label: tx("Annotate at Revision…"),
+                            icon: "clock",
+                            run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                          },
+                          {
+                            label: tx("Annotate Previous Revision"),
+                            icon: "history",
+                            // Loads the history and diff viewer code only when it is used.
+                            run: () =>
+                              void import("./annotateRevision").then((m) =>
+                                m.annotatePreviousRevision(origin, l.commit),
+                              ),
+                          },
+                          {
+                            label: "Show Commit in Git Log",
+                            icon: "commit",
+                            run: () => void executeAction("vcs.showCommit", l.commit),
+                          },
+                          {
+                            label: "Ignore This Commit",
+                            icon: "hide",
+                            run: () => void ignoreCommit(path, l.commit, () => view.plugin(refresher)?.schedule(0)),
+                          },
+                        ]
+                      : []),
                   ]
                 : []),
               optionsMenu(),
-              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
           },
@@ -480,8 +533,8 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean, jj: boo
     ),
     ViewPlugin.define((view) => new BlameInteraction(view)),
     annotateColumns,
-    // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
-    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path, jjRoot))] : []),
+    refresher,
+
     blameTheme,
   ];
 }
@@ -490,21 +543,14 @@ export function annotationsShown(view: EditorView): boolean {
   return !!view.state.field(blameField, false);
 }
 
-function setAnnotations(
-  view: EditorView,
-  lines: BlameLine[] | null,
-  path: string,
-  live: boolean,
-  jj = false,
-  jjRoot?: string,
-) {
+function setAnnotations(view: EditorView, lines: BlameLine[] | null, source: BlameSource) {
   if (!lines) closeBlamePopup(view);
-  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live, jj, jjRoot) : []) });
+  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, source) : []) });
 }
 
 export async function toggleJjWorkingAnnotations(view: EditorView, path: string) {
   if (annotationsShown(view)) {
-    setAnnotations(view, null, path, false);
+    setAnnotations(view, null, { path });
     return;
   }
   if (!isJjPath(path)) return;
@@ -521,14 +567,14 @@ export async function toggleJjWorkingAnnotations(view: EditorView, path: string)
 
 export async function toggleJjAnnotations(view: EditorView, target: JjBlameTarget, live = false) {
   if (annotationsShown(view)) {
-    setAnnotations(view, null, target.path, false);
+    setAnnotations(view, null, { path: target.path });
     return;
   }
   const doc = view.state.doc;
   try {
     const lines = await call(commands.vcsJjAnnotate(target.root, target.path, target.commit, doc.toString()));
     if (view.state.doc === doc && (!live || jjWorkingCommit(target.root) === target.commit))
-      setAnnotations(view, lines, target.path, live, true, live ? target.root : undefined);
+      setAnnotations(view, lines, { path: target.path, jj: target, jjLive: live });
   } catch (e) {
     reportAnnotationError(e);
   }
@@ -536,12 +582,12 @@ export async function toggleJjAnnotations(view: EditorView, target: JjBlameTarge
 
 /**
  * Appends `commit` to the repository's ignore list so annotate skips it, then re-blames
- * the gutter (a live one shows the commit before it on those lines).
+ * the gutter.
  */
-async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
+async function ignoreCommit(path: string, commit: string, refresh: () => void) {
   try {
     await call(commands.vcsIgnoreBlameRevision(path, commit));
-    if (live) await refreshAnnotations(view, path);
+    refresh();
   } catch (e) {
     notifications().notify({
       group: "vcs",
@@ -556,7 +602,7 @@ async function ignoreCommit(view: EditorView, path: string, commit: string, live
  * disk, `revision` the history it is blamed on (default HEAD). */
 export async function toggleAnnotations(view: EditorView, path: string, text?: string, revision?: string) {
   if (annotationsShown(view)) {
-    setAnnotations(view, null, path, false);
+    setAnnotations(view, null, { path });
     return;
   }
   try {
@@ -571,7 +617,7 @@ export async function toggleAnnotations(view: EditorView, path: string, text?: s
       });
       return;
     }
-    setAnnotations(view, lines, path, text === undefined);
+    setAnnotations(view, lines, { path, text, revision });
   } catch (e) {
     reportAnnotationError(e);
   }

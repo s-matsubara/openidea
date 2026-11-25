@@ -453,6 +453,57 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 }
 
 #[tokio::test]
+async fn change_reads_share_a_budget_until_the_blocking_work_finishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::default());
+    let submitted = Arc::new(AtomicU32::new(0));
+    mgr.set_git_executable_hook(Arc::new({
+        let submitted = submitted.clone();
+        move || {
+            submitted.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }));
+    let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+    let (finished, mut finishes) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut reads = Vec::new();
+    for job in 0..12 {
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        releases.push(release);
+        let (started, finished) = (started.clone(), finished.clone());
+        let mut read = Box::pin(read_changes(&mgr.shared, move || {
+            started.send(()).unwrap();
+            gate.blocking_recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(())
+        }));
+        tokio::select! { biased; _ = &mut read => panic!("read finished before release"), _ = std::future::ready(()) => {} }
+        reads.push(read);
+        if job == 0 {
+            // Cancelling the requester cannot stop the blocking job or free its slot.
+            starts.recv().await.unwrap();
+            drop(reads.pop());
+        }
+    }
+    let admitted = submitted.load(Ordering::SeqCst);
+    for _ in 1..admitted {
+        starts.recv().await.unwrap();
+    }
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    for read in reads {
+        read.await.unwrap();
+    }
+    for _ in 0..12 {
+        finishes.recv().await.unwrap();
+    }
+    eprintln!("change-read fixture: peak active {admitted}; completed 12/12");
+    assert_eq!(admitted, 4);
+}
+
+#[tokio::test]
 async fn subscribers_do_not_replace_or_close_each_other() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
@@ -986,7 +1037,7 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     wait_for(&mgr_a, &task.id, AgentStatus::NeedsInput).await;
     assert_eq!(names(mgr_a.commands("claude", None).await.unwrap()), ["review", "triage"]);
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
-    // Other agents get only what they offered, plus verified native builtins.
+    // Other agents also receive the project's active skills from the skills hub, plus verified native builtins.
     assert_eq!(
         names(mgr_a.commands("codex", None).await.unwrap()),
         [
@@ -1001,6 +1052,7 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
             "goal",
             "rename",
             "logout",
+            "triage",
         ]
     );
     mgr_a.cancel(&task.id, None).unwrap();
@@ -1101,7 +1153,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let task = mgr
         .create(NewAgentTask {
@@ -1375,6 +1427,49 @@ async fn steers_through_session_steering() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stale_queue_actions_refresh_the_queue_without_starting_another_turn() {
+    use ide_core::error::ErrorKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("ask"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    let handle = mgr.task(&task.id).unwrap();
+    let queued = handle.state.lock().task.queue[0].id.clone();
+    let permission = *handle.permissions.lock().keys().next().unwrap();
+    let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    let weak = Arc::downgrade(&handle);
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && task.queue.is_empty()
+                && let Some(handle) = weak.upgrade()
+            {
+                let _ = tx.send(handle.turns.load(Ordering::Acquire));
+            }
+        }),
+    );
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(updates.try_recv().unwrap(), 1, "publish the dequeue before starting the second turn");
+    while updates.try_recv().is_ok() {}
+
+    for error in
+        [mgr.unqueue(&task.id, &queued).unwrap_err(), mgr.send_queued_now(&task.id, &queued).await.unwrap_err()]
+    {
+        assert_eq!(error.kind, ErrorKind::OutOfSync);
+        assert_eq!(updates.try_recv().unwrap(), 2, "a stale action gets the current queue");
+    }
+    assert!(!handle.state.lock().busy);
+    assert_eq!(mgr.unqueue("missing-task", &queued).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -1639,6 +1734,11 @@ fn prompts_become_acp_content_blocks() {
     assert_eq!(old["entries"][0]["attachments"], json!([]));
     assert!(old["entries"][1].get("attachments").is_none());
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
+    let pasted = AgentPrompt { text: "```text\n\n  ## Fix the tab title\n```".into(), ..AgentPrompt::default() };
+    assert_eq!(title_of(&pasted), "## Fix the tab title");
+    let fenced_first =
+        AgentPrompt { text: "```txt\nlog line\n```\nWhy does this fail?".into(), ..AgentPrompt::default() };
+    assert_eq!(title_of(&fenced_first), "Why does this fail?");
     assert!(clean(text(" ")).is_none());
 }
 
@@ -2946,7 +3046,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_sink = events.clone();
-    mgr.subscribe(Arc::new(move |ev| events_sink.lock().push(ev)));
+    mgr.subscribe_as("", Arc::new(move |ev| events_sink.lock().push(ev)));
 
     let toml = format!(
         "name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\", \"--stdio\"]\n",
@@ -3365,14 +3465,17 @@ async fn config_choice_shows_before_the_agent_answers() {
     let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
     let shown: Arc<Mutex<Option<std::time::Instant>>> = Arc::default();
     let mark = shown.clone();
-    mgr.subscribe(Arc::new(move |e| {
-        if let AgentEvent::Task { task } = e
-            && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
-            && mark.lock().is_none()
-        {
-            *mark.lock() = Some(std::time::Instant::now());
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |e| {
+            if let AgentEvent::Task { task } = e
+                && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
+                && mark.lock().is_none()
+            {
+                *mark.lock() = Some(std::time::Instant::now());
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -4216,7 +4319,7 @@ async fn attention_finished_not_cancelled() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let done = mgr
         .create(NewAgentTask {
@@ -4270,7 +4373,7 @@ async fn attention_failed() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -4295,7 +4398,7 @@ async fn attention_input_not_auto_bypass() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let asked = mgr
         .create(NewAgentTask {
@@ -4360,7 +4463,7 @@ async fn attention_not_emitted_on_restore() {
     let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    let tasks = restored.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    let tasks = restored.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     assert!(tasks.iter().any(|t| t.id == task.id));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(attention_reasons(&events.lock()).is_empty(), "snapshot restore must not re-notify: {:?}", *events.lock());
@@ -4441,6 +4544,82 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
     assert!(!reloaded.1.contains(&"github".to_string()));
     assert!(reloaded.1.contains(&"slack".to_string()));
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join(".agents/skills/tdd")).unwrap();
+    std::fs::write(root.join(".agents/skills/tdd/SKILL.md"), "---\nname: tdd\ndescription: TDD\n---\n").unwrap();
+    std::fs::create_dir_all(root.join(".claude/skills/noisy")).unwrap();
+    std::fs::write(root.join(".claude/skills/noisy/SKILL.md"), "---\nname: noisy\ndescription: Noisy\n---\n").unwrap();
+
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(root, agent.clone());
+    mgr.set_skills_policy_hook(Box::new({
+        let root = root.to_path_buf();
+        move || SkillsPolicy {
+            user: BTreeMap::from([("tdd".into(), AgentSkillPolicy { mode: AgentSkillMode::Off })]),
+            workspace_roots: vec![root.clone()],
+            ..SkillsPolicy::default()
+        }
+    }));
+
+    // Start task with `tdd` (default off) enabled for this session and `noisy` turned off.
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+            mcp_overrides: BTreeMap::new(),
+            idle: false,
+            skill_overrides: BTreeMap::from([
+                ("tdd".into(), AgentSkillMode::Auto),
+                ("noisy".into(), AgentSkillMode::Off),
+            ]),
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let cmd_names: Vec<String> =
+        mgr.commands("claude", Some(&task.id)).await.unwrap().into_iter().map(|c| c.name).collect();
+    assert!(cmd_names.contains(&"tdd".to_string()), "{cmd_names:?}");
+    assert!(
+        !cmd_names.contains(&"noisy".to_string()),
+        "`noisy` offered on disk must be stripped when off: {cmd_names:?}"
+    );
+
+    // Flip overrides while idle -> recycles resumable session so next turn calls `session/load`.
+    let updated = mgr
+        .set_skill_overrides(
+            &task.id,
+            BTreeMap::from([("tdd".into(), AgentSkillMode::Off), ("noisy".into(), AgentSkillMode::Auto)]),
+        )
+        .unwrap();
+    assert_eq!(updated.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
+    assert_eq!(updated.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
+
+    let cmd_names_after: Vec<String> =
+        mgr.commands("claude", Some(&task.id)).await.unwrap().into_iter().map(|c| c.name).collect();
+    assert!(!cmd_names_after.contains(&"tdd".to_string()), "{cmd_names_after:?}");
+    assert!(cmd_names_after.contains(&"noisy".to_string()), "{cmd_names_after:?}");
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(agent.mcp_calls.lock().last().map(|c| c.0.as_str()), Some("session/load"));
+    mgr.shutdown();
+
+    // Persisted task file preserves `skill_overrides` across restart.
+    let restored_mgr = manager(root, Arc::new(FakeAgent::default()));
+    let restored = restored_mgr.subscribe_as("", Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
+    assert_eq!(restored.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
+    assert_eq!(restored.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
+    restored_mgr.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4649,10 +4828,43 @@ done
 #[test]
 fn session_params_name_the_servers_off() {
     let mcp = McpForSession { servers: vec![json!({ "name": "docs" })], off: vec!["github".into()] };
-    let params = session_params("/p", &mcp, None);
+    let params = session_params("/p", &mcp, None, &[]);
     assert_eq!(params["cwd"], "/p");
     assert_eq!(params["mcpServers"][0]["name"], "docs");
     assert_eq!(params["_meta"]["openidea"]["mcpServersOff"], json!(["github"]));
     let none = McpForSession { servers: Vec::new(), off: Vec::new() };
-    assert!(session_params("/p", &none, None).get("_meta").is_none());
+    assert!(session_params("/p", &none, None, &[]).get("_meta").is_none());
+}
+
+#[test]
+fn session_params_offer_the_workspace_roots() {
+    let none = McpForSession { servers: Vec::new(), off: Vec::new() };
+    let params = session_params("/w/api", &none, None, &["/w/web".to_owned()]);
+    assert_eq!(params["additionalDirectories"], json!(["/w/web"]));
+    assert!(session_params("/w/api", &none, None, &[]).get("additionalDirectories").is_none());
+}
+
+#[tokio::test]
+async fn workspace_roots_go_to_agents_that_take_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let [api, web, worktree] = ["api", "web", "worktree"].map(|d| tmp.path().join(d));
+    for d in [&api, &web, &worktree] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let hook_roots = [api.clone(), web.clone(), web.clone()];
+    mgr.set_workspace_roots_hook(Arc::new(move || hook_roots.to_vec()));
+    let init = |capabilities: Value| acp::Negotiated {
+        generation: 1,
+        capabilities,
+        agent_info: None,
+        auth_methods: Vec::new(),
+        meta: None,
+    };
+    let takes = init(json!({ "sessionCapabilities": { "additionalDirectories": {} } }));
+    let web = dunce::canonicalize(&web).unwrap().to_string_lossy().into_owned();
+    assert_eq!(mgr.shared.additional_directories(&takes, &api, None), vec![web.clone()]);
+    // A task in a worktree of `api` isn't offered the project's own checkout.
+    assert_eq!(mgr.shared.additional_directories(&takes, &worktree, Some(&api)), vec![web]);
+    assert!(mgr.shared.additional_directories(&init(json!({})), &api, None).is_empty());
 }

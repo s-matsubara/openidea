@@ -1089,9 +1089,9 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -1541,7 +1541,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2346,9 +2346,9 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4119,6 +4119,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 name = "ide-agent"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "dunce",
  "encoding_rs",
@@ -4152,8 +4153,6 @@ dependencies = [
  "rayon",
  "serde",
  "specta",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]
@@ -4163,7 +4162,6 @@ dependencies = [
  "ide-core",
  "serde",
  "specta",
- "tempfile",
  "which",
 ]
 
@@ -4225,6 +4223,7 @@ dependencies = [
 name = "ide-core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "dunce",
  "encoding_rs",
  "libc",
@@ -4249,7 +4248,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -4288,7 +4286,6 @@ dependencies = [
  "base64 0.22.1",
  "bb8",
  "blake3",
- "dirs 7.0.0",
  "dunce",
  "flate2",
  "futures",
@@ -4354,7 +4351,6 @@ dependencies = [
  "blake3",
  "dunce",
  "ed25519-dalek",
- "ide-core",
  "parking_lot 0.13.0",
  "semver",
  "serde",
@@ -4409,6 +4405,7 @@ version = "0.0.0"
 dependencies = [
  "criterion 0.5.1",
  "ide-core",
+ "ide-heap",
  "libc",
  "memmap2",
  "proptest",
@@ -4512,7 +4509,6 @@ dependencies = [
  "specta",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -4525,6 +4521,7 @@ dependencies = [
  "dunce",
  "globset",
  "ide-core",
+ "ide-index",
  "ide-language",
  "ignore",
  "nucleo-matcher",
@@ -4555,7 +4552,6 @@ name = "ide-jsonrpc"
 version = "0.0.0"
 dependencies = [
  "encoding_rs",
- "futures",
  "ide-core",
  "parking_lot 0.13.0",
  "serde",
@@ -4699,7 +4695,6 @@ dependencies = [
 name = "ide-notebook"
 version = "0.0.0"
 dependencies = [
- "futures",
  "ide-core",
  "ide-vfs",
  "jupyter-protocol",
@@ -4712,7 +4707,6 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
  "windows-sys 0.61.2",
  "zeromq",
@@ -4732,7 +4726,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
  "url",
@@ -4819,6 +4812,8 @@ dependencies = [
 name = "ide-sdk"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "dirs 7.0.0",
  "dunce",
  "flate2",
  "ide-core",
@@ -4829,6 +4824,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "tar",
  "tempfile",
@@ -4984,6 +4980,7 @@ dependencies = [
  "ide-core",
  "ignore",
  "libc",
+ "notify",
  "redb",
  "regex-lite",
  "serde",
@@ -6667,14 +6664,11 @@ dependencies = [
  "dunce",
  "gtk",
  "ide-agent",
- "ide-analysis",
  "ide-android",
- "ide-build",
  "ide-cli",
  "ide-clipboard",
  "ide-command",
  "ide-core",
- "ide-coverage",
  "ide-dap",
  "ide-db",
  "ide-docker",
@@ -6684,24 +6678,16 @@ dependencies = [
  "ide-github",
  "ide-host",
  "ide-http",
- "ide-index",
  "ide-jsonrpc",
  "ide-language",
- "ide-lsp",
  "ide-mcp",
- "ide-notebook",
  "ide-plugin",
  "ide-profiler",
  "ide-remote",
  "ide-run",
- "ide-scaffold",
  "ide-sdk",
- "ide-search",
- "ide-spell",
  "ide-ssh",
- "ide-syntax",
  "ide-terminal",
- "ide-text",
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
@@ -10805,9 +10791,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

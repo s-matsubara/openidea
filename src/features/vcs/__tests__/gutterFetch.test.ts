@@ -6,6 +6,11 @@ import { changeMarkers, editorHunks, setHunkPopupHooks, showHunkPopup } from "..
 import { useVcs } from "../store";
 
 const read = vi.hoisted(() => vi.fn());
+const staging = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../staging", async (original) => ({
+  ...(await original<typeof import("../staging")>()),
+  stagingAreaOn: () => staging.enabled,
+}));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
@@ -15,6 +20,7 @@ vi.mock("@/platform/ipc", async (original) => ({
 const hunk: LineHunk = { kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "parent\n" };
 const jjRoot: VcsRoot = {
   root: "/git/jj",
+  branchRoot: "/git/jj",
   kind: "jj",
   unavailableReason: null,
   workingCopy: null,
@@ -35,6 +41,7 @@ const editor = (path = "/git/jj/file") => {
 };
 beforeEach(() => {
   vi.useFakeTimers();
+  staging.enabled = false;
   read.mockReset().mockResolvedValue([hunk]);
   views = [];
   useVcs.setState({ available: false, kinds: { "/git/jj": "jj" }, jjRoots: [jjRoot] });
@@ -99,4 +106,12 @@ it("keeps Git fetches and popup hooks with jj read-only popup hooks in mixed roo
   expect(open).toHaveBeenCalledOnce();
   showHunkPopup(git, editorHunks(git.state)[0]!, "/git/file");
   expect(open).toHaveBeenCalledTimes(2);
+});
+
+it("keeps jj markers on their snapshot backend when Git staging is enabled", async () => {
+  staging.enabled = true;
+  const view = editor();
+  await vi.advanceTimersByTimeAsync(40);
+  expect(read).toHaveBeenCalledExactlyOnceWith("/git/jj/file");
+  expect(editorHunks(view.state)).toHaveLength(1);
 });

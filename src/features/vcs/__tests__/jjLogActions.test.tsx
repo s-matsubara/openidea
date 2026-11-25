@@ -168,6 +168,7 @@ it("uses the right-clicked row rather than the previous selection and invalidate
     jjRoots: [
       {
         root: "/two",
+        branchRoot: "/two",
         kind: "jj",
         unavailableReason: null,
         workingCopy: null,
@@ -213,6 +214,7 @@ it("refreshes failed command results and reloads a remounted history on success"
     jjRoots: [
       {
         root: "/two",
+        branchRoot: "/two",
         kind: "jj",
         unavailableReason: null,
         workingCopy: null,

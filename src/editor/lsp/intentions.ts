@@ -10,9 +10,13 @@ import { indentUnit } from "@codemirror/language";
 import { diff } from "@codemirror/merge";
 import { commands, isCancelled, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import {
+  asyncIntentionProviders,
   contributedIntentions,
+  contributedIntentionsAsync,
   contributedQuickFixes,
+  inspectionControlProviders,
   intentionProviders,
+  quickFixProviders,
   intentionsChanged,
   whenSynced,
 } from "@/editor/api";
@@ -38,10 +42,10 @@ import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
-import { SPELLING_INSPECTION } from "@/platform/inspections";
+import { SPELLING_INSPECTION, type InspectionRef } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
 
@@ -60,11 +64,18 @@ export function quickFixIcon(view: EditorView): "bulb" | "bulb-fix" {
 
 const isFixItem = (item: ListPopupItem) => item.quickFix ?? item.icon === "bulb-fix";
 
-/** Local and language-server fixes share icons and the same stable ordering. */
+/** Local and language-server fixes share icons and are grouped separately from other actions. */
 export function listedIntentions(view: EditorView, items: ListPopupItem[]): ListPopupItem[] {
   const rank = (item: ListPopupItem) => (item.disabled ? 4 : 0) + (isFixItem(item) ? 0 : 2) + (item.emphasis ? 0 : 1);
   return items
-    .map((item) => (isFixItem(item) ? { ...item, quickFix: true, icon: quickFixIcon(view) } : item))
+    .map((item) => {
+      const fix = isFixItem(item);
+      return {
+        ...item,
+        ...(fix && { quickFix: true, icon: quickFixIcon(view) }),
+        section: item.section ?? { id: item.disabled ? "unavailable" : fix ? "quick-fixes" : "intentions" },
+      };
+    })
     .sort((a, b) => rank(a) - rank(b));
 }
 
@@ -407,11 +418,12 @@ function actionItems(
   view: EditorView,
   actions: CodeAction[],
   resolved?: Map<CodeAction, Promise<CodeAction>>,
+  actionIcon?: (action: CodeAction) => string,
 ): ListPopupItem[] {
   return listedCodeActions(actions).map((a, i) => ({
     id: `lsp:${i}`,
     label: a.title,
-    icon: isQuickFix(a) ? quickFixIcon(view) : "bulb",
+    icon: actionIcon?.(a) ?? (isQuickFix(a) ? quickFixIcon(view) : "bulb"),
     quickFix: isQuickFix(a),
     emphasis: a.isPreferred,
     disabled: a.disabledReason,
@@ -487,18 +499,23 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   );
   if (!inspections.length) return items;
   const fixes = items.filter((i) => isFixItem(i) && !i.submenu);
+  const controls = (inspection: InspectionRef) => [
+    ...intentionControls(inspection),
+    ...view.state.facet(inspectionControlProviders).flatMap((provide) => provide(view, inspection.id)),
+  ];
   if (inspections.length === 1 && fixes.length) {
-    const submenu = intentionControls(inspections[0]!);
+    const submenu = controls(inspections[0]!);
     return items.map((i) => (fixes.includes(i) ? { ...i, submenu } : i));
   }
   return [
     ...items,
     ...inspections.map((inspection) => ({
       id: `inspection:${inspection.id}`,
-      label: tx`Inspection '${inspection.name}' options`,
+      label: tx`Inspection '${txPart(inspection.name)}' options`,
+      section: { id: "inspection-options" },
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
-      submenu: intentionControls(inspection),
+      submenu: controls(inspection),
     })),
   ];
 }
@@ -565,13 +582,18 @@ export async function showIntentions(view: EditorView) {
     display(itemsFor([]), true);
   }, INTENTIONS_POPUP_DELAY_MS);
 
+  const asked = new AbortController();
   try {
     let failure: unknown = null;
     // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
-    const actions = await fetchIntentions(view).catch((e: unknown) => {
-      failure = e;
-      return null;
-    });
+    const [actions, found] = await Promise.all([
+      fetchIntentions(view).catch((e: unknown) => {
+        failure = e;
+        return null;
+      }),
+      contributedIntentionsAsync(view, asked.signal),
+    ]);
+    local.push(...found);
     clearTimeout(timer);
     const items = actions ? itemsFor(actions) : withInspectionControls(view, listedIntentions(view, local));
     if (!items.length) {
@@ -590,6 +612,8 @@ export async function showIntentions(view: EditorView) {
     clearTimeout(timer);
     if (ours()) closePopup();
     reportLspError(view, e, true);
+  } finally {
+    asked.abort();
   }
 }
 
@@ -604,6 +628,8 @@ export async function runKindAction(
     whole?: boolean;
     none: string;
     label: string;
+    compact?: boolean;
+    actionIcon?: (action: CodeAction) => string;
     /**
      * Syntax-based fallback when the server offers no enabled action
      * (`empty`) or cannot answer; true when it handled the request.
@@ -638,7 +664,8 @@ export async function runKindAction(
       kind: "list",
       anchor: caretAnchor(view, view.state.selection.main.head),
       title: opts.label,
-      items: actionItems(view, enabled),
+      compact: opts.compact,
+      items: actionItems(view, enabled, undefined, opts.actionIcon),
     });
   } catch (e) {
     reportLspError(view, e, true);
@@ -692,6 +719,7 @@ const bulbField = StateField.define<Bulb | null>({
 const bulbPlugin = ViewPlugin.fromClass(
   class {
     private lookup = debounce(() => void this.run(), 500);
+    private asked: AbortController | null = null;
     constructor(private view: EditorView) {
       this.lookup();
     }
@@ -720,7 +748,9 @@ const bulbPlugin = ViewPlugin.fromClass(
       const typoFix = spellingIntentions(this.view).length > 0;
       const selection = state.selection.main;
       const ownFix = contributedQuickFixes(this.view, selection.from, selection.to).length > 0;
-      const local = typoFix || ownFix || contributedIntentions(this.view).length > 0;
+      this.asked?.abort();
+      const asked = (this.asked = new AbortController());
+      const found = contributedIntentionsAsync(this.view, asked.signal);
       const backoff = codeActionBackoff.active(doc.doc);
       let actions: CodeAction[] = [];
       if (!backoff) {
@@ -730,6 +760,7 @@ const bulbPlugin = ViewPlugin.fromClass(
           if (isUnavailable(e)) codeActionBackoff.mark(doc.doc);
         }
       }
+      const local = typoFix || ownFix || contributedIntentions(this.view).length > 0 || (await found).length > 0;
       if (this.view.state.doc !== state.doc || !this.view.state.selection.eq(state.selection) || !this.view.hasFocus)
         return;
       const line = state.doc.lineAt(state.selection.main.head).number;
@@ -747,6 +778,7 @@ const bulbPlugin = ViewPlugin.fromClass(
     }
     destroy() {
       this.lookup.cancel();
+      this.asked?.abort();
     }
   },
 );
@@ -856,5 +888,11 @@ export function intentionsExtension(): Extension {
     bulbPlugin,
     floatingBulb,
     intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+    quickFixProviders.of(
+      (view, from, to) => languageSemantics(docOf(view)?.language)?.quickFixes?.(view, from, to) ?? [],
+    ),
+    asyncIntentionProviders.of(
+      async (view, signal) => (await languageSemantics(docOf(view)?.language)?.asyncIntentions?.(view, signal)) ?? [],
+    ),
   ];
 }
