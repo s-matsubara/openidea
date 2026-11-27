@@ -149,6 +149,83 @@ function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
   }
 }
 
+/** How the author column shows names (IDEA's annotate Options › Names; Last Name by default, as there); kept across sessions. */
+const NAMES_KEY = "openidea.vcs.annotateNames";
+const NAME_TYPES = ["initials", "lastName", "firstName", "fullName"] as const;
+type AnnotateNames = (typeof NAME_TYPES)[number];
+
+export function readAnnotateNames(): AnnotateNames {
+  try {
+    const raw = localStorage.getItem(NAMES_KEY);
+    return NAME_TYPES.find((t) => t === raw) ?? "lastName";
+  } catch {
+    return "lastName";
+  }
+}
+
+export const useAnnotateNames = create<{ names: AnnotateNames }>(() => ({ names: readAnnotateNames() }));
+
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === NAMES_KEY) setAnnotateNames(readAnnotateNames(), false);
+  });
+
+function setAnnotateNames(names: AnnotateNames, save = true) {
+  if (useAnnotateNames.getState().names === names) return;
+  useAnnotateNames.setState({ names });
+  if (!save) return;
+  try {
+    localStorage.setItem(NAMES_KEY, names);
+  } catch {
+    // ignore
+  }
+}
+
+/** Characters IDEA's ShortNameType splits an email's local part and initials on. */
+const NAME_DELIMITERS = /[.,<>()":_-]/g;
+
+const isLowerCase = (c: string) => c !== c.toUpperCase() && c === c.toLowerCase();
+
+/**
+ * Shortens a commit author the way IDEA's ShortNameType does. An `<email>` part is dropped
+ * (the email stands in for a missing name), and a bare email's local part is split on
+ * delimiters. Names split on spaces, initials also on delimiters, and a first or last name
+ * taken from an email is capitalized.
+ */
+export function shortAuthorName(author: string, names: AnnotateNames): string {
+  const raw = author.replace(/\s+/g, " ").trim();
+  let name = raw;
+  let fromEmail = false;
+  const lt = name.indexOf("<");
+  const gt = name.indexOf(">");
+  const at = name.indexOf("@");
+  if (lt >= 0 && lt < at && at < gt) {
+    // "Vasya <vasya.pupkin@example.com> Pupkin" → "Vasya Pupkin"
+    const email = name.slice(lt + 1, gt).trim();
+    const around = [name.slice(0, lt).trim(), name.slice(gt + 1).trim()].filter(Boolean).join(" ");
+    fromEmail = !around;
+    name = around || email;
+  }
+  if (names === "fullName") return name;
+  const atIndex = name.indexOf("@");
+  if (atIndex > 0 && !name.includes(" ")) {
+    // "vasya.pupkin@example.com" → "vasya pupkin"
+    fromEmail = true;
+    name = name.slice(0, atIndex).replace(NAME_DELIMITERS, " ");
+  }
+  const parts = name.split(" ").filter((p) => p.trim());
+  if (!parts.length) return raw;
+  if (names === "initials")
+    return parts
+      .flatMap((p) => p.split(NAME_DELIMITERS))
+      .filter((p) => p.trim())
+      .map((p) => p[0]!.toUpperCase())
+      .join("");
+  const picked = names === "firstName" ? parts[0]! : parts[parts.length - 1]!;
+  // Emails are usually lowercase while names are capitalized.
+  return fromEmail && isLowerCase(picked[0]!) ? picked[0]!.toUpperCase() + picked.slice(1) : picked;
+}
+
 /** Hides the columns turned off in Options, here and in editors annotated before the change. */
 const annotateColumns = ViewPlugin.define(
   (view) => {
@@ -172,10 +249,17 @@ const annotateColumns = ViewPlugin.define(
 );
 
 const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
+const NAME_LABELS: Record<AnnotateNames, string> = {
+  initials: "Initials",
+  lastName: "Last Name",
+  firstName: "First Name",
+  fullName: "Full Name",
+};
 
 function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
+  const { names } = useAnnotateNames.getState();
   const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
@@ -186,6 +270,14 @@ function optionsMenu(): MenuItem {
         disabled: c[k] && shown === 1,
         run: () => setAnnotateColumn(k, !c[k]),
       })),
+      {
+        label: "Names",
+        submenu: NAME_TYPES.map((t) => ({
+          label: NAME_LABELS[t],
+          checked: names === t,
+          run: () => setAnnotateNames(t),
+        })),
+      },
       { kind: "separator" },
       {
         label: "Ignore Whitespaces",
@@ -222,6 +314,7 @@ interface BlameState {
 
 function build(lines: BlameLine[], doc: Text, jj = false): BlameState {
   const bgs = commitBackgrounds(lines);
+  const { names } = useAnnotateNames.getState();
   const labels = new Map<string, BlameLabels>();
   const out = [];
   const n = Math.min(lines.length, doc.lines);
@@ -229,7 +322,11 @@ function build(lines: BlameLine[], doc: Text, jj = false): BlameState {
     const line = lines[i]!;
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
-      label = { date: formatDate(line.timeMs), author: line.author.trim(), revision: line.commit.slice(0, 8) };
+      label = {
+        date: formatDate(line.timeMs),
+        author: shortAuthorName(line.author, names),
+        revision: line.commit.slice(0, 8),
+      };
       labels.set(line.commit, label);
     }
     out.push(new BlameMarker(line, label, bgs.get(line.commit) ?? "", jj).range(doc.line(i + 1).from));
@@ -299,8 +396,9 @@ class BlameRefresher implements PluginValue {
   ) {
     this.live = source.jj ? !!source.jjLive : source.text === undefined && source.revision === undefined;
     this.off = source.jj
-      ? []
+      ? [useAnnotateNames.subscribe(() => this.schedule(0))]
       : [
+          useAnnotateNames.subscribe(() => this.schedule(0)),
           onWorkflowSettingsChange(
             (s) => s.vcs.git.annotate,
             () => this.schedule(0),

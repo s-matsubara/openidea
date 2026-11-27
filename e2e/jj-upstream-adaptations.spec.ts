@@ -160,3 +160,41 @@ test("updates the jj project root's changed-file count after a VCS refresh", asy
   await page.evaluate(() => window.__ipc.handlers.finish_readme_change!({}));
   await expect(root.getByRole("img", { name: "1 changed files", exact: true })).toBeVisible();
 });
+
+test("changes jj annotate name format through its gutter menu", async ({ workbench: page }, testInfo) => {
+  await stubJj(page);
+  await page.evaluate((commit) => {
+    window.__ipc.handlers.vcs_jj_annotate = () =>
+      Array.from({ length: 3 }, () => ({
+        commit,
+        author: "Ada Lovelace",
+        timeMs: 1700000000000,
+        summary: "Documentation",
+        originPath: null,
+      }));
+  }, COMMIT);
+  const editor = await openFromTree(page, "README.md");
+  await page.keyboard.press("Meta+Shift+A");
+  const query = page.getByRole("combobox", { name: "Search query" });
+  await query.fill("Annotate with Jujutsu Blame");
+  await expect(page.locator("#se-results")).toContainText("Annotate with Jujutsu Blame");
+  await query.press("Enter");
+  const gutter = editor.locator(".cm-vcs-blame");
+  await expect(gutter).toContainText("Lovelace");
+  await query.press("Escape");
+  await expect(query).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("jj-annotate-last-name.png"), animations: "disabled" });
+  // Code Vision may have requested its existing Git author hint while opening the file.
+  const gitBlameBefore = await ipcCalls(page, "vcs_blame");
+  const gitLogBefore = await ipcCalls(page, "vcs_log");
+  const jjBefore = (await ipcCalls(page, "vcs_jj_annotate")).length;
+  await gutter.locator("[data-commit]:visible").first().click({ button: "right" });
+  await page.getByText("Options", { exact: true }).hover();
+  await page.getByText("Names", { exact: true }).hover();
+  await page.getByText("Initials", { exact: true }).click();
+  await expect(gutter).toContainText("AL");
+  expect((await ipcCalls(page, "vcs_jj_annotate")).length).toBeGreaterThan(jjBefore);
+  expect(await ipcCalls(page, "vcs_blame")).toEqual(gitBlameBefore);
+  expect(await ipcCalls(page, "vcs_log")).toEqual(gitLogBefore);
+  await page.screenshot({ path: testInfo.outputPath("jj-annotate-initials.png"), animations: "disabled" });
+});

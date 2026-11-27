@@ -164,6 +164,7 @@ export async function prepareSnapshotModifications(
     if (!isCurrent()) return;
     if (!mods[setting]) continue;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each source action is applied to the evolving document before the next; isCurrent() is checked every iteration
       await apply(await call(commands.lspSourceActionText(path, doc.toString(), kind, nextRequestId())));
     } catch (error) {
       logConsole("info", `${title} skipped for ${baseName(path)}: ${failureText(error)}`);
@@ -288,6 +289,7 @@ async function modifyFile(
     if (!partial && !index)
       for (const { setting, kind, title } of SOURCE_MODIFICATIONS) {
         if (mods[setting])
+          // oxlint-disable-next-line no-await-in-loop -- code actions are applied to one document in order, each on the state left by the previous action
           await step(title, async () => applyKind(info.id, (await call(commands.docSnapshot(info.id))).text, kind));
       }
     if (mods.reformat)
@@ -350,9 +352,11 @@ export async function runCommitModifications(
     if (index ? file.staged === "deleted" : file.unstaged === "deleted") continue;
     try {
       if (blocks && (mods.optimizeImports || mods.cleanup || blocks.lineHunks?.length)) {
+        // oxlint-disable-next-line no-await-in-loop -- partial modifications are prepared in order and pushed to the shared result list
         const modification = await preparePartialModifications(file, blocks, mods);
         if (modification) prepared.push(modification);
       } else {
+        // oxlint-disable-next-line no-await-in-loop -- file modifications rewrite shared working files and are applied one file at a time
         await modifyFile(file, mods, blocks, index);
       }
     } catch (e) {
@@ -741,6 +745,7 @@ async function runChecks(ctx: CommitCheckContext, checks: readonly CommitCheck[]
   let blocked = false;
   for (const check of checks) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- checks run in registration order, share a blocked flag, and must rethrow AbortError to cancel the commit
       const result = await check.run(ctx);
       if (!result) continue;
       problems.push({ title: check.title, text: result.text, details: result.fix });

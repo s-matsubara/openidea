@@ -41,9 +41,12 @@ import { showNewPopup, treeHandle } from "./ProjectView";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   VIEW_MODES,
+  canRevealInProjectTree,
   collapseAll,
   currentModel,
   expandAll,
+  expandSelected,
+  hasVisibleSelection,
   modeShows,
   reloadAll,
   revealPath,
@@ -110,7 +113,7 @@ export function selectInProjectView(path?: string | null, focus = true, expand =
   if (!target) return false;
   if (!modeShows(target)) setViewMode("project");
   showProjectView(focus);
-  return revealPath(target, focus, expand, true);
+  return revealPath(target, focus, true, expand);
 }
 
 /**
@@ -225,9 +228,13 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["locate", "reveal", "show in"],
       run: ({ arg }) => {
-        const targetPath =
-          typeof arg === "string" ? { path: arg } : (arg as { path?: string; expand?: boolean } | undefined);
-        if (targetPath?.path) return void selectInProjectView(targetPath.path, true, targetPath.expand);
+        const path = typeof arg === "string" ? arg : (arg as { path?: string } | undefined)?.path;
+        const opts =
+          typeof arg === "object" && arg ? (arg as { expand?: boolean; revealOutside?: boolean }) : undefined;
+        if (path) {
+          if (opts?.revealOutside && !canRevealInProjectTree(path)) return revealInFinder(nodesFrom(path));
+          return void selectInProjectView(path, true, !!opts?.expand);
+        }
         const target = maybeEditorService()?.activePath() ?? leadNode()?.path;
         if (target) showSelectIn(target);
       },
@@ -545,6 +552,16 @@ export function registerProjectActions(): () => void {
         const lead = leadNode();
         return expandAll(lead?.dir && !lead.root ? lead.key : undefined);
       },
+    },
+    {
+      id: "project.expandSelected",
+      title: "Expand Selected",
+      category: "Project View",
+      icon: "expand-all",
+      when: OPEN,
+      keyWhen: FOCUS,
+      enabled: () => hasVisibleSelection(),
+      run: expandSelected,
     },
     {
       id: "project.collapseAll",

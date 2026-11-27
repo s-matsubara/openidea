@@ -98,7 +98,9 @@ describe("syntaxHighlightField", () => {
     for (const [i, text] of parts.entries()) {
       const cls = highlightingFor(view.state, [i === 1 ? t.string : t.keyword])!;
       const mark = [...view.contentDOM.querySelectorAll(`.${cls}`)].find((el) => el.textContent === text);
-      expect(mark?.children.length).toBe(0);
+      expect(mark).toBeDefined();
+      // Equal syntax/backend classes may nest; no inner stream colour may override them.
+      expect([...mark!.querySelectorAll("[class]")].every((child) => child.className === cls)).toBe(true);
     }
   });
 });

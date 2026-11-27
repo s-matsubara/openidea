@@ -6,7 +6,7 @@ import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { attachedProjectOf, currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
-import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
+import { menuGroupItems, gitMenuItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
 import { directoryRole, markDirectory } from "./markDirectory";
 import { fileColorMenu } from "./fileColor";
@@ -32,14 +32,12 @@ import {
   reformatNodes,
   reloadFromDisk,
   revealInFinder,
-  vcsArg,
 } from "./operations";
 import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
 import { tx, txPart } from "@/platform/i18n";
 import { isJjPath } from "@/features/vcs/store";
-
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -377,49 +375,19 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     (project?.isGit || getContext().vcsAvailable === true) &&
     nodes.every((node) => !isJjPath(node.path))
   ) {
-    const arg = vcsArg(nodes);
-    const dirs = nodes.some((n) => n.dir);
+    const dirs = nodes.map((n) => n.dir);
     push(
       submenu(
         "git",
         "Git",
         [
-          act("vcs.commit", arg, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
-          act("vcs.addToVcs", arg, "Add"),
-          nonRoot.length === nodes.length &&
-            nodes.length > 0 &&
-            nodes.every((n) => !n.placeholder) &&
-            submenu("gitIgnore", "Add to .gitignore", [
-              act("vcs.ignoreShared", arg, ".gitignore"),
-              act("vcs.ignoreLocal", arg, ".git/info/exclude"),
-            ]),
-          { kind: "separator" },
-          singleFile && act("vcs.annotate", singleFile.path, "Annotate with Git Blame"),
-          act("vcs.showDiff", arg, "Show Diff"),
-          nodes.length > 0 &&
-            nodes.every((n) => !n.placeholder) &&
-            act("vcs.compareWithBranch", arg, "Compare with Branch…"),
-          singleFile && act("vcs.compareWithRevision", singleFile.path, "Compare with Revision…"),
-          nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
-          singleFile && act("vcs.showCurrentRevision", singleFile.path, "Show Current Revision"),
-          act("vcs.rollback", arg, "Rollback…"),
-          { kind: "separator" },
-          act("vcs.gitPush", undefined, "Push…"),
-          act("vcs.pull", arg, "Pull…"),
-          act("vcs.fetch", undefined, "Fetch"),
-          act("vcs.merge", arg, "Merge…"),
-          act("vcs.rebase", arg, "Rebase…"),
-          { kind: "separator" },
-          act("vcs.branches", undefined, "Branches…"),
-          act("vcs.newBranch", undefined, "New Branch…"),
-          act("vcs.newTag", undefined, "New Tag…"),
-          act("vcs.resetHead", undefined, "Reset HEAD…"),
-          { kind: "separator" },
-          act("vcs.stash", undefined, "Stash Changes…"),
-          act("vcs.unstash", undefined, "Unstash Changes…"),
-          { kind: "separator" },
-          act("vcs.manageRemotes", undefined, "Manage Remotes…"),
-          act("vcs.clone", undefined, "Clone…"),
+          // Shared with the editor and editor tab menus (IDEA keeps the per-menu groups in sync).
+          ...gitMenuItems({
+            paths: nodes.map((n) => n.path),
+            dirs,
+            file: !!singleFile,
+            ignore: nonRoot.length === nodes.length && nodes.length > 0 && nodes.every((n) => !n.placeholder),
+          }),
         ],
         "branch",
       ),

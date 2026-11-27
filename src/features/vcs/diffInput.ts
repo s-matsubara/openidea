@@ -2,6 +2,7 @@
 import type { ChangedFile, FileStatus, JjBlameTarget, RevisionChange } from "@/bindings";
 
 import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -15,7 +16,6 @@ import type { JjDiffChange } from "./jjDiffInput";
 import { stagingAreaOn } from "./staging";
 import { stagingVersions } from "./stagingVersions";
 import type { StagingRange } from "./stagingRange";
-
 
 type GitDiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
@@ -41,7 +41,6 @@ export type DiffSide =
       editable?: boolean;
       jjBlame?: JjBlameTarget | null;
       gitlinkSource?: GitDiffSide;
-
     }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
@@ -208,8 +207,8 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean; allInOne?: boolean } = {}) {
-  const combined = combinedOf(data, opts.allInOne);
-  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  const combined = auxiliaryWindow()?.kind === "diff" ? null : combinedOf(data, opts.allInOne);
+  const input = combined ? combinedDiffInput({ ...combined, revealKey: diffKey(data) }) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }
 
@@ -248,7 +247,10 @@ export const opensDiffOnActivate = () => {
  * in dedicated surfaces (the comparison window, merge editors) and pull request files
  * (`vcs.openDiff`, with review comments) call openDiff directly.
  */
-export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
+export async function openVcsDiff(
+  data: DiffData,
+  opts: { preview?: boolean; focus?: boolean; allInOne?: boolean } = {},
+) {
   if (!vcsDiffInFront()) {
     // Settings › Version Control › Confirmation: "Open diff as editor tab" off.
     if (workflowSettings().vcs.diffAsEditorTab || combinedOf(data)) return openDiff(data, opts);

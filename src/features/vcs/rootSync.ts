@@ -173,6 +173,7 @@ export function installRootSync(): () => void {
       try {
         do {
           pending = false;
+          // oxlint-disable-next-line no-await-in-loop -- a queued change is only observable after this refresh finishes
           await update();
         } while (pending && !disposed);
       } finally {

@@ -16,12 +16,12 @@ import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
 import { Prec, StateEffect, StateField, type EditorState, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
-import { stickyHighlights } from "@/editor/api";
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
 import { featureBackoff, onLspRefresh } from "../availability";
 import { languageSemantics, type SemanticRange } from "./languages";
+import { previewHighlights } from "@/editor/core/cm/renderLineContent";
 
 // Language folders register their semantics by importing this module; lookups
 // elsewhere go through the re-exported `languageSemantics`.
@@ -162,8 +162,17 @@ export function semanticRanges(
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    semantics?.tokenClasses?.({ type, text: doc.sliceString(from, to), modifiers: names, kind, classes, marksLocals });
-
+    semantics?.tokenClasses?.({
+      type,
+      text: doc.sliceString(from, to),
+      modifiers: names,
+      kind,
+      classes,
+      marksLocals,
+      from,
+      doc,
+      tree,
+    });
     const local =
       rainbow &&
       !constant &&
@@ -344,6 +353,7 @@ export function semanticExtension(): Extension {
   return [
     semanticField,
     semanticPlugin,
-    Prec.highest([EditorView.decorations.from(semanticField), stickyHighlights.from(semanticField)]),
+    Prec.highest(EditorView.decorations.from(semanticField)),
+    previewHighlights.of(semanticHighlights),
   ];
 }

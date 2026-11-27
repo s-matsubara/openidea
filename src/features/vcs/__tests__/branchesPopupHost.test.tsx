@@ -1,9 +1,10 @@
 import type { Branch } from "@/bindings";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { BranchesPopupHost, showBranchesPopup, useBranchesPopup } from "../BranchWidget";
 import { useVcs } from "../store";
 
+const branchRequests = vi.hoisted(() => [] as string[]);
 const repoBranches = vi.hoisted(() => new Map<string, Branch[]>());
 
 vi.mock("@/platform/ipc", async (original) => {
@@ -12,7 +13,10 @@ vi.mock("@/platform/ipc", async (original) => {
     ...real,
     commands: {
       ...real.commands,
-      vcsBranches: async (root: string) => ({ status: "ok", data: repoBranches.get(root) ?? [] }),
+      vcsBranches: async (root: string) => {
+        branchRequests.push(root);
+        return { status: "ok", data: repoBranches.get(root) ?? [] };
+      },
       vcsTags: async () => ({ status: "ok", data: [] }),
     },
   };
@@ -24,6 +28,7 @@ afterEach(() => {
   useBranchesPopup.setState({ open: false });
   useVcs.setState(initialVcs);
   repoBranches.clear();
+  branchRequests.length = 0;
   localStorage.clear();
 });
 
@@ -125,4 +130,98 @@ it("shows common branch totals and pending remote changes from another repositor
   const list = screen.getByRole("listbox", { name: "Repositories and branches" });
   expect(await within(list).findByLabelText("6 outgoing commits in 2 repositories")).toHaveTextContent("6");
   expect(within(list).getByTitle(/3 incoming commits\s+Remote changes available to fetch/)).toHaveTextContent("3");
+});
+
+it("opens Git Branches from the status bar's Git Branch widget, anchored to it", async () => {
+  const { BranchWidget, StatusBranchWidget } = await import("../BranchWidget");
+  useVcs.setState({
+    available: true,
+    root: "/work/app",
+    repo: "/work/app",
+    roots: ["/work/app"],
+    heads: { "/work/app": { head: "feature/login", headCommit: "abc" } },
+    branch: { head: "feature/login", headCommit: "abc", upstream: null, ahead: 0, behind: 0 } as never,
+  });
+  render(
+    <>
+      <BranchWidget />
+      <StatusBranchWidget />
+      <BranchesPopupHost />
+    </>,
+  );
+  const [toolbar, status] = screen.getAllByRole("button", { name: /feature\/login/ });
+  expect(toolbar).toHaveAttribute("data-branches-widget", "toolbar");
+  expect(status).toHaveAttribute("data-branches-widget", "status");
+  fireEvent.click(status!);
+  expect(screen.getByRole("dialog", { name: "Git Branches" })).toBeInTheDocument();
+  expect(status).toHaveAttribute("aria-expanded", "true");
+  expect(toolbar).toHaveAttribute("aria-expanded", "false");
+  // VCS › Branches… opens it from the toolbar widget again.
+  act(() => useBranchesPopup.setState({ open: false }));
+  act(showBranchesPopup);
+  expect(toolbar).toHaveAttribute("aria-expanded", "true");
+  expect(status).toHaveAttribute("aria-expanded", "false");
+});
+
+it("shows repository names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates these words, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    expect(tx("test")).not.toBe("test");
+    const branch = (name: string): Branch =>
+      ({ name, remote: false, current: false, upstream: null, ahead: 0, behind: 0, lastCommitMs: null }) as Branch;
+    repoBranches.set("/work/dev", [branch("only-dev")]);
+    repoBranches.set("/work/test", [branch("only-test")]);
+    useVcs.setState({
+      available: true,
+      root: "/work",
+      repo: "/work/dev",
+      roots: ["/work/dev", "/work/test"],
+      heads: { "/work/dev": { head: "main", headCommit: "a" }, "/work/test": { head: "main", headCommit: "b" } },
+    });
+    render(<BranchesPopupHost />);
+    act(showBranchesPopup);
+    // Typing a query lists matching branches under a header per repository.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "only" } });
+    const list = screen.getByRole("listbox");
+    const headers = () => [...list.querySelectorAll('span[class*="section"]')].map((e) => e.textContent);
+    await waitFor(() => expect(headers()).toHaveLength(2));
+    expect(headers()).toEqual(["dev", "test"]);
+  } finally {
+    _resetI18nForTests();
+  }
+});
+
+it("does not offer the Git status widget for jj-only roots", async () => {
+  const { StatusBranchWidget } = await import("../BranchWidget");
+  useVcs.setState({ available: false, root: "/jj", repo: "/jj", roots: [], kinds: { "/jj": "jj" }, branch: null });
+  render(<StatusBranchWidget />);
+  expect(document.querySelector('[data-branches-widget="status"]')).toBeNull();
+  expect(branchRequests).toEqual([]);
+});
+
+it("opens only Git branches from the status widget when a mixed project's selected root is jj", async () => {
+  const { StatusBranchWidget } = await import("../BranchWidget");
+  useVcs.setState({
+    available: true,
+    root: "/work",
+    repo: "/work/jj",
+    roots: ["/work/git"],
+    kinds: { "/work/git": "git", "/work/jj": "jj" },
+    heads: { "/work/git": { head: "main", headCommit: "abc" } },
+    branch: { head: "main", headCommit: "abc", upstream: null, ahead: 0, behind: 0 } as never,
+    branchesLoaded: false,
+  });
+  render(
+    <>
+      <StatusBranchWidget />
+      <BranchesPopupHost />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /main/ }));
+  expect(screen.getByRole("dialog", { name: "Git Branches" })).toBeInTheDocument();
+  await waitFor(() => expect(branchRequests).toContain("/work/git"));
+  expect(branchRequests.every((root) => root === "/work/git")).toBe(true);
 });

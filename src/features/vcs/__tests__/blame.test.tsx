@@ -10,10 +10,12 @@ import {
   blameSlot,
   toggleJjAnnotations,
   readAnnotateColumns,
+  readAnnotateNames,
+  shortAuthorName,
   toggleAnnotations,
   useAnnotateColumns,
+  useAnnotateNames,
 } from "../blame";
-
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
@@ -228,6 +230,7 @@ describe("annotate Options", () => {
   beforeEach(() => {
     localStorage.clear();
     useAnnotateColumns.setState(readAnnotateColumns());
+    useAnnotateNames.setState({ names: readAnnotateNames() });
   });
 
   async function annotated(doc = "first\nsecond\nthird") {
@@ -370,6 +373,94 @@ describe("annotate Options", () => {
     }
   });
 
+  const authors = (v: EditorView) =>
+    [...v.dom.querySelectorAll(`[data-commit="${sha}"], [data-commit="${otherSha}"]`)].map(
+      (el) => el.querySelector(".cm-vcs-blame-author")!.textContent,
+    );
+
+  const pick = async (item: Item) => {
+    await act(async () => {
+      item.run!();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+  };
+
+  it("shows last names by default and switches every annotated editor from Options › Names", async () => {
+    view = await annotated();
+    const historical = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [blameSlot()] }),
+    });
+    try {
+      await toggleAnnotations(historical, "/repo/src/old.py", "one\ntwo\nthree", sha);
+      const names = options(view).find((i) => i.label === "Names")!.submenu!;
+      expect(names.map((i) => [i.label, i.checked])).toEqual([
+        ["Initials", false],
+        ["Last Name", true],
+        ["First Name", false],
+        ["Full Name", false],
+      ]);
+      expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
+
+      await pick(names[0]!);
+      expect(authors(view)).toEqual(["AZ", "AZ", "DC"]);
+      expect(authors(historical)).toEqual(["AZ", "AZ", "DC"]);
+      expect(mocks.blame.mock.calls.slice(-2)).toEqual([
+        ["/repo/src/main.py", null, null],
+        ["/repo/src/old.py", "one\ntwo\nthree", sha],
+      ]);
+      expect(localStorage.getItem("openidea.vcs.annotateNames")).toBe("initials");
+      expect(readAnnotateNames()).toBe("initials");
+      const next = options(view).find((i) => i.label === "Names")!.submenu!;
+      expect(next.map((i) => i.checked)).toEqual([true, false, false, false]);
+
+      await pick(next[1]!);
+      expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
+      await pick(next[2]!);
+      expect(authors(view)).toEqual(["Aleks", "Aleks", "Dan"]);
+      await pick(next[3]!);
+      expect(authors(view)).toEqual(["Aleks Zlateski", "Aleks Zlateski", "Dan Crankshaw"]);
+    } finally {
+      historical.destroy();
+    }
+  });
+
+  it("follows a Names choice made in another window and ignores values it cannot use", async () => {
+    view = await annotated();
+    localStorage.setItem("openidea.vcs.annotateNames", "firstName");
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(authors(view)).toEqual(["Aleks", "Aleks", "Dan"]);
+    const blames = mocks.blame.mock.calls.length;
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    await pick(options(view).find((i) => i.label === "Names")!.submenu![2]!);
+    expect(mocks.blame.mock.calls.length).toBe(blames);
+    for (const raw of ["", "LASTNAME", "email", '"initials"']) {
+      localStorage.setItem("openidea.vcs.annotateNames", raw);
+      expect(readAnnotateNames()).toBe("lastName");
+    }
+  });
+
+  it("shortens names as IDEA does", () => {
+    const all = (author: string) =>
+      (["initials", "lastName", "firstName", "fullName"] as const).map((t) => shortAuthorName(author, t));
+    expect(all("Aleks Zlateski")).toEqual(["AZ", "Zlateski", "Aleks", "Aleks Zlateski"]);
+    expect(all("Vasya S. Pupkin <vasya.pupkin@example.com>")).toEqual(["VSP", "Pupkin", "Vasya", "Vasya S. Pupkin"]);
+    expect(all("Vasya <vasya.pupkin@example.com> Pupkin")).toEqual(["VP", "Pupkin", "Vasya", "Vasya Pupkin"]);
+    expect(all("<vasya.pupkin@example.com>")).toEqual(["VP", "Pupkin", "Vasya", "vasya.pupkin@example.com"]);
+    expect(all("john.smith@example.com")).toEqual(["JS", "Smith", "John", "john.smith@example.com"]);
+    // Only names taken from an email split on delimiters and get capitalized.
+    expect(all("Jean-Luc picard")).toEqual(["JLP", "picard", "Jean-Luc", "Jean-Luc picard"]);
+    expect(all("mary_ann-lee")).toEqual(["MAL", "mary_ann-lee", "mary_ann-lee", "mary_ann-lee"]);
+    expect(all("  dependabot[bot] ")).toEqual(["D", "dependabot[bot]", "dependabot[bot]", "dependabot[bot]"]);
+    expect(all("   ")).toEqual(["", "", "", ""]);
+  });
+
   it("leaves the editor's classes alone once annotations are closed", async () => {
     view = await annotated();
     await toggleAnnotations(view, "/repo/src/main.py");
@@ -417,4 +508,22 @@ it("keeps jj annotate column options without offering Git Show Diff", async () =
   expect(view.dom.classList.contains("cm-vcs-blame-hide-revision")).toBe(false);
   expect(mocks.blame).not.toHaveBeenCalled();
   expect(mocks.commitFiles).not.toHaveBeenCalled();
+});
+
+it("changes jj author names through the annotate Options menu without Git requests", async () => {
+  mocks.jjBlame.mockResolvedValue({ status: "ok", data: lines.map((line) => ({ ...line, author: "Ada Lovelace" })) });
+  view = new EditorView({
+    parent: document.body,
+    state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+  });
+  await toggleJjAnnotations(view, { root: "/jj", path: "/jj/file.ts", commit: sha });
+  fireEvent.contextMenu(view.dom.querySelector(".cm-vcs-blame [data-commit]")!);
+  const options = mocks.menu.mock.calls.at(-1)![1].find((i: { label: string }) => i.label === "Options").submenu;
+  const names = options.find((i: { label: string }) => i.label === "Names").submenu;
+  act(() => names.find((i: { label: string }) => i.label === "Initials").run());
+  await act(() => vi.advanceTimersByTimeAsync(100));
+  expect(view.dom.querySelector(".cm-vcs-blame")?.textContent).toContain("AL");
+  expect(useAnnotateNames.getState().names).toBe("initials");
+  expect(mocks.blame).not.toHaveBeenCalled();
+  expect(mocks.log).not.toHaveBeenCalled();
 });

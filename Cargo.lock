@@ -4162,6 +4162,7 @@ dependencies = [
  "ide-core",
  "serde",
  "specta",
+ "tempfile",
  "which",
 ]
 
@@ -4224,16 +4225,20 @@ name = "ide-core"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "dirs 7.0.0",
  "dunce",
  "encoding_rs",
  "libc",
+ "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "specta-typescript",
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -4293,6 +4298,7 @@ dependencies = [
  "ide-http",
  "ide-sdk",
  "ide-ssh",
+ "libc",
  "notify",
  "open",
  "oracledb",
@@ -4312,6 +4318,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip",
 ]
@@ -4488,6 +4495,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
  "zip",
@@ -4954,6 +4962,8 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "hex",
+ "http",
+ "hyper-util",
  "ide-core",
  "ide-language",
  "libc",
