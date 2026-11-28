@@ -1,5 +1,7 @@
 //! Jujutsu executable configuration and read-only working-copy snapshots.
+use base64::Engine;
 use ide_core::{IdeError, IdeResult};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::RwLock;
@@ -444,7 +446,7 @@ pub struct JjBlameTarget {
     pub commit: String,
 }
 
-/// Immutable text pair for the shared diff viewer.
+/// Immutable text or image pair for the shared diff viewer.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct JjFileDiff {
@@ -456,6 +458,10 @@ pub struct JjFileDiff {
     pub before_blame: Option<JjBlameTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_blame: Option<JjBlameTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_image: Option<String>,
     pub before: String,
     pub after: String,
     pub before_label: String,
@@ -476,6 +482,38 @@ fn read_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<
         return Err(IdeError::unavailable(format!("jj read: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
     Ok(out.stdout)
+}
+
+/// Image snapshots are bounded like the filesystem image reader; stderr cannot block stdout.
+fn read_image_command(repo: &crate::Repo, exe: &Path, args: &[&str]) -> IdeResult<Vec<u8>> {
+    repo.require_execution_allowed()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(repo.root())
+        .args(["--color=never", "--no-pager", "--ignore-working-copy"])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(stderr.try_clone()?)
+        .env("LC_ALL", "C");
+    ide_core::process::prepare(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run jj: {e}")))?;
+    let mut bytes = Vec::new();
+    let result = child.stdout.take().unwrap().take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes);
+    if result.is_err() || bytes.len() > 64 * 1024 * 1024 {
+        let _ = child.kill();
+        let _ = child.wait();
+        result?;
+        return Err(IdeError::unavailable("Image exceeds the 64 MiB preview limit"));
+    }
+    if !child.wait()?.success() {
+        use std::io::{Seek, SeekFrom};
+        stderr.seek(SeekFrom::Start(0))?;
+        let mut error = String::new();
+        stderr.take(8192).read_to_string(&mut error)?;
+        return Err(IdeError::unavailable(format!("jj image read: {}", error.trim())));
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn annotate(repo: &crate::Repo, path: &Path, commit: &str, text: &str) -> IdeResult<Vec<crate::BlameLine>> {
@@ -607,6 +645,8 @@ fn file_diff_snapshot(
     if file.unstaged == Some(crate::ChangeKind::Conflicted) {
         let versions = conflict_versions_at(repo, path, commit, exe)?;
         return Ok(JjFileDiff {
+            before_image: None,
+            after_image: None,
             before_absent: None,
             after_absent: None,
             before_blame: None,
@@ -629,7 +669,7 @@ fn file_diff_snapshot(
         ));
     }
     let before_path = file.renamed_from.as_deref().unwrap_or(&file.rel_path);
-    let read = |revision: &str, name: &str| -> IdeResult<String> {
+    let read = |revision: &str, name: &str| -> IdeResult<(String, Option<String>)> {
         if name.is_empty() || Path::new(name).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
             return Err(IdeError::invalid("invalid Jujutsu diff source path"));
         }
@@ -643,13 +683,29 @@ fn file_diff_snapshot(
         )?)
         .map_err(|e| IdeError::invalid(format!("invalid jj file type JSON: {e}")))?;
         if file_type != "file" {
-            return Err(IdeError::unavailable("Only regular UTF-8 text files are supported in Jujutsu diffs"));
+            return Err(IdeError::unavailable("Only regular files are supported in Jujutsu diffs"));
         }
-        let bytes = read_command(repo, exe, &["file", "show", "-r", revision, "-T", "", "--", &fileset])?;
+        let args = ["file", "show", "-r", revision, "-T", "", "--", &fileset];
+        let mime =
+            match Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+                "png" => Some("image/png"),
+                "jpg" | "jpeg" => Some("image/jpeg"),
+                "webp" => Some("image/webp"),
+                "svg" => Some("image/svg+xml"),
+                _ => None,
+            };
+        let bytes =
+            if mime.is_some() { read_image_command(repo, exe, &args)? } else { read_command(repo, exe, &args)? };
+        let image =
+            mime.map(|mime| format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)));
+        if image.is_some() && mime != Some("image/svg+xml") {
+            return Ok((String::new(), image));
+        }
         if bytes.iter().any(|b| *b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
             return Err(IdeError::unavailable("Binary files are not supported in Jujutsu diffs"));
         }
         String::from_utf8(bytes)
+            .map(|text| (text, image))
             .map_err(|_| IdeError::unavailable("Non-UTF-8 files are not supported in Jujutsu diffs"))
     };
     let added = file.unstaged == Some(crate::ChangeKind::Added);
@@ -659,13 +715,18 @@ fn file_diff_snapshot(
         path: repo.root().join(name),
         commit: commit.to_owned(),
     };
+    let (before, before_image) = if added { (String::new(), None) } else { read(&parents[0], before_path)? };
+    let (after, after_image) = if deleted { (String::new(), None) } else { read(commit, &file.rel_path)? };
     Ok(JjFileDiff {
         before_absent: Some(added),
         after_absent: Some(deleted),
-        before_blame: (!added).then(|| blame(before_path, &parents[0])),
-        after_blame: (!deleted).then(|| blame(&file.rel_path, commit)),
-        before: if added { String::new() } else { read(&parents[0], before_path)? },
-        after: if deleted { String::new() } else { read(commit, &file.rel_path)? },
+        before_blame: (!added && (!before.is_empty() || before_image.is_none()))
+            .then(|| blame(before_path, &parents[0])),
+        after_blame: (!deleted && (!after.is_empty() || after_image.is_none())).then(|| blame(&file.rel_path, commit)),
+        before_image,
+        after_image,
+        before,
+        after,
         before_label: if added {
             "(does not exist)".into()
         } else {
@@ -892,7 +953,7 @@ mod snapshot_tests {
         assert!(get("binary").unwrap_err().to_string().contains("Binary"));
         assert!(get("nonutf8").unwrap_err().to_string().contains("Non-UTF-8"));
         #[cfg(unix)]
-        assert!(get("link").unwrap_err().to_string().contains("regular UTF-8"));
+        assert!(get("link").unwrap_err().to_string().contains("regular files"));
         assert!(snapshot_at(&repo, &exe, Some("@")).is_err());
         assert!(snapshot_at(&repo, &exe, Some(&"f".repeat(40))).is_err());
         assert!(snapshot_at(&repo, &root.join("missing-jj"), Some(&accepted.commit_id)).is_err());
@@ -924,6 +985,37 @@ mod snapshot_tests {
                 .to_string()
                 .contains("auto-merged")
         );
+    }
+
+    #[test]
+    fn real_cli_image_diff_keeps_exact_bytes_and_revision_after_rename_and_delete() {
+        let Some(exe) = detected_jj_executable() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        jj(&exe, tmp.path(), &["git", "init", "--colocate"]);
+        let repo = crate::Repo::discover(tmp.path()).unwrap().unwrap();
+        repo.set_execution_allowed(true);
+        let root = repo.root();
+        let bytes = b"\x89PNG\r\n\x1a\n\x00before";
+        std::fs::write(root.join("old.png"), bytes).unwrap();
+        std::fs::write(root.join("delete.svg"), "<svg/>").unwrap();
+        jj(&exe, root, &["new"]);
+        std::fs::rename(root.join("old.png"), root.join("new.png")).unwrap();
+        std::fs::remove_file(root.join("delete.svg")).unwrap();
+        let copy = snapshot(&repo, &exe).unwrap();
+        let pair = file_diff_with(&repo, &root.join("new.png"), &copy.commit_id, &exe).unwrap();
+        let expected = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+        assert_eq!(pair.before_image.as_deref(), Some(expected.as_str()));
+        assert_eq!(pair.after_image, pair.before_image);
+        assert!(pair.before_blame.is_none() && pair.after_blame.is_none());
+        assert!(pair.before_label.contains("old.png"));
+        std::fs::write(root.join("new.png"), b"changed later").unwrap();
+        let pinned = file_diff_snapshot(&repo, &root.join("new.png"), &exe, copy.clone(), true).unwrap();
+        assert_eq!(pinned.after_image.as_deref(), Some(expected.as_str()));
+        let deleted = file_diff_snapshot(&repo, &root.join("delete.svg"), &exe, copy, true).unwrap();
+        assert_eq!(deleted.before, "<svg/>");
+        assert!(deleted.before_image.unwrap().starts_with("data:image/svg+xml;base64,"));
+        assert_eq!(deleted.after_absent, Some(true));
+        assert!(deleted.after_image.is_none());
     }
 
     #[test]
@@ -1000,7 +1092,7 @@ mod snapshot_tests {
         assert!(get("binary").unwrap_err().to_string().contains("Binary"));
         assert!(get("non-utf8").unwrap_err().to_string().contains("Non-UTF-8"));
         #[cfg(unix)]
-        assert!(get("outside-link").unwrap_err().to_string().contains("regular UTF-8"));
+        assert!(get("outside-link").unwrap_err().to_string().contains("regular files"));
         assert!(get("../escape").is_err());
         assert!(file_diff_with(&repo, &root.join("modified"), &copy.commit_id, &root.join("missing-jj")).is_err());
         assert!(repo.stage(&[root.join("modified")]).is_err());

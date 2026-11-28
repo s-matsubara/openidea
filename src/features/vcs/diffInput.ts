@@ -40,6 +40,7 @@ export type DiffSide =
       absent?: boolean;
       editable?: boolean;
       jjBlame?: JjBlameTarget | null;
+      jjImage?: string;
       gitlinkSource?: GitDiffSide;
     }
   /** A Local History revision. */

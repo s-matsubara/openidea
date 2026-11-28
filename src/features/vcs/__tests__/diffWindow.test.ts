@@ -87,3 +87,25 @@ it("keeps diff navigation local and resumes a later open request when closing is
     setAllInOneDiff(false);
   }
 });
+
+it("preserves jj image snapshots when opening a separate diff window", async () => {
+  const { jjFileDiffData } = await import("../jjDiffInput");
+  const { diffWindowData } = await import("../DiffWindow");
+  const image = "data:image/png;base64,AA==";
+  const data = jjFileDiffData("/jj/icon.png", {
+    before: "",
+    after: "",
+    beforeLabel: "Parent",
+    afterLabel: "@",
+    beforeImage: image,
+    afterAbsent: true,
+  });
+  let sent: unknown;
+  mockIPC((command, args) => {
+    if (command === "window_open_diff") sent = (args as { diff?: unknown } | undefined)?.diff;
+    return { status: "ok", data: null };
+  });
+  showDiffWindow(data, vi.fn());
+  expect(sent).toMatchObject({ left: { jjImage: image }, right: { absent: true } });
+  expect(diffWindowData(sent as never).left).toMatchObject({ jjImage: image });
+});

@@ -4,17 +4,18 @@
  * to it (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
-import { disconnectRemote, stopRemoteBackend, useRemote } from "@/platform/remote";
+import { disconnectRemote, provideBackendBusyPrompt, stopRemoteBackend, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
+import { installConnectHandoff, showConnect } from "./connectWindow";
 import { reopenInContainer } from "./container";
 import { installDirenvNotifications, reloadEnvironment } from "./environment";
 import { RemoteStatus } from "./RemoteStatus";
-import { closeConnectDialog, openConnectDialog } from "./model";
+import { closeConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 import { installReconnect, reconnectNow } from "./reconnect";
 
@@ -57,10 +58,21 @@ function trackPortsWindow(): () => void {
 
 export function activate(): () => void {
   const disposers = [
+    provideBackendBusyPrompt(() =>
+      confirm({
+        title: tx("Stop Remote Backend"),
+        message: tx(
+          "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.",
+        ),
+        ok: tx("Stop Backend and Open"),
+        icon: "warning",
+      }),
+    ),
     trackPortsWindow(),
     installReconnect(),
     installDirenvNotifications(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
+    installConnectHandoff(),
     registerStatusItem({
       id: "remote.location",
       title: "Remote Host",
@@ -76,7 +88,7 @@ export function activate(): () => void {
         category: "File",
         icon: "remote",
         keywords: ["ssh", "remote", "server", "gateway", "connect", "host"],
-        run: () => openConnectDialog(),
+        run: () => showConnect(),
       },
       {
         id: "remote.reconnect",

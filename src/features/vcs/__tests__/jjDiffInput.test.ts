@@ -20,3 +20,26 @@ it("keeps jj revision identities and read-only text on one-sided history diffs",
   expect(diff.left).toMatchObject({ type: "text", text: "old", jjBlame: target });
   expect(diff.right).toMatchObject({ type: "text", absent: true });
 });
+
+it("routes pinned jj image snapshots and absent sides to the shared image reader without Git", async () => {
+  const { imageDiffKind, readImageSide } = await import("../imageDiffInput");
+  const beforeImage = "data:image/png;base64,iVBORw0KGgo=";
+  const afterImage = "data:image/png;base64,iVBORw0KGgoAAA==";
+  const images = { ...pair, beforeImage, afterImage };
+  const data = jjFileDiffData("/jj/image.png", images);
+  expect(
+    imageDiffKind(jjFileDiffData("/jj/renamed.svg", { ...images, afterImage: "data:image/svg+xml;base64,PHN2Zy8+" })),
+  ).toBe("raster");
+  expect(imageDiffKind(data)).toBe("raster");
+  expect(await readImageSide(data.path, data.left)).toBe(beforeImage);
+  expect(await readImageSide(data.path, data.right)).toBe(afterImage);
+  const removed = jjWorkingDiffData(data.path, { ...images, afterImage: undefined, afterAbsent: true }, true);
+  expect(imageDiffKind(removed)).toBe("raster");
+  expect(await readImageSide(removed.path, removed.right)).toBeNull();
+  expect(jjWorkingDiffData(data.path, images).right.type).toBe("worktree");
+  expect(
+    imageDiffKind(
+      jjFileDiffData("/jj/icon.svg", { ...pair, beforeImage: "data:image/svg+xml;base64,PHN2Zy8+", afterAbsent: true }),
+    ),
+  ).toBe("svg");
+});

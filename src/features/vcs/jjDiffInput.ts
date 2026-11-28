@@ -36,6 +36,7 @@ export function jjFileDiffData(path: string, pair: JjFileDiff): DiffData {
     left: {
       type: "text",
       text: pair.before,
+      ...(pair.beforeImage ? { jjImage: pair.beforeImage } : {}),
       label: pair.beforeLabel,
       jjBlame: pair.beforeBlame ?? null,
       ...(pair.beforeAbsent ? { absent: true } : {}),
@@ -43,6 +44,7 @@ export function jjFileDiffData(path: string, pair: JjFileDiff): DiffData {
     right: {
       type: "text",
       text: pair.after,
+      ...(pair.afterImage ? { jjImage: pair.afterImage } : {}),
       label: pair.afterLabel,
       jjBlame: pair.afterBlame ?? null,
       ...(pair.afterAbsent ? { absent: true } : {}),
@@ -119,6 +121,7 @@ export async function openJjChangeDiff(
   for (let i = 0; i < jjChange.files.length; i += batchSize) {
     if (!live()) return false;
     const batch = jjChange.files.slice(i, i + batchSize);
+    // oxlint-disable-next-line no-await-in-loop -- cap concurrent jj reads and recheck the snapshot between batches
     const results = await Promise.allSettled(
       batch.map(async (file) => {
         if (file.path === selected.path) return selected;

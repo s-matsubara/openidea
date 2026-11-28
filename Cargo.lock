@@ -4403,7 +4403,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tracing",
- "which",
 ]
 
 [[package]]
@@ -4431,13 +4430,18 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "criterion 0.5.1",
  "dirs 7.0.0",
  "dunce",
  "encoding_rs",
+ "flate2",
  "futures",
  "getrandom 0.3.4",
  "globset",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -4785,6 +4789,7 @@ dependencies = [
  "ide-build",
  "ide-core",
  "ide-language",
+ "ide-workspace",
  "libc",
  "parking_lot 0.13.0",
  "portable-pty",
@@ -4983,6 +4988,7 @@ dependencies = [
 name = "ide-vcs"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "dunce",
  "encoding_rs",
@@ -5065,6 +5071,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "winreg 0.56.0",
  "zip",
 ]
 
@@ -6709,6 +6716,7 @@ dependencies = [
  "objc2-web-kit 0.3.2",
  "parking_lot 0.13.0",
  "percent-encoding",
+ "reqwest",
  "security-framework",
  "serde",
  "serde_json",

@@ -198,3 +198,62 @@ test("changes jj annotate name format through its gutter menu", async ({ workben
   expect(await ipcCalls(page, "vcs_log")).toEqual(gitLogBefore);
   await page.screenshot({ path: testInfo.outputPath("jj-annotate-initials.png"), animations: "disabled" });
 });
+
+test("compares a jj PNG from Working-copy changes without Git revision reads", async ({
+  workbench: page,
+}, testInfo) => {
+  await stubJj(page);
+  await page.evaluate(
+    async ({ root, commit }) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 4;
+      canvas.height = 3;
+      const context = canvas.getContext("2d")!;
+      context.fillStyle = "teal";
+      context.fillRect(0, 0, 4, 3);
+      const beforeImage = canvas.toDataURL();
+      context.clearRect(0, 0, 1, 1);
+      const afterImage = canvas.toDataURL();
+      const path = root + "/status.png";
+      const file = { path, relPath: "status.png", staged: null, unstaged: "modified", renamedFrom: null };
+      const h = window.__ipc.handlers;
+      h.vcs_roots = () => [
+        {
+          root,
+          branchRoot: root,
+          kind: "jj",
+          head: "main",
+          headCommit: commit,
+          operation: null,
+          workingCopy: { changeId: "qrstuvwx", commitId: commit, description: "Image change", files: [file] },
+          unavailableReason: null,
+        },
+      ];
+      h.vcs_jj_file_diff = (args) => {
+        if (args.path !== path || args.commit !== commit) throw new Error("Wrong jj snapshot");
+        return { before: "", after: "", beforeImage, afterImage, beforeLabel: "Pinned parent", afterLabel: "Pinned @" };
+      };
+      h.fs_read_image = () => afterImage;
+      const store = "/src/features/vcs/store.ts";
+      await (await import(/* @vite-ignore */ store)).discoverRoots();
+      const layout = "/src/workbench/toolwindows/store.ts";
+      (await import(/* @vite-ignore */ layout)).showToolWindow("commit", true);
+    },
+    { root: ROOT, commit: COMMIT },
+  );
+  const row = page.getByRole("tree", { name: "Working-copy changes" }).getByText("status.png", { exact: true });
+  await expect(row).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("jj-image-before.png"), animations: "disabled" });
+  const gitBefore = await ipcCalls(page, "vcs_image_at");
+  const entriesBefore = await ipcCalls(page, "vcs_diff_entries");
+  await row.dblclick();
+  const toolbar = page.getByRole("toolbar", { name: "Image diff" });
+  await expect(toolbar).toBeVisible();
+  await toolbar.getByRole("button", { name: "Highlight changed pixels" }).click();
+  await expect(page.getByRole("status").filter({ hasText: /^1 changed pixel$/i })).toBeVisible();
+  await expect(page.getByLabel("Pixel difference mask")).toBeVisible();
+  expect(await ipcCalls(page, "vcs_jj_file_diff")).toContainEqual({ path: ROOT + "/status.png", commit: COMMIT });
+  expect(await ipcCalls(page, "vcs_image_at")).toEqual(gitBefore);
+  expect(await ipcCalls(page, "vcs_diff_entries")).toEqual(entriesBefore);
+  await page.screenshot({ path: testInfo.outputPath("jj-image-after.png"), animations: "disabled" });
+});

@@ -11,8 +11,9 @@ import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowS
 import { showContextMenu, type MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
-import { formatDate, rootOf } from "./model";
+import { rootOf } from "./model";
 import { isJjPath, refreshNow, useVcs } from "./store";
+import { formatPrettyDay, formatTimestamp } from "@/platform/dateFormat";
 import { saveVcsSetting } from "./settingsUi";
 
 const ZERO = /^0+$/;
@@ -102,7 +103,8 @@ class BlameMarker extends GutterMarker {
       el.style.backgroundColor = this.bg;
     }
     const l = this.line;
-    if (this.jj) el.title = `${l.author} · ${formatDate(l.timeMs)}\n${l.commit}\n${l.summary}`;
+    if (this.jj)
+      el.title = `${l.author} · ${l.timeMs == null ? "" : formatTimestamp(l.timeMs)}\n${l.commit}\n${l.summary}`;
     el.dataset.commit = l.commit;
     return el;
   }
@@ -323,7 +325,7 @@ function build(lines: BlameLine[], doc: Text, jj = false): BlameState {
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
       label = {
-        date: formatDate(line.timeMs),
+        date: line.timeMs ? formatPrettyDay(line.timeMs) : "",
         author: shortAuthorName(line.author, names),
         revision: line.commit.slice(0, 8),
       };
@@ -598,6 +600,14 @@ function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
                             label: tx("Annotate at Revision…"),
                             icon: "clock",
                             run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                          },
+                          {
+                            label: tx("Annotate Revision"),
+                            icon: "history",
+                            run: () =>
+                              void import("./annotateRevision").then((m) =>
+                                m.annotateLineRevision(path, l.commit, l.originPath),
+                              ),
                           },
                           {
                             label: tx("Annotate Previous Revision"),

@@ -19,7 +19,7 @@ export async function loadDiffEntries(entries: DiffEntryRequest[]): Promise<(Dif
 
 function request(path: string, side: DiffSide | undefined): DiffEntryRequest | null {
   if (side?.type === "rev") return { path: side.path ?? path, rev: side.rev };
-  if (side?.type === "worktree") return { path, rev: "WT" };
+  if (side?.type === "worktree" && !("jjBlame" in side)) return { path, rev: "WT" };
   return null;
 }
 
@@ -88,5 +88,5 @@ export function useGitDiffEntries(data: DiffData, cache?: DiffEntriesCache) {
       right: resolveSide(right, entries[2]),
     };
   }, [data, entries, left, middle, right]);
-  return { data: resolved, entries, loading: !!query && !hit && loaded?.query !== query };
+  return { data: resolved, entries, versions, loading: !!query && !hit && loaded?.query !== query };
 }

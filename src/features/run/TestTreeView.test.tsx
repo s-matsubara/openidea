@@ -35,6 +35,8 @@ function results() {
 function Host(props: {
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
 }) {
   return (
     <>
@@ -100,6 +102,21 @@ describe("TestTreeView", () => {
     );
   });
 
+  it("context menu: Update Snapshot on a snapshot mismatch and its suite, not on other failures", () => {
+    const onUpdateSnapshots = vi.fn();
+    const canUpdateSnapshots = vi.fn((ids: string[]) => ids[0] !== "other");
+    render(<Host onUpdateSnapshots={onUpdateSnapshots} canUpdateSnapshots={canUpdateSnapshots} />);
+    fireEvent.contextMenu(screen.getByText("MathTest"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenCalledWith(["MathTest"]);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenLastCalledWith(["MathTest\u0000subs()"]);
+    canUpdateSnapshots.mockReturnValue(false);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    expect(screen.queryByText("Update Snapshot")).toBeNull();
+  });
+
   it("context menu: Diagnose with Agent passes the selected failure to the agents action (#4716)", async () => {
     // Offered only while the agents feature provides the action.
     render(<Host />);
@@ -149,6 +166,28 @@ describe("TestTreeView", () => {
       }
     },
   );
+});
+
+it("shows Rerun Automatically only where watch mode applies", () => {
+  const { unmount } = render(<Host />);
+  expect(screen.queryByRole("button", { name: "Rerun Automatically" })).toBeNull();
+  unmount();
+  const toggle = vi.fn();
+  render(
+    <TestTreeView
+      results={results()}
+      version={1}
+      cwd="/p"
+      selected={null}
+      onSelect={() => {}}
+      running
+      rerunAutomatically={{ on: true, toggle }}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Rerun Automatically" });
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(button);
+  expect(toggle).toHaveBeenCalledOnce();
 });
 
 describe("Previous / Next Failed Test", () => {
@@ -639,5 +678,127 @@ describe("Select First Failed Test When Finished", () => {
     expect(testTree.toggleSelectFirstFailed).toBeNull();
     render(view);
     expect(testTree.selectFirstFailed).toBe(true);
+  });
+});
+
+describe("Track Running Test", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    onSelect.mockClear();
+  });
+  afterEach(() => localStorage.clear());
+
+  const onSelect = vi.fn();
+  function Host({ results, version, running }: { results: TestResults; version: number; running: boolean }) {
+    const [selected, setSelected] = useState<string | null>(null);
+    return (
+      <TestTreeView
+        results={results}
+        version={version}
+        cwd="/p"
+        selected={selected}
+        onSelect={(id) => {
+          onSelect(id);
+          setSelected(id);
+        }}
+        running={running}
+      />
+    );
+  }
+  const selectedRows = () => screen.queryAllByRole("treeitem", { selected: true }).map((r) => r.textContent);
+  const enable = (on = true) =>
+    localStorage.setItem("openidea.run.testFilters", JSON.stringify({ showPassed: true, trackRunning: on }));
+
+  it("selects each test as it starts, opening its collapsed suites", () => {
+    enable();
+    const results = new TestResults();
+    results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
+    const { rerender } = render(<Host results={results} version={1} running />);
+    expect(selectedRows()).toEqual(["lists()"]);
+    expect(results.get(onSelect.mock.lastCall![0])!.name).toBe("lists()");
+
+    act(() => testTree.collapseAll!());
+    results.apply([
+      { type: "result", path: ["ApiTest", "lists()"], status: "passed" },
+      { type: "start", path: ["ApiTest", "Auth", "Tokens", "refreshes()"] },
+    ]);
+    rerender(<Host results={results} version={2} running />);
+    expect(selectedRows()).toEqual(["refreshes()"]);
+  });
+
+  it("selects the latest of several tests that start together and keeps the selection while they finish", () => {
+    enable();
+    const results = new TestResults();
+    results.apply([{ type: "start", path: ["pkg", "TestA"] }]);
+    const { rerender } = render(<Host results={results} version={1} running />);
+    results.apply([
+      { type: "start", path: ["pkg", "TestB"] },
+      { type: "start", path: ["pkg", "TestC"] },
+    ]);
+    rerender(<Host results={results} version={2} running />);
+    expect(selectedRows()).toEqual(["TestC"]);
+
+    // A test finishing, or one that was already running, doesn't move the selection.
+    results.apply([{ type: "result", path: ["pkg", "TestC"], status: "passed" }]);
+    rerender(<Host results={results} version={3} running />);
+    expect(selectedRows()).toEqual(["TestC"]);
+    fireEvent.mouseDown(screen.getByText("TestA"));
+    results.apply([{ type: "result", path: ["pkg", "TestB"], status: "passed" }]);
+    rerender(<Host results={results} version={4} running />);
+    expect(selectedRows()).toEqual(["TestA"]);
+
+    // The next test to start takes the selection again.
+    results.apply([{ type: "start", path: ["pkg", "TestD"] }]);
+    rerender(<Host results={results} version={5} running />);
+    expect(selectedRows()).toEqual(["TestD"]);
+  });
+
+  it("switched on mid-run, waits for the next test to start", () => {
+    enable(false);
+    const results = new TestResults();
+    results.apply([{ type: "start", path: ["pkg", "TestA"] }]);
+    const { rerender } = render(<Host results={results} version={1} running />);
+    act(() => testTree.toggleTrackRunning!());
+    rerender(<Host results={results} version={2} running />);
+    expect(selectedRows()).toEqual([]);
+    results.apply([{ type: "start", path: ["pkg", "TestB"] }]);
+    rerender(<Host results={results} version={3} running />);
+    expect(selectedRows()).toEqual(["TestB"]);
+  });
+
+  it("is on by default, as in IDEA, and follows nothing once the run has finished", () => {
+    let results = new TestResults();
+    results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
+    const { unmount } = render(<Host results={results} version={1} running />);
+    expect(selectedRows()).toEqual(["lists()"]);
+    unmount();
+    onSelect.mockClear();
+
+    enable(false);
+    results = new TestResults();
+    results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
+    const off = render(<Host results={results} version={1} running />);
+    expect(selectedRows()).toEqual([]);
+    off.unmount();
+
+    enable();
+    results = new TestResults();
+    results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
+    render(<Host results={results} version={1} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("the Test Runner Options toggle is remembered across sessions", () => {
+    const results = new TestResults();
+    const view = <Host results={results} version={1} running={false} />;
+    const { unmount } = render(view);
+    expect(testTree.trackRunning).toBe(true);
+    act(() => testTree.toggleTrackRunning!());
+    expect(testTree.trackRunning).toBe(false);
+    unmount();
+    expect(testTree.toggleTrackRunning).toBeNull();
+    render(view);
+    expect(testTree.trackRunning).toBe(false);
   });
 });

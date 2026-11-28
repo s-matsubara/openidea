@@ -41,6 +41,7 @@ interface TestFilters {
   showIgnored: boolean;
   showDurations: boolean;
   selectFirstFailed: boolean;
+  trackRunning: boolean;
   sortAlphabetically: boolean;
   sortByDuration: boolean;
 }
@@ -54,6 +55,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: v.showIgnored !== false,
       showDurations: v.showDurations !== false,
       selectFirstFailed: v.selectFirstFailed === true,
+      trackRunning: v.trackRunning !== false,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
@@ -63,6 +65,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: true,
       showDurations: true,
       selectFirstFailed: false,
+      trackRunning: true,
       sortAlphabetically: false,
       sortByDuration: false,
     };
@@ -155,6 +158,19 @@ function suiteIds(nodes: readonly TestNode[], out: Set<string> = new Set()): Set
   return out;
 }
 
+/** Tests still running, in tree order, with the suites above them. */
+function runningTests(
+  nodes: readonly TestNode[],
+  ancestors: TestNode[] = [],
+  out: Array<{ node: TestNode; ancestors: TestNode[] }> = [],
+) {
+  for (const n of nodes) {
+    if (n.children.length > 0) runningTests(n.children, [...ancestors, n], out);
+    else if (nodeStatus(n) === "running") out.push({ node: n, ancestors });
+  }
+  return out;
+}
+
 function filterTree(nodes: readonly TestNode[], keep: (n: TestNode) => boolean): TestNode[] {
   const out: TestNode[] = [];
   for (const n of nodes) {
@@ -188,9 +204,14 @@ export interface TestTreeViewProps {
   running: boolean;
   /** The run configuration's name (Export Test Results names the file after it). */
   name?: string;
+  /** Update Snapshot: reruns the selection's Jest / Vitest snapshot mismatches with `-u`. */
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  /** Jest / Vitest runs: the "Rerun Automatically" (watch mode) toggle. */
+  rerunAutomatically?: { on: boolean; toggle: () => void };
 }
 
 export function TestTreeView({
@@ -201,11 +222,22 @@ export function TestTreeView({
   onSelect,
   running,
   name = "Tests",
+  onUpdateSnapshots,
+  canUpdateSnapshots,
   onRunTests,
   canRunTests,
+  rerunAutomatically,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored, showDurations, selectFirstFailed, sortAlphabetically, sortByDuration } = filters;
+  const {
+    showPassed,
+    showIgnored,
+    showDurations,
+    selectFirstFailed,
+    trackRunning,
+    sortAlphabetically,
+    sortByDuration,
+  } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
@@ -280,6 +312,8 @@ export function TestTreeView({
       }
       if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
         items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      if (onUpdateSnapshots && canUpdateSnapshots?.(ids))
+        items.push({ label: "Update Snapshot", icon: "rerun", run: () => onUpdateSnapshots(ids) });
       if (ids.length === 1 && !node.children.length && nodeStatus(node) === "failed" && getAction(DIAGNOSE))
         items.push({ label: "Diagnose with Agent", icon: "toolwindow-agents", run: () => void diagnose(node, name) });
       items.push({
@@ -335,6 +369,8 @@ export function TestTreeView({
     testTree.toggleDurations = () => toggle("showDurations");
     testTree.selectFirstFailed = selectFirstFailed;
     testTree.toggleSelectFirstFailed = () => toggle("selectFirstFailed");
+    testTree.trackRunning = trackRunning;
+    testTree.toggleTrackRunning = () => toggle("trackRunning");
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
@@ -343,6 +379,8 @@ export function TestTreeView({
       testTree.toggleDurations = null;
       testTree.selectFirstFailed = null;
       testTree.toggleSelectFirstFailed = null;
+      testTree.trackRunning = null;
+      testTree.toggleTrackRunning = null;
     };
   });
 
@@ -362,6 +400,23 @@ export function TestTreeView({
   useEffect(() => {
     if (firstFailed) tree.current?.reveal(firstFailed.key);
   }, [firstFailed]);
+
+  // Track Running Test: while the run is in progress, select each test as it starts, as IDEA does.
+  const started = useMemo(() => (running ? runningTests(roots) : []), [roots, running]);
+  const [startedIds, setStartedIds] = useState<ReadonlySet<string>>(new Set());
+  const [tracked, setTracked] = useState<{ key: string } | null>(null);
+  if (started.length !== startedIds.size || started.some((t) => !startedIds.has(t.node.id))) {
+    setStartedIds(new Set(started.map((t) => t.node.id)));
+    const latest = trackRunning ? started.findLast((t) => !startedIds.has(t.node.id)) : undefined;
+    if (latest) {
+      if (latest.ancestors.some((a) => !effectiveExpanded.has(a.id)))
+        setExpanded(new Set([...effectiveExpanded, ...latest.ancestors.map((a) => a.id)]));
+      setTracked({ key: latest.node.id });
+    }
+  }
+  useEffect(() => {
+    if (tracked) tree.current?.reveal(tracked.key);
+  }, [tracked]);
   const hasSuites = roots.some((n) => n.children.length > 0);
 
   // Previous / Next Failed Test (⌘⌥↑ / ⌘⌥↓): like IDEA, stops at the first / last failure instead of wrapping.
@@ -378,6 +433,16 @@ export function TestTreeView({
   return (
     <div className={styles.testPane}>
       <Toolbar className={styles.testToolbar} aria-label="Test results">
+        {rerunAutomatically && (
+          <IconButton
+            icon="rerun-automatically"
+            size="small"
+            iconSize={16}
+            title="Rerun Automatically"
+            pressed={rerunAutomatically.on}
+            onClick={rerunAutomatically.toggle}
+          />
+        )}
         <div className={styles.testFilters}>
           <IconButton
             icon="test-show-passed"
@@ -474,6 +539,7 @@ export function TestTreeView({
               icon: "settings",
               submenu: [
                 { kind: "action", action: "run.toggleTestDurations" },
+                { kind: "action", action: "run.toggleTrackRunningTest" },
                 { kind: "action", action: "run.toggleSelectFirstFailedTest" },
               ],
             },

@@ -238,10 +238,10 @@ it("enables the explicit Jujutsu entry without Git and gates stale Git selection
   useGitLog.setState({ tab: "jj" });
   const view = render(<JjToolWindow />);
   await screen.findByText("subject capabilities");
-  expect(isActionEnabled(getAction("vcs.log.cherryPick")!)).toBe(false);
+  expect(isActionEnabled(getAction("vcs.log.cherryPick")!, undefined, [{ id: "git-commit", parents: [] }])).toBe(false);
   expect(isActionEnabled(getAction("vcs.log.resetToHere")!)).toBe(false);
   view.unmount();
-  expect(isActionEnabled(getAction("vcs.log.cherryPick")!)).toBe(true);
+  expect(isActionEnabled(getAction("vcs.log.cherryPick")!, undefined, [{ id: "git-commit", parents: [] }])).toBe(true);
   offHistory();
   offVcs();
 });

@@ -34,6 +34,7 @@ import "./go";
 import "./rust";
 import "./java";
 import "./javascript";
+import "./cpp";
 
 const semanticBackoff = featureBackoff();
 
